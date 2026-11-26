@@ -76,11 +76,10 @@
 //!     names, is [`Action::Done`]. `done` that `look` does not confirm
 //!     stops the publish for a person ([`Stop::DoneNotSeen`]), with its
 //!     hold and its record kept, as when the publish is not too old (L6).
-//!     The stop is the engine's, in its process: only a person, or
-//!     M2.6c's `recover`, ends that entry while the daemon says `done`.
-//!     After a restart the publish is planned again and stops again;
-//!     once the daemon has forgotten it (`unknown`), it is withdrawn,
-//!     looked up and given up as below (S5 of #144's third look).
+//!     The stop is recorded ([`Person::Stopped`]; S5 of #144's third
+//!     look), so that it outlasts a restart of the agent and of the
+//!     daemon: only a person ends that entry, with `skyzfs-agent
+//!     recover` (below).
 //!   - A refusal that ends the request (the lead's L7 on #144,
 //!     after N4 of its third look): the uploader ended it (`rewound`,
 //!     `state`, `attachment`, `taken`, and `stopped`, N6 of its fourth
@@ -143,6 +142,28 @@
 //!   pends) withdraws it. A `look` refused (`store`) or not answered is
 //!   no sight of `snap/t`: the engine leaves [`Seen::snap`] empty, and
 //!   the planner asks for the look again.
+//! - **A person's part** ([`Publish::person`]). A publish recorded
+//!   [`Person::Stopped`] is stopped again at once ([`Stop::DoneNotSeen`]),
+//!   whatever is seen, and nothing is asked of the pool or the daemon
+//!   for it. One a person gave up ([`Person::GiveUp`], `recover
+//!   --give-up`) is given up as [`Why::Person`] in the order of every
+//!   give-up: a request that may pend is withdrawn, `snap/t` is looked
+//!   up (a publish made is [`Action::Done`]: a person cannot unmake it),
+//!   the hold is released, and the name given up. A publish taken and
+//!   never asked has nothing to withdraw; one at Intent has nothing
+//!   held. With the daemon away, a publish asked keeps its hold until
+//!   `held_until`, as every publish asked does, and is given up after
+//!   it; so does one whose daemon answers that it cannot say (`ended`,
+//!   `no-answer`, `no-upload`) before a withdraw of the agent's own was
+//!   answered (B1 of #149's review): until then a request of it may
+//!   land, and the hold keeps `pool@t` for the cut that carries it (rule
+//!   (R)). One held and not recorded asked is given up at once, the
+//!   lead's decision on L1 of #149's review: the engine records a
+//!   publish asked, and syncs the record, before it sends `publish`,
+//!   and records it held again only on a refusal that says nothing of it
+//!   pends (`engine`, step 8), so a publish recorded held has no request
+//!   that could land. A publish already done is released and forgotten
+//!   as usual.
 //! - **Done with the snapshot broken.** `snap/t` that is this publish's,
 //!   seen while `pool@t` or a member's `@t` is gone, is recorded done
 //!   and reported ([`Report::SnapshotGone`]): it was made before a rewind
@@ -187,7 +208,7 @@ use std::time::Duration;
 
 use skyzfs_control::{Code, CutsReply, Reply, ASK_LIMIT};
 
-use crate::record::{Count, Member, Phase, Publish, Taken, Why};
+use crate::record::{Count, Member, Person, Phase, Publish, Taken, Why};
 use crate::zfs::Held;
 
 /// How long after `accepted` a publish with no qualifying cut is helped
@@ -260,6 +281,16 @@ pub const AGE_MAX: Duration = Duration::from_secs(2 * 60 * 60);
 /// ([`ASK_LIMIT`], 40 s; the lead's Q8).
 pub const HOLD_MARGIN: Duration = ASK_LIMIT;
 
+/// The most the agent lets pass between the time it reads before it
+/// records a publish asked and the send of the request (C1 of #149's
+/// next look; Codex's P2 there). The record's `held_until` counts it, so
+/// that a request sent within it is accepted, if at all, by
+/// `ASK_LIMIT` after, and expires [`HOLD_MARGIN`] before the hold ends.
+/// Where the save of the record, or a stop of the process, took longer,
+/// nothing is sent: the next round finds no request (`unknown`) and
+/// asks anew, with a fresh time.
+pub const ASKING_SLACK: Duration = Duration::from_secs(10);
+
 /// What the agent sees of the pool, for one publish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolSeen {
@@ -326,8 +357,11 @@ pub struct Seen {
     /// Whether the daemon has answered a withdraw of this publish's
     /// request with an answer that says nothing pends (`withdrawn`,
     /// `unknown`, `expired`), in this process and since a request of it
-    /// was last accepted.
+    /// was last asked.
     pub withdrawn: bool,
+    /// The pause that paces the syncs ([`ASSIST_AFTER`] but in the rigs'
+    /// test hooks).
+    pub assist_after: Duration,
 }
 
 /// The one thing to do next.
@@ -389,10 +423,9 @@ pub enum Stop {
     Refused(Code),
     /// The daemon said `done`, and `look` did not see this publish's
     /// `snap/<t>` with the commit `done` named. The hold and the record
-    /// are kept, past the age bound too (the lead's L6 on #144): only a
-    /// person, or M2.6c's `recover`, ends the entry while the daemon says
-    /// `done`. The stop is the engine's, in its process ([module
-    /// docs](self), "Too old").
+    /// are kept, past the age bound too (the lead's L6 on #144), and the
+    /// stop is recorded ([`Person::Stopped`]): only a person ends the
+    /// entry, with `recover` ([module docs](self), "A person's part").
     DoneNotSeen,
 }
 
@@ -409,6 +442,10 @@ pub enum Report {
     /// A publish too old, or stalled [`STALLS_ABANDONED`] times, given up
     /// where the daemon refused it with this code ([`report`]).
     Refused(Code),
+    /// A publish older than its bound ([`AGE_MAX`]) whose hold is kept
+    /// while the daemon does not answer (L5 of #144's review): nothing
+    /// gives it up until the daemon answers (S6 of #144's third look).
+    HeldAway,
     /// The publish was given up after [`CHECKS_FAILED_MAX`] takes in a
     /// row that were not one whole take of the pool or not as read
     /// before them ([`crate::record::Why::NotWhole`]): the datasets that
@@ -451,6 +488,11 @@ pub fn snap_seen(reply: &Reply, taken: &Taken) -> Option<SnapSeen> {
 /// The next action for `publish` ([module docs](self)).
 pub fn plan(publish: &Publish, seen: &Seen) -> Action {
     let pool = &seen.pool;
+    match (publish.person, &publish.phase) {
+        (_, Phase::Done { .. }) | (None, _) => {}
+        (Some(Person::Stopped), _) => return Action::Stop(Stop::DoneNotSeen),
+        (Some(Person::GiveUp), _) => return given_up(publish, seen),
+    }
     match &publish.phase {
         Phase::Intent => match (&pool.snapshot, &seen.daemon) {
             (None, _) if seen.too_old => Action::Abandon(Why::TooOld),
@@ -486,6 +528,55 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
         } => onward(publish, taken, Some((*asked_ms, *held_until_ms)), seen),
         Phase::Done { .. } if pool.hold != Held::No => Action::Release,
         Phase::Done { .. } => Action::Forget,
+    }
+}
+
+/// A publish a person gave up ([module docs](self), "A person's part"):
+/// a request that may pend withdrawn, `snap/t` looked up, the hold
+/// released, the name given up.
+///
+/// A daemon that answers that it cannot say (`ended`, `no-answer`,
+/// `no-upload`) is read as one away, as the age bound reads it, until a
+/// withdraw of this agent's own has been answered: skyzfsd answers
+/// `progress` `refused no-answer` when its uploader is in a long step, and
+/// a request of the publish may still land (B1 of #149's review).
+fn given_up(publish: &Publish, seen: &Seen) -> Action {
+    let pool = &seen.pool;
+    let silent = match &seen.daemon {
+        DaemonSeen::Away => true,
+        DaemonSeen::Here { answer, .. } => {
+            !seen.withdrawn
+                && matches!(
+                    answer,
+                    Reply::Refused(Code::Ended | Code::NoAnswer | Code::NoUpload, _)
+                )
+        }
+    };
+    let answer = match (&publish.phase, &seen.daemon) {
+        (Phase::Asked { held_until_ms, .. }, _) if silent && seen.now_ms < *held_until_ms => {
+            return Action::Wait
+        }
+        (Phase::Intent | Phase::Taken(_), _) | (_, DaemonSeen::Away) => {
+            return give_up(pool, Why::Person)
+        }
+        (_, DaemonSeen::Here { answer, .. }) => answer,
+    };
+    let may_pend = matches!(
+        answer,
+        Reply::Pending | Reply::Accepted | Reply::Refused(Code::Asked, _)
+    );
+    if may_pend && !seen.withdrawn {
+        return Action::Withdraw;
+    }
+    match seen.snap {
+        None => Action::Look,
+        Some(SnapSeen::Ours(commit)) => Action::Done {
+            commit,
+            report: None,
+        },
+        Some(SnapSeen::Absent | SnapSeen::NotOurs | SnapSeen::Unreadable) => {
+            give_up(pool, Why::Person)
+        }
     }
 }
 
@@ -570,7 +661,9 @@ fn give_up(pool: &PoolSeen, why: Why) -> Action {
 }
 
 /// Whether a publish pending since `asked_ms`, last helped at
-/// `assisted_ms`, is due a `zpool sync` at `now_ms`.
+/// `assisted_ms`, is due a `zpool sync` at `now_ms`. [`ASSIST_AFTER`]
+/// below is `assist_after` ([`Seen::assist_after`]), and the pause no
+/// longer than it.
 ///
 /// With no qualifying cut: from [`ASSIST_AFTER`] after `asked_ms`, each
 /// [`ASSIST_PAUSE`] after the last while fewer than [`ASSIST_QUICK`] were
@@ -591,6 +684,7 @@ fn assist_due(
     assisted_ms: Option<u64>,
     assists: u32,
     now_ms: u64,
+    assist_after: Duration,
 ) -> bool {
     let ms = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
     // A sync recorded later than now (the clock stepped back) counts as
@@ -599,16 +693,16 @@ fn assist_due(
     let assisted_ms = assisted_ms.filter(|&last| last <= now_ms);
     let after = |at: u64, d: Duration| now_ms >= at.saturating_add(ms(d));
     if carried {
-        let from = asked_ms.saturating_add(ms(ASSIST_AFTER));
+        let from = asked_ms.saturating_add(ms(assist_after));
         let from = assisted_ms.map_or(from, |last| last.max(from));
-        after(from, ASSIST_AFTER)
+        after(from, assist_after)
     } else {
         let pause = if assists < ASSIST_QUICK {
-            ASSIST_PAUSE
+            ASSIST_PAUSE.min(assist_after)
         } else {
-            ASSIST_AFTER
+            assist_after
         };
-        after(asked_ms, ASSIST_AFTER) && assisted_ms.is_none_or(|last| after(last, pause))
+        after(asked_ms, assist_after) && assisted_ms.is_none_or(|last| after(last, pause))
     }
 }
 
@@ -637,9 +731,12 @@ fn qualifies(cuts: &CutsReply, count: &Count, taken: &Taken) -> bool {
 /// after it until skyzfsd restarts, without keeping it (N6 of #144's
 /// fourth look; the lead's decision for M2.6c). `progress`, `withdraw`
 /// and `look` go on answering: `progress` of a name whose `publish` was
-/// so refused answers `unknown` (S9 of #146's review). A publish is given up on it whatever its age
-/// (the lead's ruling on #146): waiting would only hold `pool@t` for up
-/// to [`AGE_MAX`], and the next publish covers a restart.
+/// so refused answers what the uploader kept of the name, `unknown`
+/// where it kept nothing, or the outcome of an earlier publish of the
+/// name (S9 of #146's review; S12 of its next look). A publish is given
+/// up on it whatever its age (the lead's ruling on #146): waiting would
+/// only hold `pool@t` for up to [`AGE_MAX`], and the next publish covers
+/// a restart.
 ///
 /// Not `asked` (one pends), `busy`, or the daemon's silence (`ended`,
 /// `no-answer`, `no-upload`). skyzfsd gives `busy` only to a `publish`
@@ -667,8 +764,10 @@ fn ends(code: Code) -> bool {
 /// publish too old, or stalled [`STALLS_ABANDONED`] times, on a refusal
 /// that ends its request ([`Report::Refused`], the lead's L7 on #144),
 /// or any publish on `refused stopped` (the lead's ruling on #146): the
-/// release, and the give-up after it. The engine makes it before it
-/// acts, once a process (as every report: at least once).
+/// release, and the give-up after it. And where a publish too old waits,
+/// held, for a daemon that does not answer ([`Report::HeldAway`]). The
+/// engine makes it before it acts, once a process (as every report: at
+/// least once).
 pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report> {
     let under_way = matches!(publish.phase, Phase::Held(_) | Phase::Asked { .. });
     let ended = publish.stalls >= STALLS_ABANDONED || seen.too_old;
@@ -679,6 +778,14 @@ pub fn report(publish: &Publish, seen: &Seen, action: &Action) -> Option<Report>
             ..
         } if under_way && (ended || *code == Code::Stopped) && gives_up && ends(*code) => {
             Some(Report::Refused(*code))
+        }
+        DaemonSeen::Away
+            if under_way
+                && seen.too_old
+                && seen.pool.hold != Held::No
+                && *action == Action::Wait =>
+        {
+            Some(Report::HeldAway)
         }
         _ => None,
     }
@@ -785,6 +892,7 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
                 seen.assisted_ms,
                 seen.assists,
                 seen.now_ms,
+                seen.assist_after,
             ) {
                 Action::Assist
             } else {

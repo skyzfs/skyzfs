@@ -30,15 +30,30 @@
 //! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
 //! was begun, and [`Why::NoProgress`] and [`Why::TooOld`]; M2.6c-1
 //! appended [`Why::Stopped`] to it, before any agent ran it (S11 of
-//! #146's review), and M2.6c-2b [`Why::NotWhole`], and took
+//! #146's review), M2.6c-3 a person's part in a publish ([`Person`])
+//! and [`Why::Person`], and M2.6c-2b [`Why::NotWhole`], and took
 //! [`Publish::attempts`] to count the failed checks of a take at
-//! [`Phase::Intent`] as well (D1 of #153's review), also before any
+//! [`Phase::Intent`] as well (D1 of #153's review), all before any
 //! agent ran it; version 1
 //! (M2.6b1) is not read, since no agent that wrote it ever ran: the
 //! crate had no engine and no program then. No agent has run version 2
 //! either; from the first run of the program (M2.6c), any change to the
 //! record takes a new version and a test that decodes the version
 //! before it (the lead's decision on #144).
+//!
+//! # The marker
+//!
+//! The file [`MARKER`] says that the directory is an agent's directory
+//! of a volume (L4 of #149's review). Its bytes are the magic
+//! [`MARKER_MAGIC`] and the version [`MARKER_VERSION`] (u16, little
+//! endian). [`Store::save`] writes it, in one step as the record is
+//! written, before the first record, and again before any save that
+//! finds it missing; so a record on the disk has a marker beside it
+//! unless a person removed it. The engine's sweep releases a hold no
+//! publish names only where the marker is there: an agent given a
+//! mistyped `--dir` finds no marker and no record, and releases nothing
+//! (`engine::Error::Unmarked`). A file of that name with other bytes is
+//! not a marker, and is written over at the next save.
 //!
 //! # The manifests
 //!
@@ -66,6 +81,22 @@ pub const UNDER_WAY_MAX: usize = 8;
 /// The names given up that the record keeps: the newest 64. They are
 /// for M2.7's retention, which decides what becomes of their snapshots.
 pub const ABANDONED_KEPT: usize = 64;
+
+/// The agent's marker in its directory of a volume ([module docs](self)).
+pub const MARKER: &str = "agent";
+
+/// The marker's magic.
+pub const MARKER_MAGIC: [u8; 4] = *b"SZAD";
+
+/// The marker's version.
+pub const MARKER_VERSION: u16 = 1;
+
+/// The marker's bytes: [`MARKER_MAGIC`], then [`MARKER_VERSION`].
+pub fn marker_bytes() -> [u8; 6] {
+    let [a, b, c, d] = MARKER_MAGIC;
+    let [v0, v1] = MARKER_VERSION.to_le_bytes();
+    [a, b, c, d, v0, v1]
+}
 
 /// The record's file in the agent's directory of a volume.
 pub const RECORD: &str = "record";
@@ -131,6 +162,24 @@ pub struct Publish {
     /// When it was begun (the wall clock, in ms since 1970): its age
     /// bounds it ([`crate::plan::AGE_MAX`]).
     pub begun_ms: u64,
+    /// What a person is to do, or has done, about it; `None` while it is
+    /// the agent's alone.
+    pub person: Option<Person>,
+}
+
+/// A person's part in a publish under way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Person {
+    /// Stopped for a person: the daemon said `done`, and `look` did not
+    /// see this publish's `snap/<t>` with the commit `done` named
+    /// ([`crate::plan::Stop::DoneNotSeen`]). Recorded, so that the stop
+    /// outlasts a restart of the agent (S5 of #144's review): the hold and
+    /// the record are kept until a person runs `recover`.
+    Stopped,
+    /// A person gave it up (`recover --give-up`): its request is
+    /// withdrawn where one may pend, its hold released, and it is given
+    /// up as [`Why::Person`].
+    GiveUp,
 }
 
 /// The daemon's count of cuts that a publish is asked after, read before
@@ -158,11 +207,15 @@ pub enum Phase {
     /// The snapshot taken and its manifest on disk.
     Taken(Taken),
     /// The hold placed, and the members, the layout and `load_guid`
-    /// verified.
+    /// verified; no request of the publish is out (the engine records
+    /// [`Phase::Asked`] before it sends one: L1 of #149's review).
     Held(Taken),
-    /// The daemon answered `accepted`; the agent holds the snapshot until
-    /// `held_until_ms` while the daemon does not answer. Times are the
-    /// wall clock, in ms since 1970.
+    /// A request to publish sent, or about to be: recorded before it is
+    /// sent, with `held_until_ms` past what its expiry can be, and again
+    /// once the daemon answered `accepted`, with `held_until_ms` from the
+    /// answer. The agent holds the snapshot until `held_until_ms` while
+    /// the daemon does not answer. Times are the wall clock, in ms since
+    /// 1970.
     Asked {
         /// What was taken.
         taken: Taken,
@@ -249,6 +302,12 @@ pub enum Why {
     /// The daemon's uploader stopped for good (`refused stopped`) before
     /// it published it (the lead's ruling on #146).
     Stopped,
+    /// A person gave it up ([`Person::GiveUp`]). Where the daemon could
+    /// not be asked whether the request had landed (away, or silent)
+    /// until the hold's time was over, the request may still land after
+    /// the give-up: object storage then has `snap/<t>` though the outcome
+    /// says given up (an observation of the next look at #149).
+    Person,
     /// [`crate::plan::CHECKS_FAILED_MAX`] takes in a row were not one
     /// whole take of the pool, or their members not as read before them
     /// (a dataset that `zfs snapshot -r` skips, for one); the last was
@@ -525,15 +584,7 @@ impl<F: Fs> Store<F> {
 
     /// The record there.
     pub fn load(&self) -> io::Result<Loaded> {
-        let bytes = match self.fs.read(&self.dir.join(RECORD)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Loaded::Absent),
-            Err(e) => return Err(e),
-        };
-        Ok(match Record::decode(&bytes) {
-            Ok(record) => Loaded::Present(record),
-            Err(why) => Loaded::Corrupt(why),
-        })
+        peek_on(&self.fs, &self.dir)
     }
 
     /// Save `record` over the one there, which must be absent or a
@@ -543,8 +594,21 @@ impl<F: Fs> Store<F> {
         if let Loaded::Corrupt(why) = self.load()? {
             return Err(SaveError::Corrupt(why));
         }
+        if !self.marked()? {
+            replace(&self.fs, &self.dir, MARKER, &marker_bytes())?;
+        }
         replace(&self.fs, &self.dir, RECORD, &bytes)?;
         Ok(())
+    }
+
+    /// Whether the directory holds the agent's marker ([module
+    /// docs](self)).
+    pub fn marked(&self) -> io::Result<bool> {
+        match self.fs.read(&self.dir.join(MARKER)) {
+            Ok(bytes) => Ok(bytes == marker_bytes()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// Write the manifest of `name`, synced, before the record names it.
@@ -619,6 +683,8 @@ pub trait Keep {
     fn remove_manifest(&self, name: &str) -> io::Result<()>;
     /// [`Store::manifest_names`].
     fn manifest_names(&self) -> io::Result<Vec<String>>;
+    /// [`Store::marked`].
+    fn marked(&self) -> io::Result<bool>;
 }
 
 impl<F: Fs> Keep for Store<F> {
@@ -640,6 +706,31 @@ impl<F: Fs> Keep for Store<F> {
     fn manifest_names(&self) -> io::Result<Vec<String>> {
         Store::manifest_names(self)
     }
+    fn marked(&self) -> io::Result<bool> {
+        Store::marked(self)
+    }
+}
+
+/// The record in the directory `dir` on the disk, read without its lock
+/// and without changing anything: for a person, or a rig, to look at
+/// while an agent may be running (`skyzfs-agent record`). A save
+/// renames a whole file over the record, so what is read is one record
+/// or the next, never a part of one.
+pub fn peek(dir: &Path) -> io::Result<Loaded> {
+    peek_on(&Disk, dir)
+}
+
+/// [`peek`] on the file system `fs`.
+pub fn peek_on(fs: &impl Fs, dir: &Path) -> io::Result<Loaded> {
+    let bytes = match fs.read(&dir.join(RECORD)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Loaded::Absent),
+        Err(e) => return Err(e),
+    };
+    Ok(match Record::decode(&bytes) {
+        Ok(record) => Loaded::Present(record),
+        Err(why) => Loaded::Corrupt(why),
+    })
 }
 
 /// Make `dir` where it is not, and sync its parent so that it stays.

@@ -24,6 +24,7 @@ members = [
     "bins/skynbd-agent",
     "bins/skynbdctl",
     "bins/skynbd-csi-driver",
+    "bins/skyzfs-agent",
     "bins/skyzfs-blkcheck",
     "bins/skyzfs-nodeb",
     "bins/skyzfsd",
@@ -46,6 +47,7 @@ skynbd-engine = { path = "crates/skynbd-engine" }
 skynbd-nbd = { path = "crates/skynbd-nbd" }
 skynbd-api = { path = "crates/skynbd-api" }
 skyzfs-blk = { path = "crates/skyzfs-blk" }
+skyzfs-agent = { path = "crates/skyzfs-agent" }
 skyzfs-control = { path = "crates/skyzfs-control" }
 skyzfs-local = { path = "crates/skyzfs-local" }
 skyzfs-mapped = { path = "crates/skyzfs-mapped" }

@@ -168,7 +168,7 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
     let hook = {
         let (count, stopped_at, world) = (count.clone(), stopped_at.clone(), world.clone());
         let (gone, released) = (gone.clone(), released.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             let k = count.get();
             count.set(k + 1);
             note_gone(&world, &gone, point);
@@ -222,7 +222,7 @@ fn run_under(rule: Rule, mode: Mode, fault: Fault) -> Ran {
             world.borrow_mut().advance(DOWN);
             let note = {
                 let (world, gone, released) = (world.clone(), gone.clone(), released.clone());
-                move |point: Point| {
+                move |point: Point, _: &str| {
                     note_gone(&world, &gone, point);
                     note_released(&world, &released, point);
                     false
@@ -353,13 +353,15 @@ fn check(ran: &Ran) -> Result<(), String> {
                         .iter()
                         .any(|l| l.starts_with(&format!("agent destroy -r {t} refused")))
             }
-            // Three failed checks in a row take a person's action at each
-            // take; the matrices make one.
             Why::ManifestTooLarge
             | Why::NameTaken
             | Why::NoProgress
             | Why::Stopped
-            | Why::NotWhole => false,
+            // Three failed checks in a row take a person's action at each
+            // take; the matrices make one.
+            | Why::NotWhole
+            // No person gives a publish up in the matrices.
+            | Why::Person => false,
         };
         if !confirmed {
             return Err(format!(
@@ -398,7 +400,7 @@ fn check(ran: &Ran) -> Result<(), String> {
                             .iter()
                             .any(|a| a.name == *t && a.why == Why::TooOld)
                     }) => {}
-            Report::NoProgress(_) | Report::Refused(_) | Report::NotWhole(_) => {
+            Report::NoProgress(_) | Report::Refused(_) | Report::HeldAway | Report::NotWhole(_) => {
                 return Err(format!("{t} reported: {report:?}"))
             }
         }
@@ -497,7 +499,7 @@ fn rebooted_on_an_idle_pool(reboots: usize, plain_sync: bool) -> (Rc<RefCell<Wor
     let rebooted = Rc::new(Cell::new(0));
     let hook = {
         let (world, rebooted) = (world.clone(), rebooted.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED && rebooted.get() < reboots {
                 rebooted.set(rebooted.get() + 1);
                 world.borrow_mut().restart(Restart::Reboot, None);
@@ -556,7 +558,7 @@ fn each_sync_task_sets_a_value_of_its_own() {
     let armed = Rc::new(Cell::new(true));
     let hook = {
         let (world, armed) = (world.clone(), armed.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED && armed.replace(false) {
                 world.borrow_mut().restart(Restart::Reboot, None);
             }
@@ -605,7 +607,7 @@ fn a_publish_whose_daemon_is_taken_over_at_each_request_is_given_up() {
     let keep = MemKeep::default();
     let hook = {
         let world = world.clone();
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED {
                 world.borrow_mut().restart(Restart::TakeOver, None);
             }
@@ -650,7 +652,7 @@ fn a_report_is_made_once_in_a_process_for_each_kind() {
     let hook = {
         let (world, files) = (world.clone(), keep.0.clone());
         let (rebooted, rewound, failed) = (rebooted.clone(), rewound.clone(), failed.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED && !rebooted.replace(true) {
                 world.borrow_mut().restart(Restart::Reboot, None);
             }
@@ -773,7 +775,7 @@ fn stalling_run_stopped_at(stop: usize) -> Stalled {
     let hook = |stops: bool| {
         let (world, keep) = (world.clone(), keep.clone());
         let (points, rebooted, asked) = (points.clone(), rebooted.clone(), asked.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED {
                 if let Ok(Loaded::Present(record)) = keep.load() {
                     let stalls = record.under_way.iter().map(|p| p.stalls).max();
@@ -826,6 +828,14 @@ fn stalling_run_stopped_at(stop: usize) -> Stalled {
 /// once and by one of them at least (a report is not recorded), and
 /// given up at its eighth stall.
 ///
+/// One stop costs a stall: one from the record of the ask (`asking`,
+/// before it is sent) to the record of its answer (`asked`). The record
+/// then says asked, and the ask anew at the same place counts a stall,
+/// as for a request accepted and lost: the cost of recording the ask
+/// before it is sent (the lead's decision on L1 of #149's review;
+/// `Agent::ask`). Such a stop counts one stall more, once; any other
+/// counts none.
+///
 /// Mutant: the stalls committed with the publish left at `Asked` (a
 /// request asked anew after a stop between the count and the ask is
 /// counted twice), or the report made at each count (made more than
@@ -833,6 +843,24 @@ fn stalling_run_stopped_at(stop: usize) -> Stalled {
 #[test]
 fn a_stop_at_any_point_of_a_stalling_run_counts_each_stall_once() {
     let whole = stalling_run_stopped_at(usize::MAX).points;
+    // From after the record of the ask to before the record of its answer.
+    let between_ask_and_answer = |k: usize| {
+        let at =
+            |j: usize, effect: Effect, after: bool| whole.get(j) == Some(&Point { effect, after });
+        let mut j = k;
+        loop {
+            if at(j, Effect::Asking, true) {
+                return true;
+            }
+            let inside = at(j, Effect::Ask, false)
+                || at(j, Effect::Ask, true)
+                || at(j, Effect::Asked, false);
+            if !inside || j == 0 {
+                return false;
+            }
+            j -= 1;
+        }
+    };
     let assist = |k: usize| whole.get(k).is_some_and(|p| p.effect == Effect::Assist);
     let stops = (0..whole.len()).filter(|&k| !assist(k) || k < 2 || !assist(k - 2));
     for k in stops {
@@ -859,8 +887,14 @@ fn a_stop_at_any_point_of_a_stalling_run_counts_each_stall_once() {
             "{at}: {:?}",
             run.reports
         );
+        let more = run
+            .asked
+            .windows(2)
+            .map(|w| w[1].saturating_sub(w[0] + 1))
+            .sum::<u32>();
+        let allowed = u32::from(between_ask_and_answer(k));
         assert!(
-            run.asked.windows(2).all(|w| w[1] <= w[0] + 1),
+            more <= allowed,
             "{at}: a stall counted twice: {:?}",
             run.asked
         );
@@ -880,7 +914,7 @@ fn a_publish_that_stalls_again_after_a_reset_is_reported_again() {
     let rebooted = Rc::new(Cell::new(0));
     let hook = {
         let (world, keep, rebooted) = (world.clone(), keep.clone(), rebooted.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point != ASKED {
                 return false;
             }
@@ -924,7 +958,7 @@ fn a_step_forward_of_the_wall_clock_does_not_release_a_hold_early() {
     let stepped = Rc::new(Cell::new(false));
     let hook = {
         let (world, stepped) = (world.clone(), stepped.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED && !stepped.get() {
                 stepped.set(true);
                 let mut world = world.borrow_mut();
@@ -962,7 +996,7 @@ fn a_step_back_of_the_wall_clock_does_not_hold_back_the_syncs() {
     let keep = MemKeep::default();
     let hook = {
         let world = world.clone();
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED {
                 world.borrow_mut().agent_skew_ms = -3_600_000;
             }
@@ -992,7 +1026,7 @@ fn a_step_back_of_the_wall_clock_does_not_hold_back_the_syncs() {
 fn aged_run(
     world: &Rc<RefCell<World>>,
     age_max: Duration,
-    hook: impl FnMut(Point) -> bool + 'static,
+    hook: impl FnMut(Point, &str) -> bool + 'static,
 ) -> (FakeAgent, String) {
     let keep = MemKeep::default();
     let mut agent = agent(world, &keep)
@@ -1044,7 +1078,7 @@ fn a_publish_too_old_whose_request_the_uploader_ended_is_given_up_and_reported()
         let hook = {
             let world = world.clone();
             let rewound = Cell::new(false);
-            move |point: Point| {
+            move |point: Point, _: &str| {
                 let withdraw = Point {
                     effect: Effect::Withdraw,
                     after: false,
@@ -1081,14 +1115,17 @@ fn a_publish_too_old_whose_request_the_uploader_ended_is_given_up_and_reported()
 fn rewound_when_too_old(
     back: Back,
     stop: Option<usize>,
-) -> (Rc<RefCell<World>>, impl FnMut(Point) -> bool + 'static) {
+) -> (
+    Rc<RefCell<World>>,
+    impl FnMut(Point, &str) -> bool + 'static,
+) {
     let world = World::new(Mode::Busy);
     world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
     let hook = {
         let world = world.clone();
         let rewound = Cell::new(false);
         let after = Cell::new(0usize);
-        move |point: Point| {
+        move |point: Point, _: &str| {
             let withdraw = Point {
                 effect: Effect::Withdraw,
                 after: false,
@@ -1196,7 +1233,7 @@ fn a_publish_reported_for_its_stalls_then_ended_is_reported_for_both() {
     let hook = {
         let (world, files) = (world.clone(), keep.0.clone());
         let (rebooted, rewound) = (Cell::new(false), Cell::new(false));
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED && !rebooted.replace(true) {
                 world.borrow_mut().restart(Restart::Reboot, None);
             }
@@ -1256,7 +1293,7 @@ fn a_publish_older_than_its_bound_is_given_up_and_its_hold_released() {
     let hook = {
         let world = world.clone();
         let rebooted = Cell::new(false);
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED && !rebooted.replace(true) {
                 world.borrow_mut().restart(Restart::Reboot, None);
             }
@@ -1292,7 +1329,7 @@ fn a_publish_older_than_its_bound_is_given_up_and_its_hold_released() {
     let away = Duration::from_secs(1200);
     let hook = {
         let world = world.clone();
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point == ASKED {
                 let mut world = world.borrow_mut();
                 world.away_until = world.now_ms + 1_200_000;
@@ -1317,7 +1354,7 @@ fn a_publish_older_than_its_bound_is_given_up_and_its_hold_released() {
     let world = World::new(Mode::Busy);
     let hook = {
         let world = world.clone();
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point.effect == Effect::Intent && point.after {
                 world.borrow_mut().away_until = u64::MAX;
             }
@@ -1342,7 +1379,7 @@ fn a_publish_older_than_its_bound_is_given_up_and_its_hold_released() {
 fn a_publish_s_age_is_read_on_the_clock_that_does_not_step_in_its_process() {
     let step = |world: &Rc<RefCell<World>>| {
         let world = world.clone();
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point.effect == Effect::Intent && point.after {
                 world.borrow_mut().agent_skew_ms = 3 * 3_600_000;
             }
@@ -1379,7 +1416,7 @@ fn a_publish_s_age_is_read_on_the_clock_that_does_not_step_in_its_process() {
     let stepped = Rc::new(Cell::new(false));
     let hook = {
         let (world, stepped) = (world.clone(), stepped.clone());
-        move |_: Point| {
+        move |_: Point, _: &str| {
             if !stepped.replace(true) {
                 world.borrow_mut().agent_skew_ms = 3 * 3_600_000;
             }
@@ -1528,7 +1565,7 @@ fn asking_anew_checks_the_snapshot_and_its_hold_before_the_count() {
         let armed = Rc::new(Cell::new(true));
         let hook = {
             let armed = armed.clone();
-            move |point: Point| point == ASKED && armed.replace(false)
+            move |point: Point, _: &str| point == ASKED && armed.replace(false)
         };
         let mut agent = agent(&world, &keep).with_points(Box::new(hook));
         agent.begin().expect("begun");
@@ -1716,7 +1753,7 @@ fn a_hold_outlasts_the_deadline_of_the_last_acceptance() {
     let asked = Rc::new(Cell::new(0));
     let hook = {
         let (world, asked) = (world.clone(), asked.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point
                 == (Point {
                     effect: Effect::Asked,
@@ -1780,7 +1817,7 @@ fn a_manifest_changed_under_the_agent_stops_its_publish() {
     let keep = MemKeep::default();
     let hook = {
         let keep = keep.clone();
-        move |point: Point| {
+        move |point: Point, _: &str| {
             if point
                 == (Point {
                     effect: Effect::Taken,
@@ -1841,7 +1878,7 @@ fn a_name_a_person_took_first_is_passed_over() {
     let refused = Rc::new(Cell::new(false));
     let hook = {
         let (world, refused) = (world.clone(), refused.clone());
-        move |point: Point| {
+        move |point: Point, _: &str| {
             match point.effect {
                 Effect::Take if point.after => refused.set(true),
                 Effect::Intent if point.after && refused.get() => {
@@ -1921,7 +1958,8 @@ impl One {
 /// agent's points (true stops it), then a new agent, as after a crash,
 /// where the first stopped.
 fn one(set: impl FnOnce(&mut World), hook: impl FnMut(Point) -> bool + 'static) -> One {
-    one_with(set, |_| Box::new(hook))
+    let mut hook = hook;
+    one_with(set, |_| Box::new(move |p: Point, _: &str| hook(p)))
 }
 
 /// [`one`], the hook made with the world.
@@ -2068,7 +2106,7 @@ fn a_property_set_around_the_take_has_it_taken_again() {
             |_| {},
             move |world| {
                 let world = world.clone();
-                Box::new(move |p: Point| {
+                Box::new(move |p: Point, _: &str| {
                     if p == at(Effect::Take, after) && !set {
                         set = true;
                         world.borrow_mut().user(User::SetProperty, "");
@@ -2103,7 +2141,7 @@ fn a_take_that_cannot_be_destroyed_is_given_up_and_kept() {
         |_| {},
         move |world| {
             let world = world.clone();
-            Box::new(move |p: Point| {
+            Box::new(move |p: Point, _: &str| {
                 let mut world = world.borrow_mut();
                 if p == at(Effect::Take, true) && !set {
                     set = true;
@@ -2161,7 +2199,7 @@ fn a_crash_around_the_destroy_takes_again() {
             |_| {},
             move |world| {
                 let world = world.clone();
-                Box::new(move |p: Point| {
+                Box::new(move |p: Point, _: &str| {
                     if p == at(Effect::Take, true) && !set {
                         set = true;
                         world.borrow_mut().user(User::SetProperty, "");
@@ -2192,7 +2230,7 @@ fn a_late_take_not_whole_is_destroyed_and_taken_again() {
         |w| w.late_take = Some(0),
         move |world| {
             let world = world.clone();
-            Box::new(move |p: Point| {
+            Box::new(move |p: Point, _: &str| {
                 if p == at(Effect::Take, true) && !done {
                     done = true;
                     let t = world.borrow().programs.keys().last().cloned();
@@ -2242,7 +2280,7 @@ fn never_whole(
         processes += 1;
         let points: Points = Box::new({
             let (world, takes_ms, hook) = (world.clone(), takes_ms.clone(), hook.clone());
-            move |p: Point| {
+            move |p: Point, _: &str| {
                 if p == at(Effect::Take, false) {
                     takes_ms.borrow_mut().push(world.borrow().now_ms);
                 }
@@ -2618,7 +2656,9 @@ fn the_matrices_need_the_rule_r_of_the_daemon() {
     let off = failing_under(Rule::Off);
     assert!(off.len() >= 10, "with no rule: {off:?}");
     let previous = failing_under(Rule::Previous);
-    let expected: BTreeSet<String> = [25, 26, 27]
+    // The second ask's `ask` (after), `asked` (before) and `asked`
+    // (after); two `asking` records before them since #149's L1.
+    let expected: BTreeSet<String> = [29, 30, 31]
         .map(|k| format!("ErrLow Agent({k}, RewindF(BelowCreated))"))
         .into();
     assert_eq!(previous, expected, "under the rule as M2.6a built it");
@@ -2639,7 +2679,7 @@ fn the_sweep_leaves_the_holds_of_publishes_under_way() {
             effect: Effect::Asked,
             after: true,
         };
-        let mut first = agent(&world, &keep).with_points(Box::new(move |p| p == asked));
+        let mut first = agent(&world, &keep).with_points(Box::new(move |p, _: &str| p == asked));
         let name = first.begin().expect("begun");
         assert!(
             matches!(first.settle(LIMIT), Err(Error::Stopped)),
@@ -2650,7 +2690,7 @@ fn the_sweep_leaves_the_holds_of_publishes_under_way() {
         let hook = {
             let (world, keep, name) = (world.clone(), keep.clone(), name.clone());
             let destroyed_while = destroyed_while.clone();
-            move |_: Point| {
+            move |_: Point, _: &str| {
                 let mut world = world.borrow_mut();
                 if destroyed_while.borrow().is_some() {
                     return false;
@@ -2705,6 +2745,354 @@ fn the_sweep_leaves_the_holds_of_publishes_under_way() {
     }
 }
 
+/// The fake daemon, with `look` blind: it never sees `snap/<t>`, so a
+/// `done` is not confirmed.
+struct Blind(FakeDaemon);
+
+impl Daemon for Blind {
+    fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+        let reply = self.0.ask(request, manifest)?;
+        Ok(match request {
+            Request::Look(_) => Reply::Absent,
+            _ => reply,
+        })
+    }
+
+    fn device(&mut self) -> io::Result<u64> {
+        self.0.device()
+    }
+}
+
+/// A publish stopped for a person by a `done` that `look` did not see,
+/// in a world that the stopped agent left: its name.
+fn stopped_for_a_person(world: &Rc<RefCell<World>>, keep: &MemKeep) -> String {
+    let mut agent = Agent::new(
+        FakeZfs(world.clone()),
+        Blind(FakeDaemon(world.clone())),
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent");
+    let t = agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    assert_eq!(
+        agent.outcomes(),
+        [(t.clone(), Outcome::Stopped(DONE_NOT_SEEN.to_string()))]
+    );
+    assert_eq!(
+        agent.record().publish(&t).and_then(|p| p.person),
+        Some(Person::Stopped)
+    );
+    assert!(world.borrow().refs.contains_key(&t));
+    assert_eq!(holds(&world.borrow()).len(), 3, "the hold is kept");
+    t
+}
+
+/// S5 of #144's third look: a stop for a person outlasts a restart of
+/// the agent, which asks nothing of the daemon for it, until `recover`;
+/// retried, it is planned as the agent's own and published.
+///
+/// Mutant: the stop not recorded, the recorded stop planned again, or
+/// `recover --retry` not clearing it.
+#[test]
+fn a_stop_for_a_person_outlasts_a_restart_until_recovered() {
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let t = stopped_for_a_person(&world, &keep);
+    let mut again = agent(&world, &keep);
+    let before = world.borrow().calls.len();
+    again.settle(LIMIT).expect("settled");
+    assert_eq!(
+        again.outcomes(),
+        [(t.clone(), Outcome::Stopped(STOPPED_BEFORE.to_string()))]
+    );
+    let asked: Vec<&str> = world.borrow().calls[before..]
+        .iter()
+        .copied()
+        // The round's own reads of the pool, which are not for this
+        // publish: its count (the limits) and the sweep's read of the
+        // holds (M2.6c-2b's fake records both).
+        .filter(|c| !matches!(*c, "props" | "count" | "tagged"))
+        .collect();
+    assert!(asked.is_empty(), "{asked:?}");
+    // Settled again in the same process: stopped once.
+    again.settle(LIMIT).expect("settled");
+    assert_eq!(again.outcomes().len(), 1);
+    assert!(matches!(
+        again.recover("skz-none", Choice::Retry),
+        Err(Error::NotUnderWay(_))
+    ));
+    again.recover(&t, Choice::Retry).expect("recovered");
+    assert_eq!(again.record().publish(&t).and_then(|p| p.person), None);
+    again.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(again.outcomes().last(), Some((n, Outcome::Published(_))) if *n == t),
+        "{:?}",
+        again.outcomes()
+    );
+    assert!(again.record().under_way.is_empty());
+    assert!(holds(&world.borrow()).is_empty());
+}
+
+/// A person's give-up of a publish already made is a publish: a person
+/// cannot unmake it. Mutant: given up on the person's word alone.
+#[test]
+fn a_person_s_give_up_of_a_publish_made_publishes_it() {
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let t = stopped_for_a_person(&world, &keep);
+    let mut again = agent(&world, &keep);
+    again.recover(&t, Choice::GiveUp).expect("recovered");
+    assert_eq!(
+        again.record().publish(&t).and_then(|p| p.person),
+        Some(Person::GiveUp)
+    );
+    again.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(again.outcomes(), [(n, Outcome::Published(_))] if *n == t),
+        "{:?}",
+        again.outcomes()
+    );
+    assert!(again.record().under_way.is_empty());
+    assert!(holds(&world.borrow()).is_empty());
+}
+
+/// A person's give-up of a publish whose request pends: withdrawn,
+/// looked up, released, and given up as [`Why::Person`], with nothing
+/// published. Mutant: the hold released before the withdraw, or the
+/// give-up recorded under another reason.
+#[test]
+fn a_person_gives_up_a_publish_whose_request_pends() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let keep = MemKeep::default();
+    let mut agent0 = agent(&world, &keep).with_points(Box::new(|p: Point, _: &str| p == ASKED));
+    let t = agent0.begin().expect("begun");
+    assert!(matches!(agent0.settle(LIMIT), Err(Error::Stopped)));
+    drop(agent0);
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let hook = {
+        let order = order.clone();
+        move |p: Point, _: &str| {
+            if !p.after {
+                order.borrow_mut().push(p.effect);
+            }
+            false
+        }
+    };
+    let mut again = agent(&world, &keep).with_points(Box::new(hook));
+    again.recover(&t, Choice::GiveUp).expect("recovered");
+    again.settle(LIMIT).expect("settled");
+    assert_eq!(
+        again.outcomes(),
+        [(t.clone(), Outcome::Abandoned(Why::Person))]
+    );
+    assert_eq!(
+        again.record().abandoned.last().map(|a| a.why),
+        Some(Why::Person)
+    );
+    let order = order.borrow();
+    let at = |e: Effect| order.iter().position(|&x| x == e);
+    assert!(at(Effect::Recover) < at(Effect::Withdraw), "{order:?}");
+    assert!(at(Effect::Withdraw) < at(Effect::Release), "{order:?}");
+    assert!(at(Effect::Release) < at(Effect::Abandon), "{order:?}");
+    let world = world.borrow();
+    assert!(world.refs.is_empty());
+    assert!(holds(&world).is_empty(), "{:?}", holds(&world));
+}
+
+/// A person's give-up while the uploader is in a long step (`progress`
+/// and `withdraw` answered `refused no-answer`, as skyzfsd answers them)
+/// keeps the hold until `held_until`, though a person stands ready to
+/// destroy `pool@t` once it is let go. Where the request lands, it lands
+/// on a cut that holds every member's `@t` as the manifest has it, and
+/// the publish is published, not given up; where it does not, it has
+/// expired before the hold goes, and no `snap/t` is ever made (B1 of
+/// #149's review, its R1 and R2). Mutant: the silent answers read as a
+/// daemon that answered.
+#[test]
+fn a_person_s_give_up_keeps_the_hold_while_the_uploader_is_silent() {
+    for mode in [Mode::Busy, Mode::Idle, Mode::Abandoned] {
+        let world = World::new(mode);
+        world.borrow_mut().lag_ms = 60_000;
+        let keep = MemKeep::default();
+        let mut agent0 = agent(&world, &keep).with_points(Box::new(|p: Point, _: &str| p == ASKED));
+        let t = agent0.begin().expect("begun");
+        assert!(matches!(agent0.settle(LIMIT), Err(Error::Stopped)));
+        drop(agent0);
+        {
+            let mut world = world.borrow_mut();
+            world.silent_until = u64::MAX;
+            world.destroyer = Some(t.clone());
+        }
+        let mut again = agent(&world, &keep);
+        again.recover(&t, Choice::GiveUp).expect("recovered");
+        again.settle(LIMIT).expect("settled");
+        let published = match again.outcomes() {
+            [(n, Outcome::Published(_))] if *n == t => true,
+            [(n, Outcome::Abandoned(Why::Person))] if *n == t => false,
+            other => panic!("{mode:?}: {other:?}"),
+        };
+        // Whatever still pends at the daemon has its time to land.
+        world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+        let world = world.borrow();
+        assert!(holds(&world).is_empty(), "{mode:?}: {:?}", holds(&world));
+        let Some(r) = world.refs.get(&t) else {
+            assert!(!published, "{mode:?}: published, and no snap/{t}");
+            continue;
+        };
+        assert!(published, "{mode:?}: given up, and snap/{t} made");
+        let manifest = Manifest::decode(&r.manifest).expect("the manifest");
+        let cut = &world.commits[&r.commit].cut;
+        for m in &manifest.members {
+            let at = format!("{}@{t}", m.name);
+            assert_eq!(
+                cut.snaps.get(&at),
+                Some(&m.snapshot_guid),
+                "{mode:?}: snap/{t} names cut {} (group {}) without {at}",
+                cut.number,
+                cut.group
+            );
+        }
+    }
+}
+
+/// Each report goes to the sink before the engine acts on it, and each
+/// point is named for its publish (testing's `--trace-points`).
+/// Mutant: the sink called after the act, or not at all; a point given
+/// another publish's name, or none.
+#[test]
+fn the_sink_hears_a_report_before_the_act_and_points_name_their_publish() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let hook = {
+        let (world, log) = (world.clone(), log.clone());
+        let rewound = Cell::new(false);
+        move |point: Point, name: &str| {
+            log.borrow_mut()
+                .push(format!("{} {} {name}", point.effect.word(), point.after));
+            let withdraw = Point {
+                effect: Effect::Withdraw,
+                after: false,
+            };
+            if point == withdraw && !rewound.replace(true) {
+                world
+                    .borrow_mut()
+                    .restart(Restart::RewindF(Back::AfterHold), None);
+            }
+            false
+        }
+    };
+    let sink = {
+        let log = log.clone();
+        move |name: &str, report: &Report| {
+            log.borrow_mut().push(format!("report {report:?} {name}"))
+        }
+    };
+    let keep = MemKeep::default();
+    let mut agent = agent(&world, &keep)
+        .with_age_max(Duration::from_secs(60))
+        .with_points(Box::new(hook))
+        .with_sink(Box::new(sink));
+    let t = agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    assert_eq!(
+        agent.outcomes(),
+        [(t.clone(), Outcome::Abandoned(Why::TooOld))]
+    );
+    let log = log.borrow();
+    let at = |line: &str| log.iter().position(|l| l == line);
+    let report = format!("report Refused(Rewound) {t}");
+    assert!(at(&report).is_some(), "{log:?}");
+    assert!(at(&report) < at(&format!("release false {t}")), "{log:?}");
+    assert_eq!(log.iter().filter(|l| l.starts_with("report")).count(), 1);
+    for line in log.iter().filter(|l| !l.starts_with("report")) {
+        let want = if line.starts_with("enrol ") {
+            ""
+        } else {
+            t.as_str()
+        };
+        assert!(
+            line.ends_with(&format!(" {want}")),
+            "{line:?} is not named {want:?}"
+        );
+    }
+}
+
+/// With two publishes under way, each point of a round is named for the
+/// publish the round acts on, not for the one begun last: at the point
+/// after the snapshot program or a hold, the named publish's snapshot exists or is
+/// held. Mutant: the round leaves the name of the last publish begun.
+#[test]
+fn each_round_names_its_own_publish_at_its_points() {
+    let world = World::new(Mode::Busy);
+    let checked = Rc::new(Cell::new(0_u32));
+    let hook = {
+        let (world, checked) = (world.clone(), checked.clone());
+        move |point: Point, name: &str| {
+            let world = world.borrow();
+            let root = world.pool.as_ref().map(|p| p.datasets[0].name.clone());
+            let snap = format!("{}@{name}", root.unwrap_or_default());
+            match (point.effect, point.after) {
+                (Effect::Take, true) => {
+                    let taken = world
+                        .pool
+                        .as_ref()
+                        .is_some_and(|p| p.snaps.contains_key(&snap));
+                    assert!(taken, "take named {name:?}, but {snap} was not taken");
+                    checked.set(checked.get() + 1);
+                }
+                (Effect::Hold, true) => {
+                    assert!(
+                        holds(&world).contains(&snap),
+                        "hold named {name:?}, but {snap} is not held"
+                    );
+                    checked.set(checked.get() + 1);
+                }
+                _ => {}
+            }
+            false
+        }
+    };
+    let keep = MemKeep::default();
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    let first = agent.begin().expect("begun");
+    let second = agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    let outcomes = agent.outcomes().to_vec();
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Published(..))),
+        "{outcomes:?}"
+    );
+    assert_ne!(first, second);
+    // Both takes and both holds were checked.
+    assert_eq!(checked.get(), 4);
+}
+
+/// The rigs name an effect by its word, in any case.
+#[test]
+fn each_effect_is_named_by_a_word_of_its_own() {
+    let words: BTreeSet<&str> = Effect::ALL.iter().map(|e| e.word()).collect();
+    assert_eq!(words.len(), Effect::ALL.len());
+    for effect in Effect::ALL {
+        assert_eq!(Effect::from_word(effect.word()), Some(effect));
+        assert_eq!(
+            Effect::from_word(&effect.word().to_uppercase()),
+            Some(effect)
+        );
+    }
+    assert_eq!(Effect::from_word("stop"), Some(Effect::Stop));
+    assert_eq!(Effect::from_word("recover"), Some(Effect::Recover));
+    assert_eq!(Effect::from_word("unwind"), None);
+    assert_eq!(Effect::from_word(""), None);
+}
+
 /// A person releases the agent's hold on `pool/db@t` once it is held:
 /// the hold left on the root alone is no hold to go on with. The publish
 /// is not asked, `hold -r` refuses until it is too old, and it is then
@@ -2724,7 +3112,7 @@ fn a_hold_a_person_partly_released_is_given_up_and_released() {
         };
         let hook = {
             let (world, name) = (world.clone(), name.clone());
-            move |p: Point| {
+            move |p: Point, _: &str| {
                 if p == held {
                     world.borrow_mut().user(User::ReleaseChild, &name.borrow());
                 }
@@ -2774,6 +3162,7 @@ struct StopRun {
     holds: u32,
     asks: u32,
     releases: u32,
+    looks: u32,
     /// The world's time from the stop to the end of the settle.
     after_stop_ms: u64,
     held_at_end: Vec<String>,
@@ -2788,7 +3177,7 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
     let world = World::new(Mode::Busy);
     world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
     let stopped_at = Rc::new(Cell::new(None::<u64>));
-    let counts = Rc::new(Cell::new((0_u32, 0_u32, 0_u32)));
+    let counts = Rc::new(Cell::new((0_u32, 0_u32, 0_u32, 0_u32)));
     if at.is_none() {
         let mut w = world.borrow_mut();
         w.stop_uploader();
@@ -2797,15 +3186,16 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
     let hook = {
         let (world, stopped_at, counts) = (world.clone(), stopped_at.clone(), counts.clone());
         let reached = Cell::new(0_u32);
-        move |point: Point| {
-            let (mut holds, mut asks, mut releases) = counts.get();
+        move |point: Point, _: &str| {
+            let (mut holds, mut asks, mut releases, mut looks) = counts.get();
             match (point.effect, point.after) {
                 (Effect::Hold, true) => holds += 1,
                 (Effect::Ask, true) => asks += 1,
                 (Effect::Release, true) => releases += 1,
+                (Effect::Look, true) => looks += 1,
                 _ => {}
             }
-            counts.set((holds, asks, releases));
+            counts.set((holds, asks, releases, looks));
             if let Some((p, nth)) = at {
                 if point == p {
                     reached.set(reached.get() + 1);
@@ -2825,7 +3215,7 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
         .map(|_| agent.begin().expect("begun"))
         .collect::<Vec<_>>();
     agent.settle(LIMIT).expect("settled");
-    let (hold_count, asks, releases) = counts.get();
+    let (hold_count, asks, releases, looks) = counts.get();
     let world = world.borrow();
     let stopped = stopped_at.get().expect("the uploader stopped");
     StopRun {
@@ -2835,15 +3225,18 @@ fn with_the_uploader_stopped(at: Option<(Point, u32)>, publishes: usize) -> Stop
         holds: hold_count,
         asks,
         releases,
+        looks,
         after_stop_ms: world.now_ms - stopped,
         held_at_end: holds(&world),
     }
 }
 
 /// Each publish is given up as `stopped` soon after the stop, reported
-/// once, its hold released, and no more holds, asks or releases than
-/// `per` (holds, asks, releases) for each.
-fn given_up_at_the_stop(run: &StopRun, per: (u32, u32, u32)) {
+/// once, its hold released, and no more holds, asks, releases or looks
+/// than `per` (holds, asks, releases, looks) for each: a look's sight
+/// kept across the release, not looked for again (TG14 of #146's
+/// review).
+fn given_up_at_the_stop(run: &StopRun, per: (u32, u32, u32, u32)) {
     let n = u32::try_from(run.names.len()).expect("a few");
     for t in &run.names {
         assert!(
@@ -2862,9 +3255,9 @@ fn given_up_at_the_stop(run: &StopRun, per: (u32, u32, u32)) {
     assert_eq!(run.outcomes.len(), run.names.len(), "{run:?}");
     assert_eq!(run.reports.len(), run.names.len(), "{run:?}");
     assert_eq!(
-        (run.holds, run.asks, run.releases),
-        (per.0 * n, per.1 * n, per.2 * n),
-        "holds, asks and releases: {run:?}"
+        (run.holds, run.asks, run.releases, run.looks),
+        (per.0 * n, per.1 * n, per.2 * n, per.3 * n),
+        "holds, asks, releases and looks: {run:?}"
     );
     assert!(run.held_at_end.is_empty(), "{run:?}");
     // A round or two of ticks, not until the publish is too old.
@@ -2898,11 +3291,11 @@ fn a_stopped_uploader_gives_each_publish_up_at_once() {
         1,
     );
     // Asked: the stop ends the request that pends.
-    given_up_at_the_stop(&with_the_uploader_stopped(Some(asked), 1), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(asked), 1), (1, 1, 1, 1));
     // Held and not asked: the ask is refused.
-    given_up_at_the_stop(&with_the_uploader_stopped(Some(held), 1), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(held), 1), (1, 1, 1, 1));
     // Begun after the stop.
-    given_up_at_the_stop(&with_the_uploader_stopped(None, 1), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(None, 1), (1, 1, 1, 1));
     // Two publishes asked, ended by one stop: each is reported.
     let second = (
         Point {
@@ -2911,9 +3304,9 @@ fn a_stopped_uploader_gives_each_publish_up_at_once() {
         },
         2,
     );
-    given_up_at_the_stop(&with_the_uploader_stopped(Some(second), 2), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(Some(second), 2), (1, 1, 1, 1));
     // Two begun after it.
-    given_up_at_the_stop(&with_the_uploader_stopped(None, 2), (1, 1, 1));
+    given_up_at_the_stop(&with_the_uploader_stopped(None, 2), (1, 1, 1, 1));
 }
 
 /// N8's other case: a publish whose request expired before the stop is
@@ -2929,5 +3322,703 @@ fn a_publish_asked_anew_after_the_uploader_stopped_is_given_up() {
         1,
     );
     let run = with_the_uploader_stopped(Some(anew), 1);
-    given_up_at_the_stop(&run, (1, 2, 1));
+    given_up_at_the_stop(&run, (1, 2, 1, 2));
+}
+
+/// S13 of #146's next look: a daemon that refuses every `publish` with
+/// an answer skyzfsd gives a request only once (`rewound`, `state`,
+/// `attachment`, `asked`) cannot drive the rounds with no tick between:
+/// a publish is asked at most once at an instant, so at most once a
+/// tick, and the settle ends. Mutant: the guard removed (the world's
+/// clock stands still while the agent asks, and the fake stops it).
+#[test]
+fn a_daemon_that_refuses_every_ask_is_asked_at_most_once_a_tick() {
+    use skyzfs_control::Code;
+    for code in [Code::Rewound, Code::State, Code::Attachment, Code::Asked] {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().refuse_every_publish = Some(code);
+        let asks = Rc::new(Cell::new(0_u32));
+        let hook = {
+            let asks = asks.clone();
+            move |point: Point, _: &str| {
+                if point.effect == Effect::Ask && point.after {
+                    asks.set(asks.get() + 1);
+                }
+                false
+            }
+        };
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+        agent.begin().expect("begun");
+        let _ = agent.settle(LIMIT);
+        let took_ms = world.borrow().now_ms - fake::EPOCH_MS;
+        let asked = u64::from(asks.get());
+        assert!(asked >= 2, "{code:?}: asked anew: {asked}");
+        assert!(
+            asked <= took_ms / 1000 + 1,
+            "{code:?}: {asked} asks in {took_ms} ms"
+        );
+    }
+}
+
+/// An agent given a mistyped `--dir` finds no marker and no record
+/// there, and releases none of the holds of the publishes under way in
+/// the right one: neither its sweep nor a publish asked there, which
+/// writes nothing in it (L4 of #149's review). Where the marker is
+/// there with no record (a crash between the two, or the record
+/// removed), the sweep releases as before. Mutants: the sweep without
+/// the marker's check; the check after the first release; `begin`
+/// writing before it sweeps.
+#[test]
+fn an_agent_given_a_mistyped_directory_releases_no_hold() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let right = MemKeep::default();
+    let mut first = agent(&world, &right);
+    let t = first.begin().expect("begun");
+    assert!(first.settle(Duration::from_secs(60)).is_err());
+    drop(first);
+    let held = holds(&world.borrow());
+    assert!(!held.is_empty(), "no hold to keep");
+    assert!(right.0.borrow().marked);
+
+    let mistyped = MemKeep::default();
+    let mut wrong = agent(&world, &mistyped);
+    match wrong.settle(LIMIT) {
+        Err(Error::Unmarked(names)) => assert_eq!(names, vec![t.clone()]),
+        other => panic!("settled in a mistyped directory: {other:?}"),
+    }
+    assert_eq!(holds(&world.borrow()), held);
+    let mut wrong = agent(&world, &mistyped);
+    match wrong.begin() {
+        Err(Error::Unmarked(names)) => assert_eq!(names, vec![t.clone()]),
+        other => panic!("begun in a mistyped directory: {other:?}"),
+    }
+    assert_eq!(holds(&world.borrow()), held);
+    {
+        let files = mistyped.0.borrow();
+        assert!(files.record.is_none() && !files.marked && files.manifests.is_empty());
+    }
+    let shown = Error::Unmarked(vec![t.clone()]).to_string();
+    assert!(
+        shown.contains("no agent's marker (`agent`)") && shown.contains(&t),
+        "{shown}"
+    );
+
+    // The marker with no record: the directory is the agent's.
+    mistyped.0.borrow_mut().marked = true;
+    let mut marked = agent(&world, &mistyped);
+    marked.settle(LIMIT).expect("settled");
+    assert!(
+        holds(&world.borrow()).is_empty(),
+        "{:?}",
+        holds(&world.borrow())
+    );
+}
+
+/// The record says a publish is asked, and is saved, before `publish` is
+/// sent (the lead's decision on L1 of #149's review), so that a publish
+/// recorded held has no request out. A crash between the save and the
+/// send leaves it asked with nothing asked of the daemon; a person's
+/// give-up then withdraws, looks and releases, and nothing is
+/// published. A refusal that says nothing pends records it held again;
+/// one that does not (`asked`, `ended`, `no-answer`) leaves it asked.
+/// Mutants: the save after the send; held again on every refusal; never
+/// held again; the asking `held_until` without the channel's wait.
+#[test]
+fn the_record_says_asked_before_the_request_is_sent() {
+    // The crash between the save and the send.
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let stop = |point: Point, _: &str| point.effect == Effect::Ask && !point.after;
+    let mut first = agent(&world, &keep).with_points(Box::new(stop));
+    let t = first.begin().expect("begun");
+    assert!(matches!(first.settle(LIMIT), Err(Error::Stopped)));
+    drop(first);
+    let saved = match keep.load().expect("loaded") {
+        Loaded::Present(record) => record,
+        other => panic!("{other:?}"),
+    };
+    let publish = saved.publish(&t).expect("under way");
+    assert!(
+        matches!(publish.phase, Phase::Asked { .. }),
+        "{:?}",
+        publish.phase
+    );
+    assert!(!world.borrow().daemon.asked(), "a request was sent");
+    let mut after = agent(&world, &keep);
+    after.recover(&t, Choice::GiveUp).expect("recovered");
+    after.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(after.outcomes(), [(n, Outcome::Abandoned(Why::Person))] if *n == t),
+        "{:?}",
+        after.outcomes()
+    );
+    assert!(world.borrow().refs.is_empty());
+    assert!(
+        holds(&world.borrow()).is_empty(),
+        "{:?}",
+        holds(&world.borrow())
+    );
+
+    // The crash after the send, the request accepted and its answer not
+    // recorded: still asked, with `held_until` past the request's expiry
+    // (the send plus the channel's wait); a person's give-up withdraws it.
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    let keep = MemKeep::default();
+    let sent = Rc::new(Cell::new(0_u64));
+    let stop = {
+        let (world, sent) = (world.clone(), sent.clone());
+        move |point: Point, _: &str| {
+            if point.effect == Effect::Ask && !point.after {
+                sent.set(world.borrow().now_ms);
+            }
+            point.effect == Effect::Ask && point.after
+        }
+    };
+    let mut first = agent(&world, &keep).with_points(Box::new(stop));
+    let t = first.begin().expect("begun");
+    assert!(matches!(first.settle(LIMIT), Err(Error::Stopped)));
+    drop(first);
+    assert!(world.borrow().daemon.asked(), "no request was sent");
+    let saved = match keep.load().expect("loaded") {
+        Loaded::Present(record) => record,
+        other => panic!("{other:?}"),
+    };
+    match saved.publish(&t).map(|p| &p.phase) {
+        Some(Phase::Asked { held_until_ms, .. }) => {
+            // The channel's wait counts too: the request may be taken as
+            // late as `ASK_LIMIT` after the send (T-b of the next look at
+            // #149; mutant: the asking `held_until` without it).
+            let wait = u64::try_from(skyzfs_control::ASK_LIMIT.as_millis()).expect("ms");
+            let least = plan::held_until(sent.get() + wait, EXPIRY_DEFAULT);
+            assert!(*held_until_ms >= least, "{held_until_ms} < {least}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut after = agent(&world, &keep);
+    after.recover(&t, Choice::GiveUp).expect("recovered");
+    after.settle(LIMIT).expect("settled");
+    assert!(
+        matches!(after.outcomes(), [(n, Outcome::Abandoned(Why::Person))] if *n == t),
+        "{:?}",
+        after.outcomes()
+    );
+    assert!(world.borrow().refs.is_empty());
+    assert!(
+        holds(&world.borrow()).is_empty(),
+        "{:?}",
+        holds(&world.borrow())
+    );
+
+    // What each refusal leaves recorded, seen right after the answer.
+    use skyzfs_control::Code;
+    for (code, pends) in [
+        (Code::Attachment, false),
+        (Code::State, false),
+        (Code::Rewound, false),
+        (Code::Busy, false),
+        (Code::Taken, false),
+        (Code::Stopped, false),
+        (Code::NoUpload, false),
+        (Code::Asked, true),
+        (Code::Ended, true),
+        (Code::NoAnswer, true),
+    ] {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().refuse_every_publish = Some(code);
+        let keep = MemKeep::default();
+        // Stopped at the first point after the answer is handled.
+        let hook = {
+            let mut answered = false;
+            move |point: Point, _: &str| {
+                if answered && point.effect != Effect::Unasked {
+                    return true;
+                }
+                answered |= point.effect == Effect::Ask && point.after;
+                false
+            }
+        };
+        let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+        let t = agent.begin().expect("begun");
+        let _ = agent.settle(LIMIT);
+        let phase = match keep.load().expect("loaded") {
+            Loaded::Present(record) => record.publish(&t).map(|p| p.phase.clone()),
+            other => panic!("{code:?}: {other:?}"),
+        };
+        let asked = matches!(phase, Some(Phase::Asked { .. }));
+        assert_eq!(asked, pends, "{code:?}: {phase:?}");
+    }
+}
+
+/// A daemon that accepts the first `publish` and loses its answer (an
+/// `Err`, or `refused no-answer`); as it loses it, it goes away for
+/// `away_s`, and the agent's wall clock steps by `skew_ms`. Taken from
+/// the review of #149 (N5, its scratch daemon `LostAnswer`).
+struct LostAnswer {
+    world: Rc<RefCell<World>>,
+    lost: bool,
+    no_answer: bool,
+    away_s: u64,
+    skew_ms: i64,
+}
+
+impl Daemon for LostAnswer {
+    fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+        let answer = FakeDaemon(self.world.clone()).ask(request, manifest);
+        if matches!(request, Request::Publish(_)) && !self.lost {
+            self.lost = true;
+            let mut w = self.world.borrow_mut();
+            w.away_until = w.now_ms + self.away_s * 1000;
+            w.agent_skew_ms = self.skew_ms;
+            w.log
+                .push(format!("publish answered {answer:?}; the answer is lost"));
+            return if self.no_answer {
+                Ok(Reply::Refused(Code::NoAnswer, String::new()))
+            } else {
+                Err(io::Error::new(io::ErrorKind::ConnectionReset, "lost"))
+            };
+        }
+        answer
+    }
+
+    fn device(&mut self) -> io::Result<u64> {
+        FakeDaemon(self.world.clone()).device()
+    }
+}
+
+/// An ask sent in this process whose answer is lost (`Err` or
+/// `no-answer`) keeps its hold until `held_until` on the clock that does
+/// not step, as an accepted one does, whether the agent goes on alone or
+/// a person gives the publish up in the same process: with the daemon
+/// away for 900 s, with no step of the wall clock and with a step
+/// forward of two hours, `snap/t` is never made on a cut without
+/// `pool@t` (a person destroys it as soon as it is not held), and no
+/// hold is left at the end. N5 and T-a of the next look at #149.
+/// Mutants: the hold timed on the wall clock until an `accepted` is
+/// read (N5); an ask with no answer at all recorded held again (L1j).
+#[test]
+fn an_ask_whose_answer_is_lost_keeps_its_hold_on_the_clock_that_does_not_step() {
+    let mut wrong = Vec::new();
+    for mode in [Mode::Idle, Mode::Abandoned, Mode::Busy] {
+        for no_answer in [false, true] {
+            for give_up in [false, true] {
+                for skew_ms in [0_i64, 2 * 3_600_000] {
+                    let world = World::new(mode);
+                    let keep = MemKeep::default();
+                    let daemon = LostAnswer {
+                        world: world.clone(),
+                        lost: false,
+                        no_answer,
+                        away_s: 900,
+                        skew_ms,
+                    };
+                    let mut a = Agent::new(
+                        FakeZfs(world.clone()),
+                        daemon,
+                        keep.clone(),
+                        FakeClock(world.clone()),
+                        VOLUME,
+                        POOL,
+                    )
+                    .expect("the agent");
+                    let t = a.begin().expect("begun");
+                    world.borrow_mut().destroyer = Some(t.clone());
+                    if give_up {
+                        // The answer is lost in the first rounds; then the
+                        // person gives up.
+                        let _ = a.settle(Duration::from_secs(5));
+                        a.recover(&t, Choice::GiveUp).expect("recovered");
+                    }
+                    let settled = a.settle(LIMIT);
+                    let outcomes = a.outcomes().to_vec();
+                    drop(a);
+                    // Whatever still pends at the daemon has its time to
+                    // land.
+                    world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+                    let w = world.borrow();
+                    let case = format!(
+                        "{mode:?} no_answer={no_answer} give_up={give_up} skew={skew_ms}: \
+                         settled {settled:?}, outcomes {outcomes:?}, snap/t on {:?}",
+                        w.refs.get(&t).map(|r| r.number)
+                    );
+                    if w.refs.get(&t).is_some_and(|r| {
+                        !w.commits[&r.commit]
+                            .cut
+                            .snaps
+                            .contains_key(&format!("{POOL}@{t}"))
+                    }) {
+                        wrong.push(format!("{case}: made on a cut without {POOL}@{t}"));
+                    }
+                    if !holds(&w).is_empty() {
+                        wrong.push(format!("{case}: holds left {:?}", holds(&w)));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A daemon that loses the answer to its `n`-th `publish` (an `Err`, or
+/// `refused no-answer`); the request itself is the fake's, accepted.
+struct LoseNth {
+    world: Rc<RefCell<World>>,
+    n: usize,
+    seen: usize,
+    no_answer: bool,
+    lost: Rc<Cell<bool>>,
+}
+
+impl Daemon for LoseNth {
+    fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+        let answer = FakeDaemon(self.world.clone()).ask(request, manifest);
+        if matches!(request, Request::Publish(_)) {
+            self.seen += 1;
+            if self.seen == self.n {
+                self.lost.set(true);
+                self.world.borrow_mut().log.push(format!(
+                    "publish {} answered {answer:?}; the answer is lost",
+                    self.n
+                ));
+                return if self.no_answer {
+                    Ok(Reply::Refused(Code::NoAnswer, String::new()))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::ConnectionReset, "lost"))
+                };
+            }
+        }
+        answer
+    }
+
+    fn device(&mut self) -> io::Result<u64> {
+        FakeDaemon(self.world.clone()).device()
+    }
+}
+
+/// Whether the daemon has a request of `t` pending now, asked behind
+/// the agent's back (the daemon's absence and silence set aside, and the
+/// call not counted): the time, where it has.
+fn pending_now(world: &Rc<RefCell<World>>, t: &str) -> Option<u64> {
+    let (now, away, silent) = {
+        let mut w = world.borrow_mut();
+        let saved = (w.now_ms, w.away_until, w.silent_until);
+        w.away_until = 0;
+        w.silent_until = 0;
+        saved
+    };
+    let reply = FakeDaemon(world.clone()).ask(&Request::Progress(t.to_string()), &[]);
+    let mut w = world.borrow_mut();
+    w.away_until = away;
+    w.silent_until = silent;
+    w.calls.pop();
+    matches!(reply, Ok(Reply::Pending)).then_some(now)
+}
+
+/// One run of N6: the first request accepted; where `moved`, the pool
+/// exported and imported (`-T`, one group back, after the hold) while it
+/// pends, so that the agent withdraws it (the answer `withdrawn` sets
+/// `memory.withdrawn`) and asks anew; the answer to that ask (or, without
+/// `moved`, to the first) lost; then a person's give-up in the same
+/// process, and a person who destroys `pool@t` as soon as it is not
+/// held. Whether a hold was released while a request pended at the
+/// daemon, whether `snap/t` was made on a cut without `pool@t`, and
+/// whether the course ran as above: the answer lost, where `moved` a
+/// withdraw asked and two publishes sent, and no hold left at the end.
+fn n6_run(mode: Mode, no_answer: bool, moved: bool) -> (bool, bool, bool, String) {
+    let world = World::new(mode);
+    world.borrow_mut().lag_ms = 60_000;
+    let keep = MemKeep::default();
+    let lost = Rc::new(Cell::new(false));
+    let daemon = LoseNth {
+        world: world.clone(),
+        n: if moved { 2 } else { 1 },
+        seen: 0,
+        no_answer,
+        lost: lost.clone(),
+    };
+    let name: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let early: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let hook = {
+        let (world, name, early) = (world.clone(), name.clone(), early.clone());
+        let mut rewound = false;
+        move |p: Point, _: &str| {
+            if moved
+                && !rewound
+                && p == (Point {
+                    effect: Effect::Asked,
+                    after: true,
+                })
+            {
+                rewound = true;
+                let t = name.borrow().clone();
+                world
+                    .borrow_mut()
+                    .restart(Restart::RewindT(Back::AfterHold), Some(&t));
+            }
+            if p.effect == Effect::Release && !p.after {
+                let t = name.borrow().clone();
+                if let Some(now) = pending_now(&world, &t) {
+                    early.borrow_mut().push(now);
+                }
+            }
+            false
+        }
+    };
+    let mut a = Agent::new(
+        FakeZfs(world.clone()),
+        daemon,
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent")
+    .with_points(Box::new(hook));
+    let t = a.begin().expect("begun");
+    name.borrow_mut().clone_from(&t);
+    world.borrow_mut().destroyer = Some(t.clone());
+    let mut rounds = 0;
+    while !lost.get() && rounds < 900 {
+        let _ = a.settle(Duration::from_secs(1));
+        rounds += 1;
+    }
+    let lost_at = rounds;
+    a.recover(&t, Choice::GiveUp).expect("recovered");
+    let settled = a.settle(LIMIT);
+    let outcomes = a.outcomes().to_vec();
+    drop(a);
+    world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+    let w = world.borrow();
+    let wrong = w.refs.get(&t).is_some_and(|r| {
+        !w.commits[&r.commit]
+            .cut
+            .snaps
+            .contains_key(&format!("{POOL}@{t}"))
+    });
+    let early = !early.borrow().is_empty();
+    let count = |call: &str| w.calls.iter().filter(|c| **c == call).count();
+    let (publishes, withdraws) = (count("publish"), count("withdraw"));
+    let course =
+        lost.get() && holds(&w).is_empty() && (!moved || (withdraws >= 1 && publishes >= 2));
+    let line = format!(
+        "{mode:?} no_answer={no_answer} moved={moved}: publishes {publishes}, withdraws {withdraws}; lost {} after {lost_at} s; settled {settled:?}; outcomes {:?}; released while pending {early}; snap/t on {:?}; wrong {wrong}; holds {:?}\n  log tail {:?}",
+        lost.get(),
+        outcomes.iter().map(|(n, o)| format!("{n} {o:?}")).collect::<Vec<_>>(),
+        w.refs.get(&t).map(|r| r.number),
+        holds(&w),
+        w.log.iter().rev().take(10).collect::<Vec<_>>()
+    );
+    (early, wrong, course, line)
+}
+
+/// A withdraw answered for one request does not count for the next
+/// (N6 of #149's third look; the reviewer's scratch test, taken): the
+/// first request accepted and pending; where `moved`, the pool imported
+/// back one group while it pends, so that the agent withdraws it (the
+/// answer `withdrawn`) and asks anew; the answer to that ask (or, without
+/// `moved`, to the first) lost; then a person's give-up in the same
+/// process, and a person who destroys `pool@t` as soon as it is not held.
+/// No hold is released while a request pends at the daemon, and `snap/t`
+/// is never made on a cut without `pool@t`; each row checks that its
+/// course ran (T1 of #149's next look). Mutant: `withdrawn` not cleared
+/// at the asking commit (4 of the 4 `moved` rows fail).
+#[test]
+fn a_withdraw_answered_does_not_count_for_the_request_asked_anew() {
+    let mut found = Vec::new();
+    for mode in [Mode::Idle, Mode::Busy] {
+        for no_answer in [false, true] {
+            for moved in [false, true] {
+                let (early, wrong, course, line) = n6_run(mode, no_answer, moved);
+                if early || wrong || !course {
+                    found.push(line);
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+/// One run of C1: the agent's first `asking` record takes `slow_s` to
+/// save (the clock moves on as it is saved); the first request sent is
+/// accepted and its answer lost (an `Err`, or `refused no-answer`), and
+/// the daemon goes away for 900 s; where `stuck`, no upload ever ends,
+/// so that a request accepted pends until it expires; where `give_up`, a
+/// person gives the
+/// publish up in the same process; a person destroys `pool@t` as soon as
+/// it is not held. Whether a hold was released while a request pended,
+/// whether `snap/t` was made on a cut without `pool@t`, how many
+/// `asking` records were saved and how many requests sent.
+fn c1_run(mode: Mode, no_answer: bool, give_up: bool, stuck: bool, slow_s: u64) -> C1Run {
+    let world = World::new(mode);
+    if stuck {
+        world.borrow_mut().lag_ms = 365 * 24 * 3_600_000;
+    }
+    let keep = MemKeep::default();
+    let daemon = LostAnswer {
+        world: world.clone(),
+        lost: false,
+        no_answer,
+        away_s: 900,
+        skew_ms: 0,
+    };
+    let name: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let early: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let askings = Rc::new(Cell::new(0_u32));
+    let span = Rc::new(Cell::new(0_u64));
+    let hook = {
+        let (world, name, early, askings, span, saved) = (
+            world.clone(),
+            name.clone(),
+            early.clone(),
+            askings.clone(),
+            span.clone(),
+            keep.clone(),
+        );
+        move |p: Point, _: &str| {
+            if p == (Point {
+                effect: Effect::Asking,
+                after: true,
+            }) {
+                askings.set(askings.get() + 1);
+                if askings.get() == 1 {
+                    let t = name.borrow().clone();
+                    if let Ok(Loaded::Present(record)) = saved.load() {
+                        if let Some(Phase::Asked {
+                            asked_ms,
+                            held_until_ms,
+                            ..
+                        }) = record.publish(&t).map(|p| &p.phase)
+                        {
+                            span.set(held_until_ms.saturating_sub(*asked_ms));
+                        }
+                    }
+                    world.borrow_mut().advance(Duration::from_secs(slow_s));
+                }
+            }
+            if p.effect == Effect::Release && !p.after {
+                let t = name.borrow().clone();
+                if let Some(now) = pending_now(&world, &t) {
+                    early.borrow_mut().push(now);
+                }
+            }
+            false
+        }
+    };
+    let mut a = Agent::new(
+        FakeZfs(world.clone()),
+        daemon,
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent")
+    .with_points(Box::new(hook));
+    let t = a.begin().expect("begun");
+    name.borrow_mut().clone_from(&t);
+    world.borrow_mut().destroyer = Some(t.clone());
+    if give_up {
+        let _ = a.settle(Duration::from_secs(5));
+        a.recover(&t, Choice::GiveUp).expect("recovered");
+    }
+    let settled = a.settle(LIMIT);
+    let outcomes = a.outcomes().to_vec();
+    drop(a);
+    world.borrow_mut().advance(Duration::from_secs(2 * 3600));
+    let w = world.borrow();
+    let wrong = w.refs.get(&t).is_some_and(|r| {
+        !w.commits[&r.commit]
+            .cut
+            .snaps
+            .contains_key(&format!("{POOL}@{t}"))
+    });
+    let sent = w.calls.iter().filter(|c| **c == "publish").count();
+    let early = !early.borrow().is_empty();
+    C1Run {
+        early,
+        wrong,
+        span_ms: span.get(),
+        askings: askings.get(),
+        sent,
+        holds: holds(&w).len(),
+        line: format!(
+            "{mode:?} no_answer={no_answer} give_up={give_up} stuck={stuck} slow={slow_s} s: settled {settled:?}; outcomes {:?}; held for {} ms from asked; askings {}; sent {sent}; released while pending {early}; snap/t on {:?}; wrong {wrong}; holds {:?}",
+            outcomes.iter().map(|(n, o)| format!("{n} {o:?}")).collect::<Vec<_>>(),
+            span.get(),
+            askings.get(),
+            w.refs.get(&t).map(|r| r.number),
+            holds(&w),
+        ),
+    }
+}
+
+/// What [`c1_run`] saw.
+struct C1Run {
+    early: bool,
+    wrong: bool,
+    /// The first `asking` record's `held_until` less its `asked`.
+    span_ms: u64,
+    askings: u32,
+    sent: usize,
+    holds: usize,
+    line: String,
+}
+
+/// A request is sent within [`plan::ASKING_SLACK`] of the time its
+/// `asking` record counts from, or not at all (C1 of #149's next look;
+/// Codex's P2 there; the reviewer's probe, taken): with the save of the
+/// first `asking` record taking from 0 to 200 s, the answer to the first
+/// request sent lost and the daemon away for 900 s, with uploads that
+/// end or never do, alone or with a person's give-up, no hold is released while a request pends, `snap/t`
+/// is never made on a cut without `pool@t`, and no hold is left. The
+/// `asking` record holds for the slack, the channel's wait, the expiry
+/// and the margin from its `asked`. A save within the slack sends its
+/// request; a longer one sends none, and the publish is asked anew, or,
+/// where a person gives it up first, never sent. Mutants: no check
+/// before the send (the rows past 80 s with uploads that never end
+/// release the hold early; 80 s is the fake's threshold, since it
+/// accepts at the send and so cannot show the slack's own share); the
+/// slack not counted in the record's `held_until` (the record's span).
+#[test]
+fn a_request_is_sent_within_the_slack_of_its_record_or_not_at_all() {
+    let slack = plan::ASKING_SLACK.as_secs();
+    let span = [
+        plan::ASKING_SLACK,
+        skyzfs_control::ASK_LIMIT,
+        EXPIRY_DEFAULT,
+        plan::HOLD_MARGIN,
+    ]
+    .iter()
+    .map(|d| u64::try_from(d.as_millis()).expect("ms"))
+    .sum::<u64>();
+    let mut found = Vec::new();
+    for slow_s in [0, slack, slack + 1, 41, 81, 200] {
+        for mode in [Mode::Idle, Mode::Abandoned, Mode::Busy] {
+            for no_answer in [false, true] {
+                for (give_up, stuck) in [(false, false), (false, true), (true, false), (true, true)]
+                {
+                    let run = c1_run(mode, no_answer, give_up, stuck, slow_s);
+                    let mut bad = run.early || run.wrong || run.holds > 0;
+                    bad |= run.span_ms != span;
+                    // The course: within the slack, a request sent (and its
+                    // answer lost); past it, the first record not sent, and
+                    // one sent from a record after it unless the person
+                    // gave the publish up first.
+                    if slow_s <= slack {
+                        bad |= run.sent == 0;
+                    } else if give_up {
+                        bad |= run.sent != 0;
+                    } else {
+                        bad |= run.sent == 0 || run.sent + 1 > run.askings as usize;
+                    }
+                    if bad {
+                        found.push(run.line);
+                    }
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
 }

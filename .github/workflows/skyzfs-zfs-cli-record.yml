@@ -17,7 +17,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       scale:
-        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with, beside each take, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs; no count's step starts after 80 minutes in all, and steps that are not counts' commands can run some minutes past them. Empty: none"
+        description: "counts of file systems, space-separated (e.g. '1000 10000'), at most three, each at most 100000: the snapshot program, the holds, destroy -r and zfs snapshot -r on a pool with that many, timed, with, beside each take, an O_DSYNC writer's longest stall, a writer of new data past the dirty data limit, and the pool's transaction groups and timed zpool sync runs (the same beside the full members read at 1000); no count's step starts after 80 minutes in all, and steps that are not counts' commands can run some minutes past them. Empty: none"
         default: ""
       scale_lua_max:
         description: "the largest scale count at which the snapshot program runs (above it, zfs snapshot -r takes @t). Empty: every count"
@@ -109,9 +109,22 @@ jobs:
           esac
           git fetch --quiet --depth=1 origin "$LUA_REF"
           mkdir -p lua
-          for f in snapshot members tagged; do
+          for f in members tagged; do
             git show "FETCH_HEAD:crates/skyzfs-agent/src/zfs/cli/$f.lua" > "lua/$f.lua"
           done
+          # The snapshot program only where the adapter still has it: the
+          # take is `zfs snapshot -r` alone since M2.6c-2b, and the
+          # recorder then leaves out the records that run the program.
+          s=crates/skyzfs-agent/src/zfs/cli/snapshot.lua
+          if git cat-file -e "FETCH_HEAD:$s" 2> /dev/null; then
+            git show "FETCH_HEAD:$s" > lua/snapshot.lua
+          else
+            echo "No snapshot.lua at $LUA_REF: the snapshot program's records are not made." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # As the recorder's has_full: the full mode is #153's.
+          if ! grep -q '"full"' lua/members.lua; then
+            echo "members.lua at $LUA_REF has no full mode: the members-full records are not made." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Record
         run: |
           case $ZCR_SCALE in

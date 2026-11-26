@@ -36,6 +36,7 @@ pub(super) fn publish(name: &str, phase: Phase, held: bool) -> Publish {
         attempts: 2,
         stalls: 1,
         begun_ms: 1_700_000_000_000,
+        person: None,
     }
 }
 
@@ -108,6 +109,7 @@ fn a_record_reads_back_as_written() {
         Why::NoProgress,
         Why::TooOld,
         Why::Stopped,
+        Why::Person,
         Why::NotWhole,
     ] {
         record.abandoned.push(Abandoned {
@@ -276,6 +278,33 @@ fn a_saved_record_loads_and_none_is_absent() {
     assert!(matches!(store.load(), Ok(Loaded::Present(_))));
 }
 
+/// The marker's bytes are pinned, are written by the first save and
+/// again by a save that finds them missing or other, and nothing else
+/// counts as the marker (L4 of #149's review). Mutants: no marker
+/// written; written only where the file is absent; any file of the name
+/// read as the marker.
+#[test]
+fn the_first_save_writes_the_agent_s_marker() {
+    assert_eq!(marker_bytes(), *b"SZAD\x01\x00");
+    let (_root, store) = store();
+    let marker = store.dir().join(MARKER);
+    assert!(!store.marked().expect("read"));
+    assert!(!marker.exists());
+    store.save(&full()).expect("saved");
+    assert!(store.marked().expect("read"));
+    assert_eq!(std::fs::read(&marker).expect("read"), marker_bytes());
+    std::fs::remove_file(&marker).expect("removed");
+    assert!(!store.marked().expect("read"));
+    store.save(&full()).expect("saved");
+    assert!(store.marked().expect("read"));
+    for other in [&b"SZAD\x02\x00"[..], b"SZAD", b"", b"SZAG\x01\x00"] {
+        std::fs::write(&marker, other).expect("written");
+        assert!(!store.marked().expect("read"), "{other:?}");
+        store.save(&full()).expect("saved");
+        assert_eq!(std::fs::read(&marker).expect("read"), marker_bytes());
+    }
+}
+
 /// A corrupt record is reported and kept: neither a save nor a load
 /// writes over it. Mutant: save writes over whatever is there.
 #[test]
@@ -361,6 +390,12 @@ fn golden() -> Record {
         attempts,
         stalls: 20 + attempts,
         begun_ms: 0x60 + u64::from(attempts),
+        // Each value, so that the golden bytes pin every encoding.
+        person: match attempts {
+            2 => Some(Person::Stopped),
+            3 => Some(Person::GiveUp),
+            _ => None,
+        },
     };
     let whys = [
         Why::ManifestLost,
@@ -373,6 +408,7 @@ fn golden() -> Record {
         Why::NoProgress,
         Why::TooOld,
         Why::Stopped,
+        Why::Person,
         Why::NotWhole,
     ];
     Record {
@@ -424,24 +460,25 @@ fn golden() -> Record {
 /// variants by position, so a field moved or added, or a variant inserted
 /// before another, changes these bytes without a test of reading back
 /// noticing: such a change is a new version ([`VERSION`]).
-const GOLDEN: [&str; 17] = [
-    "535a414702000000f40100000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+const GOLDEN: [&str; 18] = [
+    "535a414702000000020200000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e5e5e5e03ad2100000014600174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-    "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac02414141",
-    "4141414141414141414141414141414141414141414141414141414141000115",
-    "610168a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e",
-    "5e5e5e03ad2102290103702f6402ac0242424242424242424242424242424242",
-    "42424242424242424242424242424242010216620161a1a1a1a1a1a1a1a1a1a1",
-    "a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a0103702f64",
-    "03ac024343434343434343434343434343434343434343434343434343434343",
-    "4343430607010317630164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e",
-    "5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444444444444444",
-    "444444444444444444444444444444444444444444444444c0c0c0c0c0c0c0c0",
-    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0010418640b027730",
-    "00e80702773101e90702773202ea0702773303eb0702773404ec0702773505ed",
-    "0702773606ee0702773707ef0702773808f00702773909f107037731300af207",
-    "0217447716f806e11a77a27ac1f7b46a2c3d330a3963c7ea26ade176e4b6e8c4",
+    "5e5e5e5e5e5e03ad210000001460000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141",
+    "4141414141414141414141414141414141414141414141414141414141410001",
+    "1561000168a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e03ad2102290103702f6402ac024242424242424242424242424242",
+    "4242424242424242424242424242424242420102166201000161a1a1a1a1a1a1",
+    "a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a01",
+    "03702f6403ac0243434343434343434343434343434343434343434343434343",
+    "4343434343434306070103176301010164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444",
+    "444444444444444444444444444444444444444444444444444444444444c0c0",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00104",
+    "1864000c02773000e80702773101e90702773202ea0702773303eb0702773404",
+    "ec0702773505ed0702773606ee0702773707ef0702773808f00702773909f107",
+    "037731300af207037731310bf307de59616f3f9c3d57cc676fb03063590b5f74",
+    "84c62c3cb819be7cea6883bc1446",
 ];
 
 /// Mutant: two fields of a type swapped, a variant inserted before

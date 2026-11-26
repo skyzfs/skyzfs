@@ -118,6 +118,11 @@ fn check(cut: &Model, before: &After, after: &After) -> Result<(), String> {
         Loaded::Absent => None,
         Loaded::Present(record) => Some(record),
     };
+    // The marker is written before the first record (L4 of #149's
+    // review): a record with none would be refused its sweep.
+    if record.is_some() && !store.marked().map_err(|e| format!("marked: {e}"))? {
+        return Err("a record with no marker beside it".into());
+    }
     if record != before.record && record != after.record {
         return Err(format!(
             "the record is neither before nor after the step: {record:?}"

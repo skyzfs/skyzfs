@@ -20,8 +20,14 @@
 //! 6. The hold, recorded as believed placed before it is placed.
 //! 7. The members, the hold and `load_guid` seen as recorded: recorded
 //!    [`Phase::Held`].
-//! 8. `publish`, answered `accepted`: recorded [`Phase::Asked`], with
-//!    `held_until` from this answer.
+//! 8. `publish`: recorded [`Phase::Asked`] before it is sent, with
+//!    `held_until` from the send plus the channel's wait
+//!    ([`skyzfs_control::ASK_LIMIT`]); answered `accepted`, recorded again with
+//!    `held_until` from the answer; refused with a code that says no
+//!    request of it pends, recorded back at [`Phase::Held`] (the lead's
+//!    decision on L1 of #149's review: "not recorded as asked" means no
+//!    request exists, so a person's give-up of a publish held releases
+//!    it at once).
 //! 9. `progress` and `cuts` once a second, and the agent's sync task
 //!    ([`Zfs::assist`]) where the planner says.
 //! 10. `done`, read with `look`: recorded [`Phase::Done`].
@@ -47,21 +53,25 @@
 //! # Time
 //!
 //! The record's times are the wall clock's, since they outlive the
-//! process. For a publish accepted in this process the planner reads the
-//! time as `accepted` plus what the clock that does not step has run
-//! since ([`Clock::mono_ms`]): a step of the wall clock neither releases
-//! its hold before `held_until` nor holds back its syncs (S4 and S11 of
-//! #142's review). A publish's age ([`plan::AGE_MAX`]) is measured the
+//! process. For a publish asked or accepted in this process the planner
+//! reads the time as the recorded `asked_ms` plus what the clock that
+//! does not step has run since ([`Clock::mono_ms`]): a step of the wall
+//! clock neither releases its hold before `held_until` nor holds back its
+//! syncs (S4 and S11 of #142's review). That holds from the record
+//! `asking`, before the request is sent: a request whose answer is lost
+//! may pend, and its hold is kept on the same clock (N5 of #149's next
+//! look). A publish's age ([`plan::AGE_MAX`]) is measured the
 //! same way from `begun_ms`, for a publish begun in this process, and
 //! goes with it when it takes the next name. After a restart the wall
 //! clock is all there is to start from: a step forward while the agent
-//! was down may release a hold early (the request may still land; its
-//! cut holds the snapshot all the same), and a step back keeps it
-//! longer. The age of a publish read from the record is anchored on the
-//! wall clock once, at the first round that reads it, and runs on the
-//! clock that does not step from there (S2 of #144's next look);
-//! `held_until` is read on the wall clock until the request is accepted
-//! again in this process.
+//! was down may release a hold early (the request may still land, and
+//! where a person destroyed the snapshot after the release, on a cut
+//! without it: R2 of #149's review), and a step back keeps it longer.
+//! The age of a publish read from the record is anchored on the wall
+//! clock once, at the first round that reads it, and runs on the clock
+//! that does not step from there (S2 of #144's next look);
+//! `held_until` is read on the wall clock until the request is asked or
+//! accepted again in this process.
 //!
 //! # Crash points
 //!
@@ -75,13 +85,13 @@ use std::fmt;
 use std::io;
 use std::time::Duration;
 
-use skyzfs_control::{CutsReply, Publish as PublishRequest, Reply, Request, EXPIRY_DEFAULT};
+use skyzfs_control::{Code, CutsReply, Publish as PublishRequest, Reply, Request, EXPIRY_DEFAULT};
 
 use crate::manifest::{self, Manifest, ManifestError};
 use crate::names;
 use crate::plan::{self, Action, DaemonSeen, PoolSeen, Report, Seen, SnapSeen, Stop};
 use crate::record::{
-    Corrupt, Count, Enrolled, Keep, Loaded, Phase, Publish, Record, SaveError, Taken, Why,
+    Corrupt, Count, Enrolled, Keep, Loaded, Person, Phase, Publish, Record, SaveError, Taken, Why,
     UNDER_WAY_MAX,
 };
 use crate::zfs::{self, Held, Zfs, ZfsError, HOLD_TAG};
@@ -89,6 +99,13 @@ use crate::zfs::{self, Held, Zfs, ZfsError, HOLD_TAG};
 /// How often the engine looks again at a publish that waits (the plan,
 /// §4, step 11).
 pub const TICK: Duration = Duration::from_secs(1);
+
+/// Why a publish stopped where `done` was not confirmed by `look`.
+const DONE_NOT_SEEN: &str = "the daemon said done, and look did not see it";
+
+/// Why a publish recorded stopped stops again.
+const STOPPED_BEFORE: &str =
+    "stopped for a person earlier: the daemon said done, and look did not see it";
 
 /// The daemon, as the agent reaches it: its channel
 /// ([`skyzfs_control::ask`]) and its device.
@@ -171,10 +188,15 @@ pub enum Effect {
     /// The record saved with the publish's last stall, at
     /// [`Phase::Held`].
     Stalled,
+    /// The record saved at [`Phase::Asked`] before `publish` is asked.
+    Asking,
     /// `publish` asked.
     Ask,
-    /// The record saved at [`Phase::Asked`].
+    /// The record saved at [`Phase::Asked`], the request accepted.
     Asked,
+    /// The record saved back at [`Phase::Held`], the request refused
+    /// with a code that says none of it pends.
+    Unasked,
     /// `withdraw` asked.
     Withdraw,
     /// `look` asked.
@@ -196,6 +218,86 @@ pub enum Effect {
     Abandon,
     /// The manifest's file removed.
     Unlink,
+    /// The record saved with the publish stopped for a person
+    /// ([`Person::Stopped`]).
+    Stop,
+    /// The record saved with a person's choice ([`Agent::recover`]).
+    Recover,
+}
+
+impl Effect {
+    /// Every effect, in order.
+    pub const ALL: [Effect; 28] = [
+        Effect::Enrol,
+        Effect::Intent,
+        Effect::Take,
+        Effect::Failed,
+        Effect::Destroy,
+        Effect::Manifest,
+        Effect::Taken,
+        Effect::Holding,
+        Effect::Hold,
+        Effect::Held,
+        Effect::Count,
+        Effect::Stalled,
+        Effect::Asking,
+        Effect::Ask,
+        Effect::Asked,
+        Effect::Unasked,
+        Effect::Withdraw,
+        Effect::Look,
+        Effect::Assist,
+        Effect::Release,
+        Effect::Released,
+        Effect::Done,
+        Effect::Sweep,
+        Effect::Forget,
+        Effect::Abandon,
+        Effect::Unlink,
+        Effect::Stop,
+        Effect::Recover,
+    ];
+
+    /// Its name, in lower case (the rigs' hooks name it so).
+    pub fn word(self) -> &'static str {
+        match self {
+            Effect::Enrol => "enrol",
+            Effect::Intent => "intent",
+            Effect::Take => "take",
+            Effect::Failed => "failed",
+            Effect::Destroy => "destroy",
+            Effect::Manifest => "manifest",
+            Effect::Taken => "taken",
+            Effect::Holding => "holding",
+            Effect::Hold => "hold",
+            Effect::Held => "held",
+            Effect::Count => "count",
+            Effect::Stalled => "stalled",
+            Effect::Asking => "asking",
+            Effect::Ask => "ask",
+            Effect::Asked => "asked",
+            Effect::Unasked => "unasked",
+            Effect::Withdraw => "withdraw",
+            Effect::Look => "look",
+            Effect::Assist => "assist",
+            Effect::Release => "release",
+            Effect::Released => "released",
+            Effect::Done => "done",
+            Effect::Sweep => "sweep",
+            Effect::Forget => "forget",
+            Effect::Abandon => "abandon",
+            Effect::Unlink => "unlink",
+            Effect::Stop => "stop",
+            Effect::Recover => "recover",
+        }
+    }
+
+    /// The effect named `word`, in any case.
+    pub fn from_word(word: &str) -> Option<Effect> {
+        Effect::ALL
+            .into_iter()
+            .find(|e| e.word().eq_ignore_ascii_case(word))
+    }
 }
 
 /// A point at which the engine's tests can stop it: before or after an
@@ -208,9 +310,23 @@ pub struct Point {
     pub after: bool,
 }
 
-/// Called at each [`Point`]; `true` stops the engine there
-/// ([`Error::Stopped`]).
-pub type Points = Box<dyn FnMut(Point) -> bool>;
+/// Called at each [`Point`] with the name of the publish it is for (the
+/// snapshot's, for [`Effect::Sweep`]; empty for [`Effect::Enrol`]);
+/// `true` stops the engine there ([`Error::Stopped`]).
+pub type Points = Box<dyn FnMut(Point, &str) -> bool>;
+
+/// Called with each report as it is made, before the engine acts on what
+/// it reports ([`Agent::with_sink`]).
+pub type Sink = Box<dyn FnMut(&str, &Report)>;
+
+/// A person's choice for a publish under way ([`Agent::recover`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// Give it up ([`Person::GiveUp`]).
+    GiveUp,
+    /// Plan it again as the agent's own: a recorded stop is cleared.
+    Retry,
+}
 
 /// Why the engine did not do what was asked.
 #[derive(Debug)]
@@ -235,6 +351,14 @@ pub enum Error {
     Io(io::Error),
     /// [`Agent::settle`] ran out of time with publishes still under way.
     Unsettled(Vec<String>),
+    /// [`Agent::recover`] named no publish under way.
+    NotUnderWay(String),
+    /// The sweep would release the holds of these snapshots, which no
+    /// publish of the record names, but the record's directory holds no
+    /// agent's marker ([`crate::record::MARKER`]): it may not be this volume's
+    /// agent's directory (a mistyped `--dir`), and nothing is released
+    /// (L4 of #149's review).
+    Unmarked(Vec<String>),
 }
 
 impl fmt::Display for Error {
@@ -252,6 +376,17 @@ impl fmt::Display for Error {
             Error::Save(e) => write!(f, "the record: {e}"),
             Error::Io(e) => write!(f, "a manifest's file: {e}"),
             Error::Unsettled(names) => write!(f, "still under way: {}", names.join(" ")),
+            Error::NotUnderWay(name) => write!(f, "no publish {name} is under way"),
+            Error::Unmarked(names) => write!(
+                f,
+                "the record's directory holds no agent's marker (`{}`), so it may not be \
+                 this volume's agent's directory; the holds of {} that no publish of its \
+                 record names are not released. Check `--dir`; if it is this volume's agent's \
+                 directory, release those holds by hand (`zfs release -r {} <pool>@<name>`)",
+                crate::record::MARKER,
+                names.join(" "),
+                crate::zfs::HOLD_TAG
+            ),
         }
     }
 }
@@ -291,10 +426,15 @@ struct Memory {
     /// The syncs since the request under way was accepted
     /// ([`Seen::assists`]).
     assists: u32,
-    /// `asked_ms` as recorded, and [`Clock::mono_ms`] then.
+    /// `asked_ms` as recorded, and [`Clock::mono_ms`] then: from the
+    /// record `asking` of a request sent in this process, and again from
+    /// its acceptance ("Time" in the [module docs](self)).
     accepted: Option<(u64, u64)>,
     /// [`Seen::withdrawn`].
     withdrawn: bool,
+    /// [`Clock::mono_ms`] when `publish` was last sent for it: it is not
+    /// sent again at the same instant (S13 of #146's next look).
+    asked_mono: Option<u64>,
     /// The anchor of the publish's age: `begun_ms` as recorded, the time
     /// against which it is measured at the anchor, and [`Clock::mono_ms`]
     /// then. For a publish begun in this process the time is `begun_ms`
@@ -390,7 +530,16 @@ pub struct Agent<Z, D, K, C> {
     reports: Vec<(String, Report)>,
     reported: BTreeSet<String>,
     assists: u64,
+    assist_after: Duration,
     points: Option<Points>,
+    sink: Option<Sink>,
+    /// The publish the next [`Point`] is for.
+    at: String,
+    /// The names publishes left in this process for the next one: a
+    /// member's `@t` of the name found, or its take destroyed
+    /// ([`Agent::rename`], [`Agent::name_now`]). No name left is chosen
+    /// again ([`Agent::fresh_name`]), so they make chains and no cycle.
+    renamed: BTreeMap<String, String>,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -432,10 +581,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             swept: None,
             stopped: BTreeSet::new(),
             outcomes: Vec::new(),
+            renamed: BTreeMap::new(),
             reports: Vec::new(),
             reported: BTreeSet::new(),
             assists: 0,
+            assist_after: plan::ASSIST_AFTER,
             points: None,
+            sink: None,
+            at: String::new(),
         })
     }
 
@@ -452,6 +605,28 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self
     }
 
+    /// Give each report to `sink` as it is made, before the engine acts
+    /// on it: a report reaches a person at least once across a crash of
+    /// the agent (S4 and the next look's "For M2.6c" on #144). Each is
+    /// still kept in [`Agent::reports`].
+    pub fn with_sink(mut self, sink: Sink) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+
+    /// Ask with `expiry` instead of [`EXPIRY_DEFAULT`] (the rigs).
+    pub fn with_expiry(mut self, expiry: Duration) -> Self {
+        self.expiry = expiry;
+        self
+    }
+
+    /// Pace the syncs by `assist_after` instead of [`plan::ASSIST_AFTER`]
+    /// (the rigs' test hooks).
+    pub fn with_assist_after(mut self, assist_after: Duration) -> Self {
+        self.assist_after = assist_after;
+        self
+    }
+
     /// The record as last saved.
     pub fn record(&self) -> &Record {
         &self.record
@@ -461,6 +636,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// order.
     pub fn outcomes(&self) -> &[(String, Outcome)] {
         &self.outcomes
+    }
+
+    /// The name a publish begun as `name` goes by now: a publish whose
+    /// name a member's `@t` already had takes the next name
+    /// (`a_name_a_person_took_first_is_passed_over`), and its outcome
+    /// is under that one (D2 of #149's review). Followed through each
+    /// rename made in this process.
+    pub fn name_now(&self, name: &str) -> String {
+        let mut now = name;
+        while let Some(next) = self.renamed.get(now) {
+            now = next;
+        }
+        now.to_string()
     }
 
     /// What the agent has told a person while it went on, in order.
@@ -484,8 +672,16 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         if self.record.under_way.len() >= UNDER_WAY_MAX {
             return Err(Error::Full);
         }
+        // The count first, as each round of `settle` does: it sets the
+        // limits of the sweep's read of the holds, which grows with the
+        // datasets (a failed count leaves the bases, and the calls after
+        // it say what is wrong). Then the sweep, before anything is
+        // written in the directory ([`Agent::sweep`]).
+        let _counted = self.zfs.count(&self.pool);
+        self.sweep()?;
         let props = self.zfs.props(&self.pool)?;
         let leaf = self.premise(&props)?.map_err(Error::Premise)?;
+        self.at.clear();
         if self.record.enrolled.is_none() {
             let enrolled = Enrolled {
                 pool: self.pool.clone(),
@@ -499,6 +695,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             Err(why) => return Err(Error::Daemon(why)),
         };
         let name = self.fresh_name()?;
+        self.at.clone_from(&name);
         let begun_ms = self.clock.now_ms();
         let mono = self.clock.mono_ms();
         let publish = Publish {
@@ -509,6 +706,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             attempts: 0,
             stalls: 0,
             begun_ms,
+            person: None,
         };
         self.commit(Effect::Intent, |r| r.under_way.push(publish))?;
         self.memory.entry(name.clone()).or_default().begun = Some((begun_ms, begun_ms, mono));
@@ -554,6 +752,27 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
     }
 
+    /// Record a person's `choice` for the publish of `name`
+    /// (`skyzfs-agent recover`): [`Choice::GiveUp`] has the engine give it
+    /// up as [`Why::Person`], the next time it is settled; [`Choice::Retry`]
+    /// clears what a person recorded (a stop for a person, or a give-up
+    /// not yet carried out), and the publish is planned again as the
+    /// agent's own. A publish already done is released and forgotten as
+    /// usual either way. The publish is no longer stopped in this process.
+    pub fn recover(&mut self, name: &str, choice: Choice) -> Result<(), Error> {
+        if self.record.publish(name).is_none() {
+            return Err(Error::NotUnderWay(name.to_string()));
+        }
+        let person = match choice {
+            Choice::GiveUp => Some(Person::GiveUp),
+            Choice::Retry => None,
+        };
+        self.at = name.to_string();
+        self.commit(Effect::Recover, |r| set(r, name, |p| p.person = person))?;
+        self.stopped.remove(name);
+        Ok(())
+    }
+
     /// Release each hold [`HOLD_TAG`] in the pool that no publish under
     /// way names, once per import of the pool (per `load_guid`) and at
     /// the agent's start.
@@ -569,6 +788,22 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// within it the sweep and the steps of a publish do not overlap.
     /// Not in the plan of M2.6: the crash matrix found it (a rewind
     /// back to after the hold, under a publish already done).
+    ///
+    /// It releases only where the record's directory holds the agent's
+    /// marker ([`crate::record::MARKER`]; L4 of #149's review). Where it does
+    /// not, and there is a hold to release, it releases none and fails
+    /// ([`Error::Unmarked`]): an agent given a mistyped `--dir` reads no
+    /// record there, and would otherwise release the holds of every
+    /// publish under way in the right one. With no hold to release it
+    /// goes on: an agent's first run has neither marker nor record, and
+    /// no hold of the tag. The lead's words name a missing marker and a
+    /// missing record; a record whose marker a person removed is refused
+    /// too, the conservative reading, by `publish` and by a `settle` that
+    /// saves nothing first. `recover` saves before it sweeps, and the
+    /// save writes the marker, so after it such a record is swept (nit 4
+    /// of the next look at #149). [`Agent::begin`] sweeps first, so
+    /// that a publish asked in a mistyped directory fails before its
+    /// record and marker are written there.
     fn sweep(&mut self) -> Result<(), Error> {
         let load_guid = match self.zfs.props(&self.pool) {
             Ok(props) => props.load_guid,
@@ -578,10 +813,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         if self.swept == Some(load_guid) {
             return Ok(());
         }
-        for name in self.zfs.tagged(&self.pool, HOLD_TAG)? {
-            if self.record.publish(&name).is_some() {
-                continue;
-            }
+        let stale: Vec<String> = (self.zfs.tagged(&self.pool, HOLD_TAG)?.into_iter())
+            .filter(|name| self.record.publish(name).is_none())
+            .collect();
+        if !stale.is_empty() && !self.keep.marked().map_err(Error::Io)? {
+            return Err(Error::Unmarked(stale));
+        }
+        for name in stale {
+            self.at.clone_from(&name);
             self.point(Effect::Sweep, false)?;
             self.zfs.release(&self.pool, &name, HOLD_TAG)?;
             self.point(Effect::Sweep, true)?;
@@ -595,6 +834,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let Some(publish) = self.record.publish(name).cloned() else {
             return Ok(Moved::No);
         };
+        self.at = name.to_string();
+        if publish.person == Some(Person::Stopped) {
+            // Stopped for a person in an earlier round or process: nothing
+            // is asked of the pool or the daemon for it.
+            self.stop(name.to_string(), STOPPED_BEFORE.to_string());
+            return Ok(Moved::No);
+        }
         let Some(seen) = self.see(&publish)? else {
             return Ok(Moved::No);
         };
@@ -602,10 +848,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         // Before the act, as the report of `done` (F1 of #144's review):
         // a stop between the two makes it again in the next process.
         if let Some(report) = plan::report(&publish, &seen, &action) {
-            let made = (name.to_string(), report);
-            if !self.reports.contains(&made) {
-                self.reports.push(made);
-            }
+            self.tell(name, report);
         }
         self.act(&publish, action)
     }
@@ -664,6 +907,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             assists,
             too_old,
             withdrawn,
+            assist_after: self.assist_after,
         }))
     }
 
@@ -706,11 +950,28 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let name = publish.name.clone();
         // The answer and the sight are kept across a look, which acts
         // on them, and across a release, after which the next round
-        // gives the publish up on them: asked nothing between, the
-        // daemon cannot have changed its answer, and one refused
-        // `stopped` to its own `publish` is not kept by the daemon, whose
-        // `progress` would then answer `unknown` and have the publish
-        // held and asked again (N8 of #146's review).
+        // gives the publish up on them. The agent asks nothing between,
+        // so nothing it does changes the daemon's answer; a restart of
+        // skyzfsd between can, to `unknown`, and the publish is given up
+        // all the same, as the next publish covers a restart. A `publish`
+        // refused `stopped` is not kept by the daemon, whose `progress`
+        // would answer `unknown` and have the publish held and asked
+        // again (N8 of #146's review; S12 of its next look).
+        // A publish asked at this instant is not asked again before a
+        // tick has passed: a daemon that answers what skyzfsd does not (a
+        // `publish` asked anew refused `rewound`, `state`, `attachment`
+        // or `asked` every time) would otherwise drive the rounds with no
+        // tick between, each saving the record (S13 of #146's next look).
+        // skyzfsd's own answers end such a cycle by themselves; this
+        // only bounds it to one ask a tick.
+        if matches!(action, Action::Ask | Action::AskAnew) {
+            let now = self.clock.mono_ms();
+            let memory = self.memory.entry(name.clone()).or_default();
+            if memory.asked_mono == Some(now) {
+                return Ok(Moved::No);
+            }
+            memory.asked_mono = Some(now);
+        }
         if !matches!(action, Action::Look | Action::Release) {
             let memory = self.memory.entry(name.clone()).or_default();
             memory.answer = None;
@@ -825,10 +1086,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 // forgotten. Made once in this process where a save that
                 // failed has it planned again.
                 if let Some(report) = report {
-                    let made = (name.clone(), report);
-                    if !self.reports.contains(&made) {
-                        self.reports.push(made);
-                    }
+                    self.tell(&name, report);
                 }
                 self.commit(Effect::Done, |r| {
                     set(r, &name, |p| p.phase = Phase::Done { taken, commit })
@@ -853,7 +1111,14 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 let why = match stop {
                     Stop::Refused(code) => format!("the daemon refused it: {}", code.word()),
                     Stop::DoneNotSeen => {
-                        "the daemon said done, and look did not see it".to_string()
+                        // Recorded, so that the stop outlasts a restart
+                        // (S5 of #144's third look).
+                        if publish.person != Some(Person::Stopped) {
+                            self.commit(Effect::Stop, |r| {
+                                set(r, &name, |p| p.person = Some(Person::Stopped))
+                            })?;
+                        }
+                        DONE_NOT_SEEN.to_string()
                     }
                 };
                 self.stop(name, why);
@@ -874,8 +1139,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             .publish(name)
             .is_some_and(|p| p.attempts >= plan::CHECKS_FAILED_MAX)
         {
-            self.reports
-                .push((name.to_string(), Report::NotWhole(Vec::new())));
+            self.tell(name, Report::NotWhole(Vec::new()));
             self.abandon(name, Why::NotWhole)?;
             return Ok(Moved::Yes);
         }
@@ -1050,8 +1314,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         if failed < plan::CHECKS_FAILED_MAX {
             return self.retake(name, true);
         }
-        self.reports
-            .push((name.to_string(), Report::NotWhole(names)));
+        self.tell(name, Report::NotWhole(names));
         self.point(Effect::Destroy, false)?;
         let destroyed = self.zfs.destroy(&self.pool, name);
         self.point(Effect::Destroy, true)?;
@@ -1092,6 +1355,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     fn rename(&mut self, name: &str, failed: bool) -> Result<Moved, Error> {
         let next = self.fresh_name()?;
         self.commit(Effect::Intent, |r| set(r, name, |p| p.name = next.clone()))?;
+        self.renamed.insert(name.to_string(), next.clone());
         // What this process knows of the publish goes with it: its age is
         // still read from its anchor (N2 of #144's next look). Not the
         // reading before a take, which was of the old name.
@@ -1107,8 +1371,22 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         Ok(Moved::Yes)
     }
 
-    /// Ask the daemon to publish with `count`; `accepted` is recorded,
-    /// any other answer kept for the next round.
+    /// Ask the daemon to publish with `count`: recorded asked before it
+    /// is sent (module docs, step 8); `accepted` is recorded, any other
+    /// answer kept for the next round, and the publish recorded held
+    /// again where the answer says that nothing of it pends.
+    ///
+    /// The cost: a publish whose ask had no answer, or `asked`, `ended`
+    /// or `no-answer`, stays asked, and so does one whose agent stopped
+    /// after the record of the ask and before the record of its answer,
+    /// sent or not, or whose record took longer than
+    /// [`plan::ASKING_SLACK`] to save, and so was not sent; if it is then
+    /// asked anew with no cut counted since
+    /// its count, the ask anew counts a stall ([`plan::stalls`]), as for
+    /// a request accepted and lost: one stop there costs one stall of the
+    /// eight a publish is given. And with
+    /// the daemon away, it keeps its hold until `held_until` and releases
+    /// it after, as an accepted one does, where it was held before.
     fn ask(&mut self, publish: &Publish, count: Count) -> Result<Moved, Error> {
         let name = publish.name.clone();
         let Some(taken) = publish.phase.taken().cloned() else {
@@ -1137,7 +1415,46 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             manifest: bytes.len(),
             expiry: Some(self.expiry),
         });
+        // Recorded asked, and synced, before it is sent (the lead's
+        // decision on L1 of #149's review): a publish recorded held has no
+        // request out. The request is sent within `ASKING_SLACK` of
+        // `sent` or not at all (below), and is accepted, if at all, within
+        // the channel's wait after that, so its expiry falls before this
+        // `held_until` by the hold's margin (C1 of #149's next look).
+        let sent = self.clock.now_ms();
+        let sent_mono = self.clock.mono_ms();
+        let asking_until = plan::held_until(
+            sent.saturating_add(ms(plan::ASKING_SLACK))
+                .saturating_add(ms(skyzfs_control::ASK_LIMIT)),
+            self.expiry,
+        );
+        self.commit(Effect::Asking, |r| {
+            set(r, &name, |p| {
+                p.count = count;
+                p.phase = Phase::Asked {
+                    taken: taken.clone(),
+                    asked_ms: sent,
+                    held_until_ms: asking_until,
+                };
+            })
+        })?;
+        // Its hold is timed from here on the clock that does not step:
+        // the answer may be lost while the request pends (N5 of #149's
+        // next look). A new request may be out from here, and no withdraw
+        // has been answered for it: a withdraw answered for an earlier
+        // request does not count for this one (N6 of #149's third look).
+        let memory = self.memory.entry(name.clone()).or_default();
+        memory.accepted = Some((sent, sent_mono));
+        memory.withdrawn = false;
         self.point(Effect::Ask, false)?;
+        // A save, or a stop, that took longer than the slack: the
+        // record's `held_until` would not cover a request sent now, and
+        // none is. The publish stays recorded asked, as after a stop
+        // before the send, and the next round finds no request and asks
+        // anew with a fresh time.
+        if self.clock.mono_ms().saturating_sub(sent_mono) > ms(plan::ASKING_SLACK) {
+            return Ok(Moved::No);
+        }
         let answer = self.daemon.ask(&request, &bytes);
         self.point(Effect::Ask, true)?;
         match answer {
@@ -1163,9 +1480,16 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 Ok(Moved::Yes)
             }
             Ok(answer) => {
+                if !may_pend(&answer) {
+                    self.commit(Effect::Unasked, |r| {
+                        set(r, &name, |p| p.phase = Phase::Held(taken));
+                    })?;
+                }
                 self.memory.entry(name).or_default().answer = Some(answer);
                 Ok(Moved::Yes)
             }
+            // No answer: the request may have landed, and the publish
+            // stays recorded asked.
             Err(_) => Ok(Moved::No),
         }
     }
@@ -1224,6 +1548,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         match plan::stalls_report(stalls) {
             Some(report) => {
                 if self.reported.insert(name.clone()) {
+                    if let Some(sink) = &mut self.sink {
+                        sink(&name, &report);
+                    }
                     self.reports.push((name.clone(), report));
                 }
             }
@@ -1283,14 +1610,27 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     }
 
     /// A name for a new publish: this second's, with `-N` where it is
-    /// taken in the record or in the pool.
+    /// taken in the record or in the pool, or where this process found a
+    /// member's `@t` of it ([`Agent::name_now`]).
+    ///
+    /// [`Zfs::members`] answers only where `pool@t` exists, so a name
+    /// that only a member's `@t` has passes it. Without the last rule, a
+    /// publish renamed twice in one second went back to the name it left
+    /// first, and from there to the second, with no end while the clock
+    /// stood still, and the renames made a cycle that
+    /// [`Agent::name_now`] would follow for ever (found by the second
+    /// row of `a_publish_made_under_its_next_name_exits_by_its_outcome`,
+    /// D2 of #149's review). The names found so are not recorded: after
+    /// a restart the agent walks the names again, one program run each,
+    /// up to as many as it had found (N4 of the next look at #149); it
+    /// still ends, each walk being bounded by the names taken.
     fn fresh_name(&mut self) -> Result<String, Error> {
         let second = self.clock.now_ms() / 1000;
         for taken in 0..=u32::from(u16::MAX) {
             let name = names::name(second, taken);
             let recorded = self.record.publish(&name).is_some()
                 || self.record.abandoned.iter().any(|a| a.name == name);
-            if recorded {
+            if recorded || self.renamed.contains_key(&name) {
                 continue;
             }
             if self.zfs.members(&self.pool, &name)?.is_none() {
@@ -1318,6 +1658,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.point(Effect::Unlink, true)
     }
 
+    /// Tell a person `report` of the publish of `name`: once in this
+    /// process, to the sink as it is made.
+    fn tell(&mut self, name: &str, report: Report) {
+        let made = (name.to_string(), report);
+        if self.reports.contains(&made) {
+            return;
+        }
+        if let Some(sink) = &mut self.sink {
+            sink(name, &made.1);
+        }
+        self.reports.push(made);
+    }
+
     /// The publish of `name` stops for a person to judge.
     fn stop(&mut self, name: String, why: String) {
         self.stopped.insert(name.clone());
@@ -1343,7 +1696,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Stop here where the tests say so.
     fn point(&mut self, effect: Effect, after: bool) -> Result<(), Error> {
         let stop = match &mut self.points {
-            Some(points) => points(Point { effect, after }),
+            Some(points) => points(Point { effect, after }, &self.at),
             None => false,
         };
         if stop {
@@ -1354,7 +1707,30 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     }
 }
 
-/// Change the publish of `name` in `record`.
+/// Whether a request to publish answered `answer` may still pend, or
+/// land: the daemon's own refusals say it took nothing, but `asked`
+/// (the name pends already), `ended` and `no-answer` (what answers it
+/// went, or did not answer in time, after it may have taken it) do not.
+/// The conservative reading: B1 of #149's review counts `no-upload` as
+/// silent in a give-up, since it is the answer of a daemon that may be
+/// another than the one that took an earlier request; to `publish` it is
+/// this daemon's own answer, and nothing was taken.
+fn may_pend(answer: &Reply) -> bool {
+    match answer {
+        Reply::Refused(code, _) => matches!(code, Code::Asked | Code::Ended | Code::NoAnswer),
+        Reply::Accepted
+        | Reply::Pending
+        | Reply::Done(_)
+        | Reply::Withdrawn
+        | Reply::Unknown
+        | Reply::Expired
+        | Reply::Absent
+        | Reply::Cuts(_)
+        | Reply::Snap(_)
+        | Reply::Unreadable(_) => true,
+    }
+}
+
 fn set(record: &mut Record, name: &str, change: impl FnOnce(&mut Publish)) {
     if let Some(publish) = record.under_way.iter_mut().find(|p| p.name == name) {
         change(publish);
@@ -1367,6 +1743,6 @@ fn ms(d: Duration) -> u64 {
 }
 
 #[cfg(test)]
-mod fake;
+pub(crate) mod fake;
 #[cfg(test)]
 mod tests;
