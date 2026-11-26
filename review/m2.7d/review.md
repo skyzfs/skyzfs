@@ -100,7 +100,10 @@ name the syncs (d3).
 - The review's tests (`scratch-tests-02af425.out`): RP1 now passes;
   RP2 still fails (L2); RV2 fails because the rule changed (above);
   the other eleven pass.
-- SURVIVORS_02AF425
+- The review's plants that survived at bb03454
+  (`plants-02af425-survivors.out`): all twelve still survive 02af425's
+  suite (R1, R3, R5, R7, R8, R9, R10, R11, R12, R16, R19, R20); the
+  review's tests still kill all but R16.
 
 ### Do the findings on bb03454 still apply?
 
@@ -108,7 +111,7 @@ name the syncs (d3).
 |---|---|
 | L1 | Fixed for an end during the syncs; a nit is left (above). |
 | L2 (`synced=0` after a failed sync) | Applies: RP2 still fails, `round 1 failed ... synced=0` after one sync that returned. |
-| T1 (test gaps) | R6 is moot (the rule changed). The others: SURVIVORS_SHORT |
+| T1 (test gaps) | R6 is moot (the rule changed). The other twelve still survive 02af425's suite; the review's tests (less RV2) still kill all but R16. |
 | d1 (`opens=no`) | Applies (`engine.rs:81`). |
 | d2 (a person's `zpool sync`; no cut held also resets) | Applies (`program.rs:131`). |
 | d3 (restarts' and `schedule`'s docs) | Applies (`program.rs:926-931`, `1015-1018`). |
@@ -118,7 +121,11 @@ name the syncs (d3).
 | d8 (new) | `engine.rs:86-90`: "never writes groups for ever" is not so for syncs that fail (above). |
 | Decisions 1-4 | Unchanged; decision 5 is new. |
 
-CI on 02af425: CI_02AF425
+CI on 02af425, read when this was written: 32 succeeded, 3 skipped,
+none failed, 7 still running (`test`, `coverage`, the daemon rig on
+three images, the agent rig's course k, the cut daemon's upload job).
+The review does not wait for them; the author's digest should say
+they ended green.
 
 Codex: no new review visible on 02af425 at the time of writing.
 
@@ -488,8 +495,8 @@ bb03454, the target cleaned between feature sets.
 | Gate | Plain | `skyzfsd/test-hooks,skyzfs-local/test-hooks` | `skyzfs-ublk-sys/control-test-program` | `skyzfs-agent-cli/test-hooks` |
 |---|---|---|---|---|
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean | clean | clean | clean |
-| `cargo test --workspace` (passed / failed / ignored) | 2003 / 0 / 16 | 2061 / 0 / 16 | 2027 / 0 / 18 | AGENTCLI_TEST |
-| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps` | clean | clean | clean | AGENTCLI_DOC |
+| `cargo test --workspace` (passed / failed / ignored) | 2003 / 0 / 16 | 2061 / 0 / 16 | 2027 / 0 / 18 | 2003 / 0 / 16 |
+| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps` | clean | clean | clean | clean |
 
 `cargo fmt --all -- --check`: clean. The agent crates' tests twenty
 times: 0 failed runs (250 tests a run). The host tests
@@ -549,7 +556,7 @@ description's open question 4), and whether 2 groups per assist holds.
 - Gates: plain `cargo test --workspace` 2003 / 0 / 16, as stated;
   with `skyzfsd/test-hooks,skyzfs-local/test-hooks` 2061 / 0 / 16 and
   with `skyzfs-ublk-sys/control-test-program` 2027 / 0 / 18, as stated;
-  with `skyzfs-agent-cli/test-hooks`: AGENTCLI_CLAIM
+  with `skyzfs-agent-cli/test-hooks`: 2003 / 0 / 16, as stated. Clippy and docs clean on all four.
 - "17 of 17": confirmed (above).
 
 ## Decisions for the lead
