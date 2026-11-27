@@ -1,0 +1,17 @@
+head adc391a1e7136c1fda4494934d1a69c2cbbc03da
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy plain rc=0
+test plain rc=0 2113 passed 0 failed 16 ignored
+doc plain rc=0
+/dev/vda        252G   28G   12G  72% /
+clippy skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+test skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0 2172 passed 0 failed 16 ignored
+doc skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+/dev/vda        252G   28G   11G  72% /
+clippy skyzfs-ublk-sys_control-test-program rc=0
+test skyzfs-ublk-sys_control-test-program rc=0 2137 passed 0 failed 18 ignored
+doc skyzfs-ublk-sys_control-test-program rc=0
+/dev/vda        252G   29G   11G  74% /
+clippy skyzfs-agent-cli_test-hooks rc=0
+stopped here, at the test of the fourth set (the head had moved on; the agent's crates with skyzfs-agent-cli/test-hooks are gated at the newer heads in gates2.out and gates3.out)

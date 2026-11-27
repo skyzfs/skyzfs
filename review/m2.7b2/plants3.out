@@ -1,0 +1,30 @@
+tree e6530f15228adb385683fe2fdae2856b04aeb7ec 0 changed
+base skyzfs-agent --lib rc=0 330 passed 0 failed
+Q1	KILLED	rc=101	42s	engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+Q2	KILLED	rc=101	27s	engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+Q2x	SURVIVED	rc=0	22s	
+Q3	KILLED	rc=101	22s	engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+Q4	KILLED	rc=101	21s	engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+Q5	KILLED	rc=101	32s	engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+Q6	KILLED	rc=101	22s	engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+Q7	KILLED	rc=101	21s	engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+Q7x	SURVIVED	rc=0	22s	
+Q8	SURVIVED	rc=0	22s	
+Q9	SURVIVED	rc=0	21s	
+N1@e65	KILLED	rc=101	21s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up,engine::retain::tests::the_names_stuck_are_tried_a_few_a_round_in_turn
+N10@e65	KILLED	rc=101	22s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up
+N11@e65	KILLED	rc=101	21s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up
+N12@e65	KILLED	rc=101	22s	engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up
+M5@e65	SURVIVED	rc=0	22s	
+M7@e65	SURVIVED	rc=0	22s	
+P2@e65	SURVIVED	rc=0	23s	
+M8b@e65	KILLED	rc=101	22s	program::tests::the_record_is_dumped_one_line_a_fact
+R21@e65	SURVIVED	rc=0	21s	
+R22@e65	SURVIVED	rc=0	23s	
+E3@e65	SURVIVED	rc=0	24s	
+E4@e65	SURVIVED	rc=0	22s	
+E4b@e65	SURVIVED	rc=0	24s	
+E8@e65	SURVIVED	rc=0	24s	
+G11@e65	SURVIVED	rc=0	21s	
+after: 0 changed
+plants-done

@@ -1,0 +1,16 @@
+head d68471fd1d166a5f83dc157a8a14cb4b9ac0259b
+changed since adc391a: crates/skyzfs-agent/src/engine.rs crates/skyzfs-agent/src/engine/retain.rs crates/skyzfs-agent/src/engine/retain/tests.rs crates/skyzfs-agent/src/program.rs crates/skyzfs-agent/src/program/tests.rs crates/skyzfs-agent/src/record.rs crates/skyzfs-agent/src/record/tests.rs 
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy agent plain rc=0
+test agent plain rc=0 336 passed 0 failed 0 ignored
+doc agent plain rc=0
+clippy agent skyzfs-agent-cli_test-hooks rc=0
+test agent skyzfs-agent-cli_test-hooks rc=0 336 passed 0 failed 0 ignored
+doc agent skyzfs-agent-cli_test-hooks rc=0
+agent repeat 1 rc=0 336 passed 0 failed
+agent repeat 2 rc=0 336 passed 0 failed
+agent repeat 3 rc=0 336 passed 0 failed
+agent repeat 4 rc=0 336 passed 0 failed
+agent repeat 5 rc=0 336 passed 0 failed
+done

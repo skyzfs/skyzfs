@@ -1,0 +1,588 @@
+[
+ {
+  "id": "N1",
+  "what": "no retry of the names stuck",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        self.retry_stuck()?;\n        self.mark_retiring()?;",
+    "        self.mark_retiring()?;"
+   ]
+  ]
+ },
+ {
+  "id": "N2",
+  "what": "no cap: none forgotten past STUCK_MAX",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "let over = (self.record.stuck.len() + 1).saturating_sub(STUCK_MAX);",
+    "let over = 0;"
+   ]
+  ]
+ },
+ {
+  "id": "N3",
+  "what": "the newest stuck forgotten, not the oldest",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            .stuck\n            .iter()\n            .take(over)",
+    "            .stuck\n            .iter()\n            .rev()\n            .take(over)"
+   ]
+  ]
+ },
+ {
+  "id": "N4",
+  "what": "the oldest forgotten silently",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        for old in &forgotten {\n            self.told(old.clone(), Outcome::Forgotten(STUCK_FORGOTTEN.to_string()));\n        }\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "N5",
+  "what": "the forgotten line told after the save",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        for old in &forgotten {\n            self.told(old.clone(), Outcome::Forgotten(STUCK_FORGOTTEN.to_string()));\n        }\n",
+    ""
+   ],
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                at_ms,\n            });\n        })\n    }",
+    "                at_ms,\n            });\n        })?;\n        for old in &forgotten {\n            self.told(old.clone(), Outcome::Forgotten(STUCK_FORGOTTEN.to_string()));\n        }\n        Ok(())\n    }"
+   ]
+  ]
+ },
+ {
+  "id": "N6",
+  "what": "a name stuck left among the published too",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            r.published.retain(|p| p.name != name);\n            r.abandoned.retain(|a| a.name != name);",
+    "            r.abandoned.retain(|a| a.name != name);"
+   ]
+  ]
+ },
+ {
+  "id": "N7",
+  "what": "a name stuck left among the given up too",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            r.published.retain(|p| p.name != name);\n            r.abandoned.retain(|a| a.name != name);",
+    "            r.published.retain(|p| p.name != name);"
+   ]
+  ]
+ },
+ {
+  "id": "N8",
+  "what": "no stick for a name published",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;\n        } else {\n            self.stick(name, members)?;\n        }",
+    "            self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;\n        }"
+   ]
+  ]
+ },
+ {
+  "id": "N9",
+  "what": "no stick for a name given up",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                        self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))?;\n                    } else {\n                        self.stick(&name, members)?;\n                    }",
+    "                        self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))?;\n                    }"
+   ]
+  ]
+ },
+ {
+  "id": "N10",
+  "what": "a retry that succeeds stays stuck",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            if self.destroy_members(&name, &members)? {\n                self.told(name.clone(), Outcome::Retired);\n                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;\n            }",
+    "            if self.destroy_members(&name, &members)? {\n                self.told(name.clone(), Outcome::Retired);\n            }"
+   ]
+  ]
+ },
+ {
+  "id": "N11",
+  "what": "a retry that succeeds tells nothing",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            if self.destroy_members(&name, &members)? {\n                self.told(name.clone(), Outcome::Retired);\n                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;\n            }",
+    "            if self.destroy_members(&name, &members)? {\n                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;\n            }"
+   ]
+  ]
+ },
+ {
+  "id": "N12",
+  "what": "a retry that succeeds tells after the save",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            if self.destroy_members(&name, &members)? {\n                self.told(name.clone(), Outcome::Retired);\n                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;\n            }",
+    "            if self.destroy_members(&name, &members)? {\n                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;\n                self.told(name.clone(), Outcome::Retired);\n            }"
+   ]
+  ]
+ },
+ {
+  "id": "N13",
+  "what": "the names stuck counted for room",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            && self.published.len() + ending <= PUBLISHED_MAX\n    }",
+    "            && self.published.len() + self.stuck.len() + ending <= PUBLISHED_MAX\n    }"
+   ]
+  ]
+ },
+ {
+  "id": "N14",
+  "what": "names() does not find a name stuck",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            || self.stuck.iter().any(|s| s.name == name)\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "N15",
+  "what": "rule unchecked: more than STUCK_MAX",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "        if self.stuck.len() > STUCK_MAX {",
+    "        if false && self.stuck.len() > STUCK_MAX {"
+   ]
+  ]
+ },
+ {
+  "id": "N16",
+  "what": "rule unchecked: a name stuck twice",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            if self.stuck[..i].iter().any(|s| s.name == *name) {",
+    "            if false && self.stuck[..i].iter().any(|s| s.name == *name) {"
+   ]
+  ]
+ },
+ {
+  "id": "N17",
+  "what": "rule unchecked: stuck and kept otherwise too",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            if self.publish(name).is_some()\n                || self.abandoned.iter().any(|a| a.name == *name)\n                || self.published.iter().any(|p| p.name == *name)\n            {\n                return rule(format!(\"`{name}` is stuck and kept otherwise too\"));",
+    "            if false\n            {\n                return rule(format!(\"`{name}` is stuck and kept otherwise too\"));"
+   ]
+  ]
+ },
+ {
+  "id": "N18",
+  "what": "rule unchecked: stuck with no members",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            if stuck.members.is_empty() {",
+    "            if false && stuck.members.is_empty() {"
+   ]
+  ]
+ },
+ {
+  "id": "M1",
+  "what": "the cap one high (65 kept)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "let over = (self.record.stuck.len() + 1).saturating_sub(STUCK_MAX);",
+    "let over = self.record.stuck.len().saturating_sub(STUCK_MAX);"
+   ]
+  ]
+ },
+ {
+  "id": "M2",
+  "what": "the cap one low (63 kept)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "let over = (self.record.stuck.len() + 1).saturating_sub(STUCK_MAX);",
+    "let over = (self.record.stuck.len() + 2).saturating_sub(STUCK_MAX);"
+   ]
+  ]
+ },
+ {
+  "id": "M3",
+  "what": "the retry within the round's steps (none once they are spent, and it spends them)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        self.retry_stuck()?;\n        self.mark_retiring()?;\n        let mut steps = 0;",
+    "        self.mark_retiring()?;\n        let mut steps = 0;"
+   ],
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        self.retain_given_up(&mut steps)?;\n",
+    "        self.retain_given_up(&mut steps)?;\n        if steps < STEPS_MAX {\n            self.retry_stuck()?;\n        }\n"
+   ]
+  ]
+ },
+ {
+  "id": "M4",
+  "what": "only the oldest name stuck retried each round",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        for (name, members) in stuck {\n            self.at.clone_from(&name);\n            if self.destroy_members(&name, &members)? {",
+    "        for (name, members) in stuck.into_iter().take(1) {\n            self.at.clone_from(&name);\n            if self.destroy_members(&name, &members)? {"
+   ]
+  ]
+ },
+ {
+  "id": "M5",
+  "what": "a retry that succeeds removes every name stuck",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;\n            }\n        }\n        Ok(())",
+    "                self.commit(Effect::Retain, |r| r.stuck.clear())?;\n            }\n        }\n        Ok(())"
+   ]
+  ]
+ },
+ {
+  "id": "M6",
+  "what": "v2: a record of version 2 refused",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "        if version != VERSION && version != VERSION_2 {",
+    "        if version != VERSION {"
+   ]
+  ]
+ },
+ {
+  "id": "M7",
+  "what": "the record keeps the members of the first only (stuck with one member)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            r.stuck.push(Stuck {\n                name,\n                members,",
+    "            r.stuck.push(Stuck {\n                name,\n                members: members.into_iter().take(1).collect(),"
+   ]
+  ]
+ },
+ {
+  "id": "M8",
+  "what": "the dump leaves the names stuck out",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "            \"stuck {} members={} at_ms={}\\n\",",
+    "            \"\","
+   ]
+  ]
+ },
+ {
+  "id": "M9",
+  "what": "the oldest stuck forgotten from the newest end of the list (stuck pushed to the front)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            r.stuck.push(Stuck {\n                name,",
+    "            r.stuck.insert(0, Stuck {\n                name,"
+   ]
+  ]
+ },
+ {
+  "id": "P1",
+  "what": "R11 again: a destroy that fails does not stop the name leaving (no stick)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            if let Err(e) = destroyed {\n                self.say(\n                    name,\n                    Report::NotRetired(format!(\"zfs destroy {}@{name}: {e}\", member.name)),\n                );\n                return Ok(false);",
+    "            if let Err(e) = destroyed {\n                self.say(\n                    name,\n                    Report::NotRetired(format!(\"zfs destroy {}@{name}: {e}\", member.name)),\n                );\n                return Ok(true);"
+   ]
+  ]
+ },
+ {
+  "id": "P2",
+  "what": "R12 again: a members read that fails lets the name leave",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "Report::NotRetired(format!(\"the members' @{name} not read: {e}\")),\n                );\n                return Ok(false);",
+    "Report::NotRetired(format!(\"the members' @{name} not read: {e}\")),\n                );\n                return Ok(true);"
+   ]
+  ]
+ },
+ {
+  "id": "P3",
+  "what": "R18 again: a report told at each round (the dedupe off)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        if self.retention.told.get(name) == Some(&key) {\n            return;\n        }",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "P4",
+  "what": "C1 again: room counts the names given up with those under way wrongly (no ending)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            && self.abandoned.len() + ending <= ABANDONED_MAX",
+    "            && self.abandoned.len() < ABANDONED_MAX"
+   ]
+  ]
+ },
+ {
+  "id": "M8b",
+  "what": "the dump leaves the names stuck out (compiling form of M8)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "for s in &record.stuck {",
+    "for s in record.stuck.iter().take(0) {"
+   ]
+  ]
+ }
+]

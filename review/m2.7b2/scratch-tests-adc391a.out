@@ -1,0 +1,45 @@
+T3: skz-20261125T010000Z in the record as Some(Some(Other)); its @t: ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z", "tank@skz-20261125T010000Z"]
+thread 'engine::retain::tests::review179_t3_a_name_stopped_other_is_never_asked_again' (16035) panicked at crates/skyzfs-agent/src/engine/retain/tests.rs:654:5:
+T1: round 1 asked 8 retires and took 240000 ms: round 1 ok took_ms=240000 late_ms=0 skipped=3 begun=skz-20261125T010107Z under_way=1 synced=0 bound=0
+T2: code 11; the reopen 240000 ms after the failure; asked 8
+round 1 ok took_ms=240000 late_ms=0 skipped=3 begun=skz-20261125T010107Z under_way=1 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost
+round 2 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=1 synced=0 bound=0
+thread 'program::tests::review179::review179_t1_unanswered_retires_hold_the_round_past_its_ticks' (16036) panicked at crates/skyzfs-agent/src/program/tests.rs:3522:9:
+round 1 took 240000 ms with 8 unanswered retires
+thread 'program::tests::review179::review179_t2_a_volume_lost_during_retention_waits_for_its_steps' (16037) panicked at crates/skyzfs-agent/src/program/tests.rs:3554:9:
+the reopen 240000 ms after the failure
+test engine::retain::tests::review179_t3_a_name_stopped_other_is_never_asked_again ...    0FAILED: 
+test program::tests::review179::review179_t1_unanswered_retires_hold_the_round_past_its_ticks ... FAILED
+test program::tests::review179::review179_t2_a_volume_lost_during_retention_waits_for_its_steps ... FAILED
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 324 filtered out; finished in 0.16s
+T4: after six rounds, of the names that could go, still in the record: ["skz-20261125T010045Z", "skz-20261125T010051Z", "skz-20261125T010056Z"]
+never retired: ["skz-20261125T010045Z", "skz-20261125T010051Z", "skz-20261125T010056Z"]
+test engine::retain::tests::review179_t4_eight_names_that_cannot_be_destroyed_starve_the_rest ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.13s
+--- gap tests: at the head, then on plants R12 and R15 (each planted alone in a scratch worktree, restored after)
+head: engine::retain::tests::review179_g_r12_a_members_read_that_fails_keeps_the_name ... ok;engine::retain::tests::review179_g_r15_an_unreadable_snap_t_is_there ... ok;
+R12: engine::retain::tests::review179_g_r15_an_unreadable_snap_t_is_there ... ok;engine::retain::tests::review179_g_r12_a_members_read_that_fails_keeps_the_name ... FAILED;
+R15: engine::retain::tests::review179_g_r12_a_members_read_that_fails_keeps_the_name ... ok;engine::retain::tests::review179_g_r15_an_unreadable_snap_t_is_there ... FAILED;
+--- gap tests for R16 and R16b: at the head, then on each plant
+head16: engine::retain::tests::review179_g_r16b_a_look_refused_destroys_nothing ... ok;engine::retain::tests::review179_g_r16_a_look_not_answered_destroys_nothing ... ok;
+R16: engine::retain::tests::review179_g_r16b_a_look_refused_destroys_nothing ... ok;engine::retain::tests::review179_g_r16_a_look_not_answered_destroys_nothing ... FAILED;
+R16b: engine::retain::tests::review179_g_r16_a_look_not_answered_destroys_nothing ... ok;engine::retain::tests::review179_g_r16b_a_look_refused_destroys_nothing ... FAILED;
+--- gap test for R21: at the head, then on the plant
+head21: engine::retain::tests::review179_g_r21_a_given_up_name_is_told_before_it_leaves ... ok;
+R21: engine::retain::tests::review179_g_r21_a_given_up_name_is_told_before_it_leaves ... FAILED;
+--- gap test for R22: at the head, then on the plant
+head22: engine::retain::tests::review179_g_r22_a_forgotten_name_is_told_before_it_leaves ... ok;
+R22: engine::retain::tests::review179_g_r22_a_forgotten_name_is_told_before_it_leaves ... FAILED;
+--- T5 at the head (T5b: the first round that began after the first hour back)
+T5b: the first round that began, of the 23 h after the first hour back: Some(1082) (minutes after that hour)
+T5: 256 given up in 5 h, the first round that began nothing: Some(257); in the hour after the uploader is back: 60 rounds, 0 begun, 0 published; its last error line: Some("skyzfs-agent: round 60: no room in the record: 8 publishes under way, or the names given up or published at their bound while retention catches up")
+test program::tests::review179::review179_t5_hours_of_give_ups_stop_the_begins_after_the_uploader_is_back ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 334 filtered out; finished in 8.83s
+--- T5 at the base 7cf6da6
+T5: 64 given up in 5 h, the first round that began nothing: None; in the hour after the uploader is back: 60 rounds, 60 begun, 60 published; its last error line: None
+test program::tests::review179::review179_t5_hours_of_give_ups_stop_the_begins_after_the_uploader_is_back ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 302 filtered out; finished in 1.55s
+--- gap test for E4: at the head, then on the plant
+headE4: engine::retain::tests::review179_g_e4_a_give_up_after_the_take_records_its_members ... ok;
+E4: engine::retain::tests::review179_g_e4_a_give_up_after_the_take_records_its_members ... FAILED;

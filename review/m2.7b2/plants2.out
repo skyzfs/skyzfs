@@ -1,0 +1,39 @@
+tree d68471fd1d166a5f83dc157a8a14cb4b9ac0259b 0 changed
+base skyzfs-agent --lib rc=0 329 passed 0 failed
+N1	KILLED	rc=101	44s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up,engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten
+N2	KILLED	rc=101	45s	engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten,engine::retain::tests::the_oldest_stuck_is_told_before_it_is_dropped
+N3	KILLED	rc=101	39s	engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten,engine::retain::tests::the_oldest_stuck_is_told_before_it_is_dropped
+N4	KILLED	rc=101	42s	engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten,engine::retain::tests::the_oldest_stuck_is_told_before_it_is_dropped
+N5	KILLED	rc=101	50s	engine::retain::tests::the_oldest_stuck_is_told_before_it_is_dropped
+N6	KILLED	rc=101	41s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up,engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten
+N7	KILLED	rc=101	27s	engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck
+N8	KILLED	rc=101	43s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up,engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten,engine::retain::tests::the_oldest_stuck_is_told_before_it_is_dropped
+N9	KILLED	rc=101	45s	engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck
+N10	KILLED	rc=101	39s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up
+N11	KILLED	rc=101	39s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up
+N12	KILLED	rc=101	34s	engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up
+N13	KILLED	rc=101	43s	record::tests::a_publish_is_begun_only_with_room_for_its_end,record::tests::the_names_stuck_count_for_no_room
+N14	KILLED	rc=101	45s	record::tests::the_names_stuck_count_for_no_room
+N15	KILLED	rc=101	46s	record::tests::a_record_that_breaks_a_rule_is_neither_written_nor_read
+N16	KILLED	rc=101	45s	record::tests::a_record_that_breaks_a_rule_is_neither_written_nor_read
+N17	KILLED	rc=101	48s	record::tests::a_record_that_breaks_a_rule_is_neither_written_nor_read
+N18	KILLED	rc=101	36s	record::tests::a_record_that_breaks_a_rule_is_neither_written_nor_read
+M1	KILLED	rc=101	48s	engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten,engine::retain::tests::the_oldest_stuck_is_told_before_it_is_dropped
+M2	KILLED	rc=101	40s	engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten
+M3	KILLED	rc=101	47s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten
+M4	KILLED	rc=101	32s	engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten
+M5	SURVIVED	rc=0	33s	
+M6	KILLED	rc=101	32s	record::tests::a_head_that_is_not_version_3s_is_named,record::tests::version_2s_bytes_read_as_version_3
+M7	SURVIVED	rc=0	33s	
+M8	COMPILE	rc=101	3s	
+M9	KILLED	rc=101	33s	engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten
+P1	KILLED	rc=101	32s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_name_given_up_whose_destroy_fails_is_stuck,engine::retain::tests::a_stop_in_the_retry_of_a_name_stuck_is_taken_up,engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten,engine::retain::tests::the_oldest_stuck_is_told_before_it_is_dropped
+P2	SURVIVED	rc=0	32s	
+P3	KILLED	rc=101	34s	engine::retain::tests::a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round,engine::retain::tests::a_retire_not_answered_destroys_nothing,engine::retain::tests::past_stuck_max_the_oldest_stuck_is_forgotten,engine::retain::tests::the_names_given_up_go_after_their_time_by_what_they_left
+P4	KILLED	rc=101	34s	record::tests::a_publish_is_begun_only_with_room_for_its_end
+after: 0 changed
+plants-done
+# Then three plants of plants.json again at d68471f (the first run of a plants3.json, stopped when the head moved; its log was not kept):
+R15@d68	SURVIVED	rc=0	22s	
+R16@d68	SURVIVED	rc=0	22s	
+R16b@d68	SURVIVED	rc=0	34s	

@@ -1,0 +1,27 @@
+--- all scratch tests at d68471f (apply.py on a worktree of d68471f)
+test engine::retain::tests::review179_g_r12_a_members_read_that_fails_keeps_the_name ... ok
+test engine::retain::tests::review179_g_r16_a_look_not_answered_destroys_nothing ... ok
+test engine::retain::tests::review179_g_r15_an_unreadable_snap_t_is_there ... ok
+test engine::retain::tests::review179_g_r16b_a_look_refused_destroys_nothing ... ok
+T3: skz-20261125T010000Z in the record as Some(Some(Other)); its @t: ["tank/db@skz-20261125T010000Z", "tank/vol@skz-20261125T010000Z", "tank@skz-20261125T010000Z"]
+thread 'engine::retain::tests::review179_t3_a_name_stopped_other_is_never_asked_again' (16665) panicked at crates/skyzfs-agent/src/engine/retain/tests.rs:874:5:
+test engine::retain::tests::review179_g_r22_a_forgotten_name_is_told_before_it_leaves ... ok
+test engine::retain::tests::review179_g_r21_a_given_up_name_is_told_before_it_leaves ... ok
+T4: after six rounds, of the names that could go, still in the record: []
+T1: round 1 asked 8 retires and took 240000 ms: round 1 ok took_ms=240000 late_ms=0 skipped=3 begun=skz-20261125T010107Z under_way=1 synced=0 bound=0
+test engine::retain::tests::review179_t4_eight_names_that_cannot_be_destroyed_starve_the_rest ... ok
+T2: code 11; the reopen 240000 ms after the failure; asked 8
+round 1 ok took_ms=240000 late_ms=0 skipped=3 begun=skz-20261125T010107Z under_way=1 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost
+round 2 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=1 synced=0 bound=0
+thread 'program::tests::review179::review179_t1_unanswered_retires_hold_the_round_past_its_ticks' (16667) panicked at crates/skyzfs-agent/src/program/tests.rs:3535:9:
+round 1 took 240000 ms with 8 unanswered retires
+thread 'program::tests::review179::review179_t2_a_volume_lost_during_retention_waits_for_its_steps' (16668) panicked at crates/skyzfs-agent/src/program/tests.rs:3567:9:
+test engine::retain::tests::review179_t3_a_name_stopped_other_is_never_asked_again ... FAILED
+test program::tests::review179::review179_t2_a_volume_lost_during_retention_waits_for_its_steps ... FAILED
+test engine::retain::tests::review179_g_e4_a_give_up_after_the_take_records_its_members ... ok
+T5: 256 given up in 5 h, the first round that began nothing: Some(257); in the hour after the uploader is back: 60 rounds, 0 begun, 0 published; its last error line: Some("skyzfs-agent: round 60: no room in the record: 8 publishes under way, or the names given up or published at their bound while retention catches up")
+thread 'program::tests::review179::review179_t5_hours_of_give_ups_stop_the_begins_after_the_uploader_is_back' (16669) panicked at crates/skyzfs-agent/src/program/tests.rs:3609:9:
+test program::tests::review179::review179_t5_hours_of_give_ups_stop_the_begins_after_the_uploader_is_back ... FAILED
+test result: FAILED. 8 passed; 4 failed; 0 ignored; 0 measured; 329 filtered out; finished in 1.59s
+--- P2 at d68471f (the plant of plants2.json, planted alone in this tree, restored after): review179_g_r12_a_members_read_that_fails_keeps_the_name ... FAILED (it kills P2; the code P2 plants is the same at e6530f1)

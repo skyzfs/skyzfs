@@ -1,0 +1,34 @@
+[
+ {
+  "id": "U1-daemon",
+  "what": "upload: gone counted as retired (run on the tests of skyzfsd with its test hooks and of skyzfs-agent-cli with its; plants.out has its run on skyzfs-upload)",
+  "cmd": [
+   "bash",
+   "-c",
+   "cargo test -p skyzfsd --features test-hooks && cargo test -p skyzfs-agent-cli --features skyzfs-agent-cli/test-hooks"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/publish.rs",
+    "Retired::Gone => self.figures.retire_gone += 1,",
+    "Retired::Gone => self.figures.retired += 1,"
+   ]
+  ]
+ },
+ {
+  "id": "U2-daemon",
+  "what": "upload: retires not counted (run on the tests of skyzfsd with its test hooks and of skyzfs-agent-cli with its; plants.out has its run on skyzfs-upload)",
+  "cmd": [
+   "bash",
+   "-c",
+   "cargo test -p skyzfsd --features test-hooks && cargo test -p skyzfs-agent-cli --features skyzfs-agent-cli/test-hooks"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "                self.publishing.count_retire(*retired);\n",
+    ""
+   ]
+  ]
+ }
+]

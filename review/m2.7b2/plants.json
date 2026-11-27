@@ -1,0 +1,1367 @@
+[
+ {
+  "id": "R1",
+  "what": "no RETIRING_MAX bound on the marks",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "let n = over.min(RETIRING_MAX.saturating_sub(retiring));",
+    "let n = over;"
+   ]
+  ]
+ },
+ {
+  "id": "R2",
+  "what": "the newest past keep marked instead of the oldest",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            .filter(|p| p.retire.is_none())\n            .take(n)",
+    "            .filter(|p| p.retire.is_none())\n            .skip(kept - n)\n            .take(n)"
+   ]
+  ]
+ },
+ {
+  "id": "R3",
+  "what": "one more kept than --keep",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "let over = kept.saturating_sub(self.retention.keep);",
+    "let over = kept.saturating_sub(self.retention.keep + 1);"
+   ]
+  ]
+ },
+ {
+  "id": "R4",
+  "what": "STEPS_MAX + 1 steps a round",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "_ if steps >= STEPS_MAX => {}",
+    "_ if steps > STEPS_MAX => {}"
+   ]
+  ]
+ },
+ {
+  "id": "R5",
+  "what": "gone not taken as done",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "Ok(Reply::Retired | Reply::Gone) => {",
+    "Ok(Reply::Retired) => {"
+   ]
+  ]
+ },
+ {
+  "id": "R6",
+  "what": "refused other destroys the members",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "self.commit(Effect::Retired, |r| set_retire(r, name, Retire::Other))?;\n                self.say_other(name, Some(&text));\n                Ok(())",
+    "let _ = &text;\n                self.commit(Effect::Retired, |r| set_retire(r, name, Retire::Members))?;\n                self.retire_members(name)"
+   ]
+  ]
+ },
+ {
+  "id": "R8",
+  "what": "retired told after the name leaves the record",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            self.told(name.to_string(), Outcome::Retired);\n            self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;",
+    "            self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;\n            self.told(name.to_string(), Outcome::Retired);"
+   ]
+  ]
+ },
+ {
+  "id": "R9",
+  "what": "members destroyed by name alone (no GUID filter)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    ".filter(|m| ours.contains(&m.snapshot_guid))",
+    ".filter(|m| !ours.is_empty() || m.snapshot_guid > 0)"
+   ]
+  ]
+ },
+ {
+  "id": "R10",
+  "what": "pool@t destroyed first",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "(Reverse(depth(a)), &b.name).cmp(&(Reverse(depth(b)), &a.name))",
+    "(depth(a), &a.name).cmp(&(depth(b), &b.name)).then(Reverse(0).cmp(&Reverse(0)))"
+   ]
+  ]
+ },
+ {
+  "id": "R11",
+  "what": "a destroy that fails does not stop the name leaving",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                return Ok(false);\n            }\n        }\n        Ok(true)",
+    "                continue;\n            }\n        }\n        Ok(true)"
+   ]
+  ]
+ },
+ {
+  "id": "R12",
+  "what": "a members read that fails lets the name leave",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "Report::NotRetired(format!(\"the members' @{name} not read: {e}\")),\n                );\n                return Ok(false);",
+    "Report::NotRetired(format!(\"the members' @{name} not read: {e}\")),\n                );\n                return Ok(true);"
+   ]
+  ]
+ },
+ {
+  "id": "R13",
+  "what": "a name given up kept one ms past its bound",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "let past = now.saturating_sub(a.at_ms) >= bound;",
+    "let past = now.saturating_sub(a.at_ms) > bound;"
+   ]
+  ]
+ },
+ {
+  "id": "R14",
+  "what": "a person's give-up not looked up",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "look: a.why == Why::Person,",
+    "look: a.why == Why::Person && false,"
+   ]
+  ]
+ },
+ {
+  "id": "R15",
+  "what": "a look answered unreadable taken as absent",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "Ok(Reply::Absent) => Ok(true),",
+    "Ok(Reply::Absent | Reply::Unreadable(_)) => Ok(true),"
+   ],
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "Ok(Reply::Snap(_) | Reply::Unreadable(_)) => {",
+    "Ok(Reply::Snap(_)) => {"
+   ]
+  ]
+ },
+ {
+  "id": "R16",
+  "what": "a look not answered taken as absent",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "self.say(name, Report::NotRetired(format!(\"look not answered: {e}\")));\n                Ok(false)",
+    "self.say(name, Report::NotRetired(format!(\"look not answered: {e}\")));\n                Ok(true)"
+   ]
+  ]
+ },
+ {
+  "id": "R16b",
+  "what": "a look answered otherwise (a refusal) taken as absent",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "Report::NotRetired(format!(\"look answered `{}`\", other.line())),\n                );\n                Ok(false)",
+    "Report::NotRetired(format!(\"look answered `{}`\", other.line())),\n                );\n                Ok(true)"
+   ]
+  ]
+ },
+ {
+  "id": "R17",
+  "what": "no GUIDs never forgotten",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Some(Due::Forget) => {\n                    *steps += 1;\n                    self.forget_given_up(&name, \"no member guids; destroy by hand\")?;\n                }",
+    "                Some(Due::Forget) => {\n                    *steps += 1;\n                }"
+   ]
+  ]
+ },
+ {
+  "id": "R18",
+  "what": "a report told at each round",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        if self.retention.told.get(name) == Some(&key) {\n            return;\n        }\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "R19",
+  "what": "a stop `other` told at each round",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        if self.retention.told.get(name).map(String::as_str) == Some(KEY) {\n            return;\n        }\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "R20",
+  "what": "names given up take no step",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                    *steps += 1;\n                    if look",
+    "                    if look"
+   ]
+  ]
+ },
+ {
+  "id": "R21",
+  "what": "a name given up: retired told after it leaves",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                        self.told(name.clone(), Outcome::Retired);\n                        self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))?;",
+    "                        self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))?;\n                        self.told(name.clone(), Outcome::Retired);"
+   ]
+  ]
+ },
+ {
+  "id": "R22",
+  "what": "forgotten told after the name leaves",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        self.told(name.to_string(), Outcome::Forgotten(why.to_string()));\n        self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))",
+    "        self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))?;\n        self.told(name.to_string(), Outcome::Forgotten(why.to_string()));\n        Ok(())"
+   ]
+  ]
+ },
+ {
+  "id": "R23",
+  "what": "names that left nothing never leave",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        if !dropped.is_empty() {",
+    "        if false && !dropped.is_empty() {"
+   ]
+  ]
+ },
+ {
+  "id": "R24",
+  "what": "set_keep unclamped and keep 0 allowed by retention",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "self.retention.keep = keep.min(KEEP_MAX);",
+    "self.retention.keep = keep.min(KEEP_MAX).saturating_sub(1);"
+   ]
+  ]
+ },
+ {
+  "id": "C1",
+  "what": "room: the names given up not counted with the ones under way",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "&& self.abandoned.len() + ending <= ABANDONED_MAX",
+    "&& self.abandoned.len() <= ABANDONED_MAX"
+   ]
+  ]
+ },
+ {
+  "id": "C2",
+  "what": "room: no bound on the names published",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "&& self.published.len() + ending <= PUBLISHED_MAX",
+    "&& true"
+   ]
+  ]
+ },
+ {
+  "id": "C3",
+  "what": "check: no bound on the names being retired",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "if retiring > RETIRING_MAX {",
+    "if false && retiring > RETIRING_MAX {"
+   ]
+  ]
+ },
+ {
+  "id": "C5",
+  "what": "v2: a phase of v3 accepted",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "if version == VERSION_2\n            && record",
+    "if false\n            && version == VERSION_2\n            && record"
+   ]
+  ]
+ },
+ {
+  "id": "C6",
+  "what": "a name published starts marked",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            at_ms,\n            retire: None,\n        };",
+    "            at_ms,\n            retire: Some(Retire::Ref),\n        };"
+   ]
+  ]
+ },
+ {
+  "id": "C7",
+  "what": "the names given up dropped past 64 (v2's rule)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            at_ms,\n            left,\n        });\n    }",
+    "            at_ms,\n            left,\n        });\n        let over = self.abandoned.len().saturating_sub(64);\n        self.abandoned.drain(..over);\n    }"
+   ]
+  ]
+ },
+ {
+  "id": "C8",
+  "what": "check: published and under way allowed",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "            if self.publish(name).is_some() {\n                return rule(format!(\"`{name}` is published and under way\"));",
+    "            if false && self.publish(name).is_some() {\n                return rule(format!(\"`{name}` is published and under way\"));"
+   ]
+  ]
+ },
+ {
+  "id": "C9",
+  "what": "check: a give-up leaving no members allowed",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/record.rs",
+    "if matches!(&abandoned.left, Left::Members(m) if m.is_empty()) {",
+    "if false && matches!(&abandoned.left, Left::Members(m) if m.is_empty()) {"
+   ]
+  ]
+ },
+ {
+  "id": "E2",
+  "what": "the give-up told after it moves (v2's order)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "        self.leave(name.to_string(), Outcome::Abandoned(why));\n        let now = self.clock.now_ms();\n        self.commit(Effect::Abandon, |r| r.abandon(name, why, now, left))?;",
+    "        let now = self.clock.now_ms();\n        self.commit(Effect::Abandon, |r| r.abandon(name, why, now, left))?;\n        self.leave(name.to_string(), Outcome::Abandoned(why));"
+   ]
+  ]
+ },
+ {
+  "id": "E3",
+  "what": "left_by: an Intent with a snapshot seen leaves Nothing",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "(_, None) if snapshot_seen => Left::Unknown,",
+    "(_, None) if snapshot_seen => Left::Nothing,"
+   ]
+  ]
+ },
+ {
+  "id": "E4",
+  "what": "left_by: a take leaves Unknown",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "(_, Some(taken)) => Left::Members(taken.members.clone()),",
+    "(_, Some(_)) => Left::Unknown,"
+   ]
+  ]
+ },
+ {
+  "id": "E4b",
+  "what": "left_by: an Intent with no snapshot seen leaves Unknown",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "        (_, None) => Left::Nothing,\n    }",
+    "        (_, None) => Left::Unknown,\n    }"
+   ]
+  ]
+ },
+ {
+  "id": "E6",
+  "what": "sync_past: clear at the mark (count == rewound)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "Some((group, true)) if cuts.count <= cuts.rewound => group,",
+    "Some((group, true)) if cuts.count < cuts.rewound => group,"
+   ]
+  ]
+ },
+ {
+  "id": "E7",
+  "what": "sync_past: the mark not read",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "Some((group, true)) if cuts.count <= cuts.rewound => group,",
+    "Some((group, true)) if false => group,"
+   ]
+  ]
+ },
+ {
+  "id": "E8",
+  "what": "begin: only the under-way bound (no room for the ends)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "        if !self.record.room() {\n            return Err(Error::Full);",
+    "        if self.record.under_way.len() >= UNDER_WAY_MAX {\n            return Err(Error::Full);"
+   ]
+  ]
+ },
+ {
+  "id": "E9",
+  "what": "the Abandoning save does not clear held",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "                        p.phase = phase;\n                        p.held = false;",
+    "                        p.phase = phase;"
+   ]
+  ]
+ },
+ {
+  "id": "E10",
+  "what": "a publish done not kept among the names published",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine.rs",
+    "self.commit(Effect::Forget, |r| r.leave_published(&name, now))?;",
+    "self.commit(Effect::Forget, |r| { let _ = now; r.under_way.retain(|p| p.name != name) })?;"
+   ]
+  ]
+ },
+ {
+  "id": "PL1",
+  "what": "plan: Abandoning not first (a person's choice first)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/plan.rs",
+    "    if let Phase::Abandoning { why, .. } = &publish.phase {\n        return Action::Abandon(*why);\n    }\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "G1",
+  "what": "cap: every Retry counted, not only a reopen's",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if verdict == Verdict::Retry && matches!(step, Some(Step::Reopened { .. })) {",
+    "if verdict == Verdict::Retry {"
+   ]
+  ]
+ },
+ {
+  "id": "G2",
+  "what": "cap: one reopen more before it",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "let reopen = if reopens >= REOPEN_CAP {",
+    "let reopen = if reopens > REOPEN_CAP {"
+   ]
+  ]
+ },
+ {
+  "id": "G3",
+  "what": "cap: only one more reopen after it",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "since_cap.is_multiple_of(REOPEN_CAP)",
+    "since_cap == REOPEN_CAP"
+   ]
+  ]
+ },
+ {
+  "id": "G4",
+  "what": "quick retry: one more than QUICK_RETRIES",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if quick < QUICK_RETRIES && reopens < REOPEN_CAP {",
+    "if quick <= QUICK_RETRIES && reopens < REOPEN_CAP {"
+   ]
+  ]
+ },
+ {
+  "id": "G5",
+  "what": "quick retry past the cap",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if quick < QUICK_RETRIES && reopens < REOPEN_CAP {",
+    "if quick < QUICK_RETRIES {"
+   ]
+  ]
+ },
+ {
+  "id": "G6",
+  "what": "quick retries never renewed by another verdict",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "        } else {\n            quick = 0;\n        }\n",
+    "        }\n"
+   ]
+  ]
+ },
+ {
+  "id": "G7",
+  "what": "an early round uses up its tick (D1 back)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "tick = tick.saturating_add(if early { passed } else { passed.max(1) });",
+    "tick = tick.saturating_add(passed.max(1)); let _ = early;"
+   ]
+  ]
+ },
+ {
+  "id": "G8",
+  "what": "early_ms never said",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "early_ms: (began < due).then(|| due - began),",
+    "early_ms: None,"
+   ]
+  ]
+ },
+ {
+  "id": "G9",
+  "what": "retention after news on the note",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if !restart && go() && !agent.note_came() {\n                if let Err(e) = agent.retain() {",
+    "if !restart && go() {\n                if let Err(e) = agent.retain() {"
+   ]
+  ]
+ },
+ {
+  "id": "G10",
+  "what": "retention after an end was asked",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if !restart && go() && !agent.note_came() {\n                if let Err(e) = agent.retain() {",
+    "if !restart && !agent.note_came() {\n                if let Err(e) = agent.retain() {"
+   ]
+  ]
+ },
+ {
+  "id": "G11",
+  "what": "run never retains",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if let Err(e) = agent.retain() {",
+    "if let Err(e) = Ok::<(), Error>(()) {"
+   ]
+  ]
+ },
+ {
+  "id": "G12",
+  "what": "a new note does not start the counts again",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "                    noted = Some(*note);\n                    reopens = 0;\n                    since_cap = 0;\n                    quick = 0;",
+    "                    noted = Some(*note);"
+   ]
+  ]
+ },
+ {
+  "id": "G13",
+  "what": "reopen=held never said",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "reopen_held = matches!(step, Some(Step::Held { .. }));",
+    "reopen_held = false;"
+   ]
+  ]
+ },
+ {
+  "id": "G14",
+  "what": "the cap said again at each reopen past it",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if reopens == REOPEN_CAP {",
+    "if reopens >= REOPEN_CAP {"
+   ]
+  ]
+ },
+ {
+  "id": "G15",
+  "what": "--keep 0 accepted",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "Ok(n) if (1..=max).contains(&n) => kept.keep = n,",
+    "Ok(n) if (0..=max).contains(&n) => kept.keep = n,"
+   ]
+  ]
+ },
+ {
+  "id": "G16",
+  "what": "the CLI does not pass --keep to the agent",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent-cli",
+   "--features",
+   "skyzfs-agent-cli/test-hooks"
+  ],
+  "edits": [
+   [
+    "bins/skyzfs-agent/src/main.rs",
+    "            agent.set_keep(kept.keep);\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "L1",
+  "what": "a held step's verdict failed (run goes on as if nothing could be done)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/lost.rs",
+    "Some(Step::Held { .. }) => Verdict::Retry,",
+    "Some(Step::Held { .. }) => Verdict::Failed,"
+   ]
+  ]
+ },
+ {
+  "id": "L2",
+  "what": "look_lost reopens",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/lost.rs",
+    "Some(state) if !reopen => return Ok(Step::Held { state }),",
+    "Some(state) if false && !reopen => return Ok(Step::Held { state }),"
+   ]
+  ]
+ },
+ {
+  "id": "F1",
+  "what": "fake: the outcome kept after a retire",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/fake.rs",
+    "                self.daemon.ended.remove(&r.name);\n                reply",
+    "                reply"
+   ]
+  ]
+ },
+ {
+  "id": "F2",
+  "what": "fake: a retire not refused once stopped",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/fake.rs",
+    "                if self.daemon.stopped {\n                    return Ok(Reply::Refused(\n                        Code::Stopped,",
+    "                if false && self.daemon.stopped {\n                    return Ok(Reply::Refused(\n                        Code::Stopped,"
+   ]
+  ]
+ },
+ {
+  "id": "X1",
+  "what": "the refusal's text written without the shared prefix",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "bins/skyzfsd/src/control.rs",
+    "\"{OTHER_NAMES}{}, not the request's; it is left as it is\",",
+    "\"snap/T names the commit {}, not the request's; it is left as it is\","
+   ]
+  ]
+ },
+ {
+  "id": "X2",
+  "what": "found= never written",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "bins/skyzfsd/src/record.rs",
+    "if let Some(found) = crate::control::other_commit(reply) {",
+    "if let Some(found) = None::<[u8; 32]> {\n                let _ = reply;"
+   ]
+  ]
+ },
+ {
+  "id": "X3",
+  "what": "found= read one digit short",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "bins/skyzfsd/src/control.rs",
+    ".get(..64)?)",
+    ".get(..63)?)"
+   ]
+  ]
+ },
+ {
+  "id": "X4",
+  "what": "commit= of the reply, not the request (the found one)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "bins/skyzfsd/src/record.rs",
+    "answer.push_str(&format!(\" commit={}\", hex(&commit)));",
+    "answer.push_str(&format!(\" commit={}\", hex(&crate::control::other_commit(reply).unwrap_or(commit))));"
+   ]
+  ]
+ },
+ {
+  "id": "X5",
+  "what": "a retire dropped at the end given the no-answer advice",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "bins/skyzfsd/src/control/handler.rs",
+    "ended: \"the retire may have landed: look tells (absent once it has)\",",
+    "ended: \"the retire may still be made: ask again, which answers gone once it is\","
+   ]
+  ]
+ },
+ {
+  "id": "X6",
+  "what": "status: the daemon shows gone as retired",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "bins/skyzfsd/src/upload.rs",
+    "            retired: f.retired,\n            gone: f.retire_gone,",
+    "            retired: f.retired,\n            gone: f.retired,"
+   ]
+  ]
+ },
+ {
+  "id": "S1",
+  "what": "status: retires written over lost_whole",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-ublk",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-ublk/src/status.rs",
+    "bytes[1416 + 8 * i..1424 + 8 * i]",
+    "bytes[1408 + 8 * i..1416 + 8 * i]"
+   ]
+  ]
+ },
+ {
+  "id": "S2",
+  "what": "status: v20's retires not read",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-ublk",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-ublk/src/status.rs",
+    "retires: (version >= 20).then(|| RetiresShown {",
+    "retires: (version >= 21).then(|| RetiresShown {"
+   ]
+  ]
+ },
+ {
+  "id": "S3",
+  "what": "status: v19 refused",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-ublk",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-ublk/src/status.rs",
+    "    } else if is(NINETEENTH_LEN, NINETEENTH_MAGIC) {\n        19",
+    "    } else if false && is(NINETEENTH_LEN, NINETEENTH_MAGIC) {\n        19"
+   ]
+  ]
+ },
+ {
+  "id": "S4",
+  "what": "status: gone reported as other",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-ublk",
+   "--lib"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-ublk/src/status.rs",
+    "lines.push((\"publish_retire_gone\", r.gone.to_string()));",
+    "lines.push((\"publish_retire_gone\", r.other.to_string()));"
+   ]
+  ]
+ },
+ {
+  "id": "U1",
+  "what": "upload: gone counted as retired",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/publish.rs",
+    "Retired::Gone => self.figures.retire_gone += 1,",
+    "Retired::Gone => self.figures.retired += 1,"
+   ]
+  ]
+ },
+ {
+  "id": "U2",
+  "what": "upload: retires not counted",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "                self.publishing.count_retire(*retired);\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "U3",
+  "what": "upload: no lease row worded as snap/T moving (L5 undone)",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ],
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/remote.rs",
+    "RemoteError::Conflict => RemoteError::Volume(NO_LEASE_ROW.into()),",
+    "RemoteError::Conflict => RemoteError::Conflict,"
+   ]
+  ]
+ }
+]
