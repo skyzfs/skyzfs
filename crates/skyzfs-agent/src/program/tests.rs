@@ -2879,6 +2879,48 @@ mod failed_volume {
         assert_eq!(world.borrow().reopens, 1);
     }
 
+    /// A volume lost during a rewind import's last sync, whose `cuts`
+    /// then shows the newest cut opening as itself: the watch is asked
+    /// before the begin, so no publish is begun, and the next round takes
+    /// the step at once (Codex's P1 on #173). Mutant: the begin with no
+    /// look at the watch after `sync_past`.
+    #[test]
+    fn a_volume_lost_during_the_syncs_begins_no_publish() {
+        let world = rewound_t(5);
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let mut failed = false;
+        let mut go = move || {
+            let mut w = watched.borrow_mut();
+            // The `go` after the third sync, which makes the newest cut
+            // open as itself: the volume fails two seconds later, with
+            // its note left and its daemon gone.
+            if w.synced_at.len() == 3 && !failed {
+                failed = true;
+                w.advance(Duration::from_secs(2));
+                let now = w.now_ms;
+                w.noted = Some(noted(Held::Yes));
+                w.noted_from_ms = Some(now);
+                w.gone_from = Some(now);
+                w.suspends_after_ms = Some(1_050);
+            }
+            w.now_ms - crate::engine::fake::EPOCH_MS < start + 600_000
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("round 1 ok "), "{out}");
+        assert_eq!(field(lines[0], "synced"), "3", "{out}");
+        assert_eq!(field(lines[0], "begun"), "-", "{out}");
+        assert!(lines[1].starts_with("lost tank "), "{out}");
+        assert!(lines[2].starts_with("round 2 ok "), "{out}");
+        assert!(world.borrow().programs.is_empty(), "{out}");
+        assert!(keep.0.borrow().record.is_none(), "{out}");
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
     /// The same while `run` waits for its tick with nothing under way.
     /// Mutant: the note not read in the wait.
     #[test]
@@ -2901,14 +2943,28 @@ mod failed_volume {
     }
 
     /// A volume that failed with no client holding its device: said on
-    /// standard error at each round, no pool touched, and `run` goes on
-    /// (the lead's answer to Q2). Mutants: a reopen; an end with 9.
+    /// standard error at each round, no pool touched (no ZFS call at all:
+    /// no sync, begin or settle), each round `ok` with nothing begun, and
+    /// `run` goes on (the lead's answer to Q2; Codex's P2 on #173).
+    /// Mutants: a reopen; an end with 9; the round going on to the sync,
+    /// the begin and the settle.
     #[test]
     fn a_volume_failed_with_no_client_touches_no_pool() {
         let world = lost_world(noted(Held::No));
         let (code, out, err) = run(&world);
         assert_eq!(code, exit::PUBLISHED, "{out}{err}");
-        assert!(rounds(&out).len() > 1, "{out}");
+        let rounds = rounds(&out);
+        assert!(rounds.len() > 1, "{out}");
+        for (i, round) in rounds.iter().enumerate() {
+            assert!(round.starts_with(&format!("round {} ok ", i + 1)), "{out}");
+            assert_eq!(field(round, "begun"), "-", "{out}");
+        }
+        assert!(
+            world.borrow().calls.is_empty(),
+            "no ZFS call: {:?}",
+            world.borrow().calls
+        );
+        assert!(world.borrow().programs.is_empty(), "{out}");
         assert!(!out.contains("lost "), "{out}");
         assert!(
             err.contains(

@@ -169,10 +169,11 @@
 //! leaves beside its socket when its volume fails or a start refuses it.
 //! - **No note of this boot**: the round goes on.
 //! - **The note says no client held the device**: the round says so on
-//!   standard error, touches no pool, and goes on (the daemon is gone, so
-//!   it fails at the daemon; a start with `--acknowledge-failure` serves
-//!   the volume afresh and removes the note, and `run` then ends with 12,
-//!   below).
+//!   standard error, touches no pool (no sync, begin or settle: Codex's P2
+//!   on #173), is not failed, and `run` goes on at its ticks. A start with
+//!   `--acknowledge-failure` serves the volume afresh and removes the
+//!   note; the next round then reads none, and `run` ends with 12
+//!   (below).
 //! - **The note says a client held it, or may have, or the note is torn**
 //!   (a file there that is not a whole note, which the daemon's start
 //!   counts as held too): the volume is lost for this boot, and so is a
@@ -1358,8 +1359,9 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         let mut bound = false;
         // The volume's failure note of this boot (M2.7c), before anything
         // else of the round. One that failed with no client holding its
-        // device is said, and the round goes on (its daemon is gone, and
-        // a start that acknowledges the failure serves it afresh). A
+        // device is said, and the round touches nothing else (its daemon
+        // is gone, and a start that acknowledges the failure serves it
+        // afresh and removes the note). A
         // note that makes the volume lost: the round takes the step on
         // the pool and nothing else, and its verdict says what follows
         // (F2 and F4 of the review of #173): its `lost` line, then its
@@ -1403,11 +1405,15 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         // fails and touches nothing, as `publish` refuses (a nit of the
         // review of #173). The next round reads it again.
         let unread = read.is_err();
+        let unheld = matches!(read, Ok(Failed::Unheld(_)));
         if let Err(e) = read {
             failed.push(e);
         }
-        // The step's round touches nothing else.
-        if lost.is_none() && !unread {
+        // The step's round touches nothing else, and nor does a round on a
+        // volume that failed with no client: no pool is touched there (the
+        // lead's answer to Q2; Codex's P2 on #173). Its next round reads the
+        // note again, which a start with `--acknowledge-failure` removes.
+        if lost.is_none() && !unread && !unheld {
             if restart {
                 match agent.restart() {
                     Ok(()) => restart = false,
@@ -1465,7 +1471,12 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                     }
                 }
             }
-            if !restart && clear {
+            // The watch asked once more before a begin: `sync_past` can
+            // return after a sync or an unanswered `cuts` with no look at
+            // the note, and a begin's count, sweep and reads would delay
+            // the step (Codex's P1 on #173). News leaves the settle below
+            // to end at once, and the next round begins with the step.
+            if !restart && clear && !agent.note_came() {
                 match agent.begin() {
                     Ok(name) => begun = Some(name),
                     Err(e) => {
