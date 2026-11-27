@@ -1,3 +1,6 @@
 A22	runrewind: no end's pin	killed	ERROR: test_runrewind (__main__.Rewind.test_runrewind) | ERROR: test_runrewind_fails (__main__.Rewind.test_runrewind_fails) | FAILED (errors=2)
 Q04	end_daemon: pid let go after rig_error	killed	FAIL end_daemon: unreaped after SIGKILL, its pid let go: got 'rig error [set]: skyzfsd serve did not end 60 s after SIGTERM: lease kept
 Z09	writing's default margin 3	killed	FAIL: writing: the margin's default: got '0', want '2'
+Z11	release_quietly releases nothing (P18)	killed	FAIL: release_quietly: each snapshot of the name, and only those: got 'list -H -o name -t snapshot -r skzq;', want 'list -H -o name -t snapshot -r skzq;release skyzfs-publish skzq@c;release skyzfs-publish skzq/child@c;' | FAIL: budget: the hold cut at what was left: got '', want '124' | FAIL: budget: said: got '0', want '1'
+Z12	release_quietly unanchored	killed	FAIL: release_quietly: each snapshot of the name, and only those: got 'list -H -o name -t snapshot -r skzq;release skyzfs-publish skzq@c;release skyzfs-publish skzq/child@c;release skyzfs-publish skzq@cc;release skyzfs-publish skzq@c2;', want 'list -H -o name -t snapshot -r skzq;release skyzfs-publish skzq@c;release skyzfs-publish skzq/child@c;'
+stopped here for time: Z10, Z13, S02, Z05-Z08 not run in this look

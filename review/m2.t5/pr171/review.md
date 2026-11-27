@@ -292,11 +292,11 @@ The tests kill each of these plants:
 | Low | How it is answered |
 |---|---|
 | D4 | Groups a second per round over each side's own window, with medians. The read's window holds its record's time, and its busy share is reported. |
-| P15 | The writer's default margin is pinned (Z09 killed; Z10 in `plants-2.out`). |
-| P18 | The K04 fake lists `@c`, and `release_quietly` is anchored (Z11 and Z12: `plants-2.out`). |
+| P15 | The writer's default margin is pinned (Z09 killed; Z10, the budget's copy of it, not run in this look). |
+| P18 | The K04 fake lists `@c`, and `release_quietly` is anchored (Z11 and Z12 killed). |
 | Q04 | The pid is cleared before `rig_error` (plant Q04). |
 
-Cut rounds are reported as `cut` on every side (Z03 and Z04 killed, Z13 in `plants-2.out`). No
+Cut rounds are reported as `cut` on every side (Z03 and Z04 killed; Z13 not run in this look). No
 recorder run has been dispatched on these commits, so there are no D4
 figures from a kernel yet. The last dispatch was 45895208967, at
 af0c183.
@@ -354,13 +354,13 @@ At 3b9dc1c:
 | `agent_check.py`, run course | A17-A28 | all killed (A22 run again with its text fixed, `plants-2.out`) |
 | `agent-record.sh`, R-rewind and the run scenarios | S01, S03-S11, S13 | killed by their own tests |
 | `agent-record.sh` | S12 (a constant stamp) | survives (see Nits) |
-| `agent-record.sh` | S02 (no thaw) | its first lines were the load flake; run again in `plants-2.out` |
+| `agent-record.sh` | S02 (no thaw) | inconclusive: its first lines were the load flake, and it was not run again |
 | `zfs-cli-record.sh` | Z01-Z04 (rates, the read's window, cut rounds) | killed |
-| `zfs-cli-record.sh` | Z09 (the writing margin's default) | killed |
+| `zfs-cli-record.sh` | Z09 (the writing margin's default), Z11 and Z12 (P18) | killed |
+| `zfs-cli-record.sh` | Z05-Z08, Z10, Z13 | not run (stopped for time) |
 | `cut-record.sh` | Q04 | killed by "end_daemon: unreaped after SIGKILL, its pid let go" |
 
-Further results, where they came before this was written, are in
-`plants-2.out`.
+`plants-2.out` has the second pass (A22 with its text fixed, Q04, Z09, Z11, Z12).
 
 ## What the rigs show
 
