@@ -42,7 +42,9 @@
 //! stretch a round far past its tick. The turn is kept in the process:
 //! a restart begins it again at the first name, since the record does
 //! not keep when each was tried (no save at each round; this module's
-//! reading). A name leaves with `retired` once its destroy succeeds.
+//! reading, confirmed by the lead). So a process restarted more often
+//! than every `STUCK_MAX / STUCK_STEPS` rounds retries only the first
+//! names by name; this has no other effect. A name leaves with `retired` once its destroy succeeds.
 //! At most [`STUCK_MAX`] are
 //! kept: past that the oldest is forgotten with the line
 //! `forgotten <t> (destroy failed; destroy by hand)`, told before the
