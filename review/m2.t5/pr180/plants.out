@@ -1,0 +1,62 @@
+id	result	detail	what
+BASE	passes	OK	-
+T1	SURVIVES	-	STEP_WITHIN 3 s -> 30 s
+T2	killed	2 failing: test_not_11_or_late, test_not_12	END_WITHIN 2 s -> 60 s
+T3	killed	1 failing: test_the_ticks_moved_by_the_early_round	TICK_SLACK 1 s -> 30 s
+T4	killed	1 failing: test_the_lost_line_wrong	LOOK_LIMIT_MS 10.5 s -> 60 s
+T5	killed	9 failing: test_a_case_not_reached, test_a_missing_file, test_as_recorded_every_pin_holds	EVERY_DEFAULT 60 -> 30
+T6	killed	1 failing: test_the_ticks_moved_by_the_early_round	the schedule one-sided (abs dropped)
+T7	killed	1 failing: test_the_tick_with_late_ms	the schedule without late_ms
+T8	killed	1 failing: test_the_step_just_within	step_within measured from the failure, not the note
+U1	killed	1 failing: test_held_no_or_another_step	U held unknown or yes
+U2	killed	1 failing: test_held_no_or_another_step	U verdict failed or lost
+U3	killed	1 failing: test_held_no_or_another_step	U step not-imported or reopened
+U4	killed	1 failing: test_the_run_did_not_go_on	U: no round 3 not checked
+U5	killed	1 failing: test_round_2_failed_or_began	U: round 2 failed not checked
+U6	killed	1 failing: test_round_2_failed_or_began	U: round 2 begun not checked
+U7	killed	1 failing: test_round_2_not_said	U: round 2's words not checked
+U8	SURVIVES	-	U: the line after lost need not be round 2
+U9	killed	1 failing: test_two_lost_lines	U: one lost line not counted
+U10	SURVIVES	-	U refused: rc 4 not checked
+U11	killed	1 failing: test_the_start_served_or_no_note_after_it	U refused: the note after it not checked
+U12	killed	1 failing: test_round_3_lost_or_not_said	U unheld: a lost line in round 3 allowed
+U13	killed	1 failing: test_round_3_lost_or_not_said	U unheld: round 3 failed allowed
+U14	killed	1 failing: test_round_3_lost_or_not_said	U unheld: round 3's words not checked
+U15	SURVIVES	-	U unheld: round 3 begun allowed
+U16	SURVIVES	-	U moved: 12 or 10
+U17	killed	1 failing: test_a_line_after_round_4	U moved: the last line not checked
+U18	killed	1 failing: test_not_12	U moved: round 4's words not checked
+U19	killed	1 failing: test_the_run_did_not_go_on	U schedule: rounds missing pass
+U20	killed	1 failing: test_held_no_or_another_step	U lost line: the pool not checked
+D1	killed	1 failing: test_the_daemon_ended_otherwise	daemon end 3 not checked
+D2	killed	1 failing: test_a_note_from_before_the_failure	the note before the failure allowed
+W1	SURVIVES	-	W: 11 or 9
+W2	killed	1 failing: test_the_lost_line_wrong	W: verdict lost or retry
+W3	killed	1 failing: test_the_lost_line_wrong	W: state SUSPENDED or ONLINE
+W4	killed	1 failing: test_the_lost_line_wrong	W: held yes or unknown
+W5	killed	1 failing: test_suspended_with_a_reopen	W: a suspended step with a reopen allowed
+W6	killed	1 failing: test_the_lost_line_wrong	W: looked_ms not checked
+W7	killed	1 failing: test_the_lost_round_began_a_publish	W: the lost round began allowed
+W8	killed	1 failing: test_not_11_or_late	W: the end time not checked
+W9	killed	1 failing: test_a_round_after_the_lost_one	W: the last two lines not checked
+W10	killed	1 failing: test_no_round_1_before_the_lost_line	W: round 1 before the lost line not checked
+W11	killed	2 failing: test_a_verdict_beside_the_rig_s_error_is_1, test_not_suspended	W: the kstat state not checked
+W12	killed	1 failing: test_again_wrong	again: step reopened allowed
+W13	killed	1 failing: test_again_wrong	again: the rounds not checked
+W14	killed	1 failing: test_the_lost_line_wrong	W: reopen ok/failed not checked
+W15	killed	1 failing: test_the_lost_line_wrong	W: the step not checked
+P1	killed	1 failing: test_the_premise	W premise: asked not needed
+P2	killed	1 failing: test_the_premise	W premise: lines before the failure allowed
+P3	killed	1 failing: test_the_rig_late	U premise: round 1 not needed
+P4	killed	2 failing: test_zed, test_zed_not_as_asked	zed premise: not compared
+P5	killed	1 failing: test_the_rig_late	refused-in-time premise always holds
+P6	killed	1 failing: test_the_rig_late	served-in-time premise always holds
+R1	killed	2 failing: test_a_line_of_no_kind, test_a_lost_line_with_a_field_more	a line of no kind skipped
+R2	killed	1 failing: test_a_verdict_of_the_recorder	the recorder's verdicts not read
+R3	killed	1 failing: test_a_verdict_beside_the_rig_s_error_is_1	a verdict beside an error is 2
+R4	killed	1 failing: test_the_rig_s_error_in_a_case	a case's rig error judged anyway
+R5	killed	1 failing: test_the_course_s_error	the course-wide rig error not read
+R6	killed	9 failing: test_a_case_not_reached, test_a_missing_file, test_a_verdict_beside_the_rig_s_error_is_1	agent_check: no hand-off
+R7	killed	1 failing: test_another_course_name	another course accepted
+R8	SURVIVES	-	a lost line with any verdict word read (re-run alone after a fix to the plant: the first try had an extra parenthesis and broke the module)
+END	clean	-	-
