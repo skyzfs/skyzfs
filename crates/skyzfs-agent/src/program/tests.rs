@@ -1027,20 +1027,22 @@ fn a_round_line_says_what_the_round_did() {
         begun: Some("skz-20261126T120000Z".into()),
         under_way: 1,
         synced: 4,
+        bound: false,
     };
     assert_eq!(
         round_line(&round),
         "round 3 ok took_ms=3456 late_ms=12 skipped=2 begun=skz-20261126T120000Z under_way=1 \
-         synced=4\n"
+         synced=4 bound=0\n"
     );
     let failed = Round {
         failed: true,
         begun: None,
+        bound: true,
         ..round
     };
     assert_eq!(
         round_line(&failed),
-        "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1 synced=4\n"
+        "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1 synced=4 bound=1\n"
     );
 }
 
@@ -1502,6 +1504,9 @@ fn a_round_after_a_rewind_import_syncs_past_it_before_it_begins() {
     assert_eq!(field(rounds[0], "synced"), "3", "{out}");
     assert_ne!(field(rounds[0], "begun"), "-", "{out}");
     assert_eq!(field(rounds[1], "synced"), "0", "{out}");
+    for round in &rounds {
+        assert_eq!(field(round, "bound"), "0", "{out}");
+    }
     assert_eq!(world.borrow().refs.len(), 2, "{out}");
 }
 
@@ -1525,9 +1530,39 @@ fn an_end_during_the_syncs_begins_no_publish() {
     assert_eq!(field(rounds[0], "synced"), "3", "{out}");
     assert_eq!(field(rounds[0], "begun"), "-", "{out}");
     assert_eq!(field(rounds[0], "under_way"), "0", "{out}");
+    assert_eq!(field(rounds[0], "bound"), "0", "{out}");
     assert_eq!(world.borrow().synced_at.len(), 3, "{out}");
     assert!(world.borrow().programs.is_empty(), "{out}");
     assert!(keep.0.borrow().record.is_none());
+}
+
+/// A round whose sync made no cut begins no publish and is `ok`, and its
+/// line does not say the bound was met (`bound=0`): only a round stopped
+/// at the bound says so (the lead's ruling 3 on #170). Mutant: `bound`
+/// set for every cause a round is behind.
+#[test]
+fn a_round_whose_sync_made_no_cut_is_not_at_the_bound() {
+    let world = rewound_t(5);
+    world.borrow_mut().plain_sync = true;
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let (code, out, err) = scheduled(
+        &mut agent,
+        Duration::from_secs(60),
+        &mut until(&world, start + 30_000),
+    );
+    assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+    let rounds = rounds(&out);
+    assert!(!rounds.is_empty(), "{out}");
+    for round in &rounds {
+        assert!(round.contains(" ok "), "{out}{err}");
+        assert_eq!(field(round, "synced"), "1", "{out}");
+        assert_eq!(field(round, "begun"), "-", "{out}");
+        assert_eq!(field(round, "bound"), "0", "{out}");
+    }
+    assert!(err.contains("round 1: no publish begun"), "{err}");
+    assert!(world.borrow().programs.is_empty(), "{out}");
 }
 
 /// A round whose sync failed after others returned is `failed`, begins
@@ -1650,6 +1685,7 @@ fn a_round_still_behind_begins_no_publish() {
         assert_eq!(field(round, "begun"), "-", "{out}");
         assert_eq!(field(round, "synced"), synced, "{out}");
         assert_eq!(field(round, "under_way"), "0", "{out}");
+        assert_eq!(field(round, "bound"), "1", "{out}");
     }
     let lines: Vec<&str> = err.lines().collect();
     assert_eq!(lines.len(), 2, "{err}");

@@ -66,7 +66,7 @@
 //!
 //! ```text
 //! round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<k> begun=<t|-> under_way=<count>
-//!   synced=<k>
+//!   synced=<k> bound=0|1
 //! ```
 //!
 //! on one line.
@@ -86,6 +86,11 @@
 //! - `synced`: the syncs the round ran, and that returned, to pass the
 //!   groups of an abandoned history (below); 0 in a round that found
 //!   none.
+//! - `bound`: 1 where the round's syncs had met their bound with the
+//!   daemon's newest cut still behind (below), else 0. Such a round is
+//!   `ok`, and so is every round after it until a cut opens as itself,
+//!   but none of them publishes: a monitor that watches `run` watches
+//!   this field as well as `failed` (the lead's ruling 3 on #170).
 //! - `ok`: no engine call of the round returned an error. It does not
 //!   say that anything moved: a round that waited on the daemon
 //!   throughout is `ok`.
@@ -138,10 +143,22 @@
 //! Only syncs that returned count toward it: a sync that fails fails its
 //! round, as a begin's error does (the engine reads the record again at
 //! once, and the round begins nothing), and is not counted; the round
-//! line counts the syncs before it that returned. An end asked
-//! during the syncs begins no publish, even where the last of them made
-//! the newest cut open as itself: the round line says `begun=-` and the
+//! line counts the syncs before it that returned. An end asked during
+//! the syncs begins no publish, even where the last of them made the
+//! newest cut open as itself: the round line says `begun=-` and the
 //! process ends.
+//!
+//! What the bound does not cover (the lead's rulings on #170):
+//! - It is the process's, and not saved: a supervisor that starts `run`
+//!   again after it ends syncs up to [`crate::engine::SYNC_PAST_MAX`]
+//!   times at each start while the newest cut stays behind.
+//! - The tick does not limit a round's syncs: a round runs them to
+//!   their end, and may run past its tick by up to that many syncs.
+//!   Rounds still never overlap (`skipped`, `late_ms`).
+//! - A sync that fails is not counted (it may have written nothing):
+//!   where every sync fails, only the tick limits them, one a round, each
+//!   round `failed` with the error.
+//!
 //! `publish` does not sync before its begin: a publish asked while the
 //! pool is below the abandoned groups pends, and the planner's own syncs
 //! carry it (the case M2's criterion tests).
@@ -236,7 +253,9 @@ use std::time::Duration;
 
 use skyzfs_control::{hex, EXPIRY_MAX};
 
-use crate::engine::{Agent, Choice, Clock, Daemon, Effect, Error, Outcome, Past, Point, Points};
+use crate::engine::{
+    Agent, Choice, Clock, Daemon, Effect, Error, Outcome, Past, Point, Points, Stuck,
+};
 use crate::plan::Report;
 use crate::record::{Keep, Loaded, Person, Phase, Why};
 use crate::zfs::Zfs;
@@ -968,19 +987,23 @@ pub struct Round {
     /// The syncs it ran to pass the groups of a history a rewind import
     /// abandoned ([`Agent::sync_past`]).
     pub synced: u32,
+    /// Whether its syncs met their bound with the daemon's newest cut
+    /// still behind ([`crate::engine::Stuck::Bound`]).
+    pub bound: bool,
 }
 
 /// The line of standard output for a round of `run` (M2.T4 reads it):
 ///
 /// ```text
 /// round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<ticks> begun=<t|-> under_way=<count>
-///   synced=<k>
+///   synced=<k> bound=0|1
 /// ```
 ///
 /// on one line.
 pub fn round_line(round: &Round) -> String {
     format!(
-        "round {} {} took_ms={} late_ms={} skipped={} begun={} under_way={} synced={}\n",
+        "round {} {} took_ms={} late_ms={} skipped={} begun={} under_way={} synced={} \
+         bound={}\n",
         round.n,
         if round.failed { "failed" } else { "ok" },
         round.took_ms,
@@ -988,7 +1011,8 @@ pub fn round_line(round: &Round) -> String {
         round.skipped,
         round.begun.as_deref().unwrap_or("-"),
         round.under_way,
-        round.synced
+        round.synced,
+        u8::from(round.bound)
     )
 }
 
@@ -1050,6 +1074,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         let mut begun = None;
         let mut ended = None;
         let mut synced = 0;
+        let mut bound = false;
         if restart {
             match agent.restart() {
                 Ok(()) => restart = false,
@@ -1076,6 +1101,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                     why,
                 }) => {
                     synced = k;
+                    bound = why == Stuck::Bound;
                     let _ = writeln!(
                         err,
                         "skyzfs-agent: round {n}: no publish begun: the newest cut, of group \
@@ -1148,6 +1174,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             begun,
             under_way: agent.record().under_way.len(),
             synced,
+            bound,
         };
         let _ = out.write_all(round_line(&round).as_bytes());
         let _ = out.flush();
