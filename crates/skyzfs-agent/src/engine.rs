@@ -78,16 +78,21 @@
 //! After `zpool import -T` the pool writes its next groups under numbers
 //! at or below those of the history it abandoned, whose uberblocks are
 //! still in the labels' rings: no cut opens as itself (the daemon's
-//! `opens=no`) until the pool's groups have passed them, so none can be
+//! `opens=rewind`) until the pool's groups have passed them, so none can be
 //! published (design §5.2). [`Agent::sync_past`] runs the agent's sync
 //! task ([`Zfs::assist`]) one at a time until the daemon's newest cut
 //! opens as itself (M2.7d). It changes nothing in the record's
 //! directory, so a crash anywhere in it leaves nothing to recover, and
-//! it has no crash points. It is bounded three ways, so that the agent
-//! never writes groups for ever: a sync after which the daemon counts no
-//! cut ends it (the syncs do not reach the volume), so does an end asked
-//! for, and [`SYNC_PAST_MAX`] syncs in this process without a cut that
-//! opens as itself stop it until one does.
+//! it has no crash points. It is bounded three ways: a sync after which
+//! the daemon counts no cut ends it (the syncs do not reach the volume),
+//! so does an end asked for, and [`SYNC_PAST_MAX`] syncs in this process
+//! that returned, with no cut that opens as itself, stop it until one
+//! does or the daemon holds no cut. A sync that fails is not counted
+//! (it may have written nothing), and it ends the call with its error:
+//! where every sync fails, one is tried at each call, so `run` tries one
+//! a round for as long as the newest cut stays behind, each round
+//! `failed` with the error. Only there can the syncs go on without end
+//! (about two groups a round, where each one writes before it fails).
 //!
 //! # Crash points
 //!
@@ -590,10 +595,13 @@ pub struct Agent<Z, D, K, C> {
     /// ([`Agent::rename`], [`Agent::name_now`]). No name left is chosen
     /// again ([`Agent::fresh_name`]), so they make chains and no cycle.
     renamed: BTreeMap<String, String>,
-    /// The syncs [`Agent::sync_past`] has run since it last saw no cut
-    /// behind. Kept across [`Agent::restart`]: it bounds what the
+    /// The syncs [`Agent::sync_past`] has run, and that returned, since
+    /// it last saw no cut behind (a cut that opens as itself, or none). Kept across [`Agent::restart`]: it bounds what the
     /// process writes, not what the record says.
     past_synced: u32,
+    /// The syncs that the last call of [`Agent::sync_past`] ran and that
+    /// returned, whatever the call returned ([`Agent::last_synced`]).
+    last_synced: u32,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -634,6 +642,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             outcome_sink: None,
             at: String::new(),
             past_synced: 0,
+            last_synced: 0,
         })
     }
 
@@ -772,6 +781,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         )
     }
 
+    /// The syncs that the last call of [`Agent::sync_past`] ran and that
+    /// returned, also where it returned an error after some of them (L2
+    /// of the review of #170): what `run`'s round line says.
+    pub fn last_synced(&self) -> u32 {
+        self.last_synced
+    }
+
     /// Sync the pool until the daemon's newest cut opens as itself, one
     /// sync at a time ([module docs](self), "After a rewind import"):
     /// `cuts` read before each sync, `go` asked before each, and the
@@ -779,6 +795,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// changes nothing on a pool it would not publish).
     pub fn sync_past(&mut self, go: &mut dyn FnMut() -> bool) -> Result<Past, Error> {
         let mut synced = 0u32;
+        self.last_synced = 0;
         let mut count_before: Option<u64> = None;
         loop {
             let cuts = match self.daemon.ask(&Request::Cuts, &[]) {
@@ -816,6 +833,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             // round, and the next comes a round later.
             self.zfs.assist(&self.pool, value)?;
             synced = synced.saturating_add(1);
+            self.last_synced = synced;
             self.past_synced = self.past_synced.saturating_add(1);
         }
     }
@@ -989,8 +1007,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// agent places one only for a publish in the record, and releases
     /// it before the publish leaves the record (done, or given up after
     /// its request ended), so a hold no publish names protects no
-    /// publish. One agent runs per pool, and
-    /// within it the sweep and the steps of a publish do not overlap.
+    /// publish. One agent runs per pool, and within it the sweep and the
+    /// steps of a publish do not overlap.
     /// Not in the plan of M2.6: the crash matrix found it (a rewind
     /// back to after the hold, under a publish already done).
     ///

@@ -27,7 +27,7 @@ on:
         description: "the largest scale count at which the full members program runs (it took 912 s at 10000 in run 45720225770). 0: none. Empty: every count"
         default: ""
       sweep_rounds:
-        description: "at each scale count, how many rounds of each of the sweep's two reads: the read back to back for a window, and an idle control of the same window (the writer alone), each opened after the load's first groups committed; 0: none, at most 20. Empty: 5"
+        description: "at each scale count, how many rounds of each of the sweep's two reads: the read back to back for a window and an idle control (the writer alone) for the same set seconds, each opened after the load's first groups committed (the read's window also holds its record's own time: about.txt gives each side's window and groups a second); 0: none, at most 20. Empty: 5"
         default: ""
       sweep_window:
         description: "the seconds of each round's window (at least the step's read), 1 to 120. Empty: 10"

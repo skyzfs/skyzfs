@@ -24,9 +24,13 @@ name: skyzfs-agent-rig
 # publish, an answer lost to a stopped agent, both killed), k (arare: the
 # points only a restart, an assist, a destroyed snapshot, a publish too
 # old or a sweep reaches, a snapshot gone at a restart, a directory with
-# no marker). A Stalled point has no daemon hook to make it: the engine's
-# fakes cover it (crates/skyzfs-agent), and the power cut under the
-# record is #144's model's.
+# no marker), r (arun: `skyzfs-agent run`, M2.7a: rounds at --every-s,
+# SIGTERM between rounds exits 0, a second signal 1, `recover` and
+# `settle` beside it 8, a run killed and started again, a record corrupt
+# or another volume's at a restart 6, and M2.7d's syncs past a rewind
+# import's abandoned groups before the first publish). A Stalled point has no daemon
+# hook to make it: the engine's fakes cover it (crates/skyzfs-agent),
+# and the power cut under the record is #144's model's.
 #
 # Exit 1 is a verdict against the agent or the daemon, exit 2 the rig's
 # own error (a point not reached is one: the case did not test what it
@@ -43,8 +47,8 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04"]'
       parts:
-        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare)"
-        default: '["a1","a2","d","k"]'
+        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare), r (arun)"
+        default: '["a1","a2","d","k","r"]'
       points:
         description: "aplain only: the points to kill at (EFFECT:before|after:N, separated by spaces) in place of those the trace reaches; empty: the trace's"
         default: ""
@@ -128,13 +132,13 @@ jobs:
           PARTS: ${{ inputs.parts || '' }}
         run: |
           i=${IMAGES:-'["ubuntu-26.04"]'}
-          p=${PARTS:-'["a1","a2","d","k"]'}
+          p=${PARTS:-'["a1","a2","d","k","r"]'}
           python3 -c 'import json, sys
           v = json.loads(sys.argv[1])
           ok = {"ubuntu-26.04", "ubuntu-24.04", "ubuntu-26.04-arm", "ubuntu-24.04-arm"}
           assert isinstance(v, list) and v and all(x in ok for x in v), v
           w = json.loads(sys.argv[2])
-          assert isinstance(w, list) and w and len(set(w)) == len(w) and all(x in ("a1", "a2", "d", "k") for x in w), w' "$i" "$p"
+          assert isinstance(w, list) and w and len(set(w)) == len(w) and all(x in ("a1", "a2", "d", "k", "r") for x in w), w' "$i" "$p"
           echo "images=$i" >> "$GITHUB_OUTPUT"
           echo "parts=$p" >> "$GITHUB_OUTPUT"
 
@@ -216,6 +220,7 @@ jobs:
             a2) rec=aplain shard=2/2 ;;
             d) rec=adaemon shard=1/1 ;;
             k) rec=arare shard=1/1 ;;
+            r) rec=arun shard=1/1 ;;
             *) echo "::error::not a part: $PART"; exit 64 ;;
           esac
           sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD=0 CUT_UPLOAD=1 \

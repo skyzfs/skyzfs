@@ -30,6 +30,12 @@ class Answers(unittest.TestCase):
                          'none')
         self.assertEqual(pa.parse_answer(f'cuts attachment={A} state={S} count=3 group=12 opens=rewind')[1]['opens'],
                          'rewind')
+        # Version 3 (M2.7b): the store's rewind mark, which version 2 lacks.
+        self.assertEqual(pa.parse_answer(f'cuts attachment={A} state={S} count=7 group=41 opens=itself rewound=5\n'),
+                         ('cuts', {'attachment': A, 'state': S, 'count': '7', 'group': '41', 'opens': 'itself',
+                                   'rewound': '5'}, None, None))
+        self.assertEqual(pa.parse_answer(f'cuts attachment={A} state=none count=0 group=none opens=none rewound=0')[1]
+                         ['rewound'], '0')
         for verb in ('accepted', 'pending', 'expired', 'withdrawn', 'unknown'):
             self.assertEqual(pa.parse_answer(verb), (verb, {}, None, None))
         self.assertEqual(pa.parse_answer(f'done commit={H}'), ('done', {'commit': H}, None, None))
@@ -50,6 +56,12 @@ class Answers(unittest.TestCase):
                      f'cuts attachment={A} state={S} count=x group=41 opens=itself',
                      f'cuts attachment={A} state={S} count=7 group=none opens=itself',
                      f'cuts attachment={A} state={S} count=7 group=41 opens=maybe',
+                     f'cuts attachment={A} state={S} count=7 group=41 opens=itself rewound=x',
+                     f'cuts attachment={A} state={S} count=7 group=41 opens=itself rewound=',
+                     f'cuts attachment={A} state={S} count=7 group=41 opens=itself rewound=5 extra=1',
+                     f'cuts attachment={A} state={S} count=7 group=41 rewound=5',
+                     f'cuts attachment={A} state={S} count=7 group=41 opens=itself rewound=5 rewound=5',
+                     f'accepted rewound=5',
                      'done', f'done commit={H[:-1]}', f'done commit={H.upper()}', 'accepted now',
                      'pending  ', 'publish', f'done commit={H} commit={H}',
                      f'snap commit={H} state={S} number=9 group=51 manifest-len=911',
@@ -398,6 +410,94 @@ class Raw(unittest.TestCase):
             self.assertEqual(got, [b'skyzfs-control 9\ncuts\n'])
             with open(log) as f:
                 self.assertEqual(f.read().split('\t')[2:], ['raw version', '1', 'refused version not 2\n'])
+
+    def daemon(self, d, speaks, answers):
+        """A daemon of version SPEAKS (2 or 3) on D's socket that reads
+        each request whole and answers ANSWERS[k] (bytes after its own
+        greeting) to the kth, one connection each: what each was sent
+        is returned in a list, filled as they come."""
+        os.makedirs(os.path.join(d, 'vol-x'), exist_ok=True)
+        path = os.path.join(d, 'vol-x', 'control')
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(4)
+        srv.settimeout(10)
+        got = []
+
+        def serve():
+            try:
+                for a in answers:
+                    c, _ = srv.accept()
+                    data = b''
+                    while True:
+                        b = c.recv(4096)
+                        if not b:
+                            break
+                        data += b
+                    got.append(data)
+                    c.sendall(f'skyzfs-control {speaks}\n'.encode() + a)
+                    c.close()
+            finally:
+                srv.close()
+        th = threading.Thread(target=serve, daemon=True)
+        th.start()
+        return th, got
+
+    def test_either_greeting_is_read(self):
+        for speaks in (2, 3):
+            with tempfile.TemporaryDirectory() as d:
+                th, got = self.daemon(d, speaks, [f'cuts attachment={A} state=none count=0 group=none opens=none\n'
+                                                  .encode()])
+                log = os.path.join(d, 'agent.tsv')
+                out = os.path.join(d, 'greeting')
+                self.assertEqual(pa.raw(d, log, 'cuts', f'skyzfs-control {speaks}\ncuts\n'.encode(),
+                                        greeting_out=out),
+                                 f'cuts attachment={A} state=none count=0 group=none opens=none')
+                th.join(10)
+                self.assertEqual(got, [f'skyzfs-control {speaks}\ncuts\n'.encode()])
+                with open(out) as f:
+                    self.assertEqual(f.read(), f'skyzfs-control {speaks}\n')
+        self.assertEqual(pa.answer_of(b'skyzfs-control 4\ncuts\n'), 'no answer line: skyzfs-control 4\\ncuts\\n')
+
+    def test_an_offer_to_a_daemon_of_version_3_is_one_request(self):
+        with tempfile.TemporaryDirectory() as d:
+            th, got = self.daemon(d, 3, [b'refused malformed no key extra\n'])
+            log = os.path.join(d, 'agent.tsv')
+            self.assertEqual(pa.raw(d, log, 'malformed', b'skyzfs-control ?\ncuts extra=1\n'),
+                             'refused malformed no key extra')
+            th.join(10)
+            self.assertEqual(got, [b'skyzfs-control 3\ncuts extra=1\n'])
+            with open(log) as f:
+                self.assertEqual(len(f.read().splitlines()), 1)
+
+    def test_an_offer_to_a_daemon_of_version_2_falls_back_on_a_new_connection(self):
+        with tempfile.TemporaryDirectory() as d:
+            th, got = self.daemon(d, 2, [b'refused version not 2\n', b'refused malformed no key extra\n'])
+            log = os.path.join(d, 'agent.tsv')
+            out = os.path.join(d, 'greeting')
+            self.assertEqual(pa.raw(d, log, 'malformed', b'skyzfs-control ?\ncuts extra=1\n', greeting_out=out),
+                             'refused malformed no key extra')
+            th.join(10)
+            self.assertEqual(got, [b'skyzfs-control 3\ncuts extra=1\n', b'skyzfs-control 2\ncuts extra=1\n'])
+            with open(log) as f:
+                self.assertEqual([ln.split('\t')[4] for ln in f.read().splitlines()],
+                                 ['refused version not 2', 'refused malformed no key extra'])
+            with open(out) as f:
+                self.assertEqual(f.read(), 'skyzfs-control 2\n')
+
+    def test_an_offer_refused_otherwise_is_not_sent_again(self):
+        """Only `version` with the greeting of version 2 is a fall back:
+        another refusal, or `version` from a daemon of version 3, is the
+        answer."""
+        for speaks, answer in ((2, b'refused peer this daemon answers its own user\n'),
+                               (3, b'refused version not 3\n')):
+            with tempfile.TemporaryDirectory() as d:
+                th, got = self.daemon(d, speaks, [answer, b'refused malformed x\n'])
+                log = os.path.join(d, 'agent.tsv')
+                self.assertEqual(pa.raw(d, log, 'peer', b'skyzfs-control ?\ncuts\n'), answer.decode().strip())
+                self.assertEqual(got, [b'skyzfs-control 3\ncuts\n'])
+                pa.raw(d, log, 'again', b'skyzfs-control 3\ncuts\n')
+                th.join(10)
 
     REQUEST = b'skyzfs-control 2\ncuts\n'
 

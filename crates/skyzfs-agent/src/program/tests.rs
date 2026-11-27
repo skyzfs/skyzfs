@@ -9,7 +9,7 @@ use skyzfs_control::{Code, Reply, Request};
 
 use super::*;
 use crate::engine::fake::{
-    Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, World, POOL, VOLUME,
+    Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, User, World, POOL, VOLUME,
 };
 use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Record, Taken};
 
@@ -1027,20 +1027,22 @@ fn a_round_line_says_what_the_round_did() {
         begun: Some("skz-20261126T120000Z".into()),
         under_way: 1,
         synced: 4,
+        bound: false,
     };
     assert_eq!(
         round_line(&round),
         "round 3 ok took_ms=3456 late_ms=12 skipped=2 begun=skz-20261126T120000Z under_way=1 \
-         synced=4\n"
+         synced=4 bound=0\n"
     );
     let failed = Round {
         failed: true,
         begun: None,
+        bound: true,
         ..round
     };
     assert_eq!(
         round_line(&failed),
-        "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1 synced=4\n"
+        "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1 synced=4 bound=1\n"
     );
 }
 
@@ -1502,6 +1504,9 @@ fn a_round_after_a_rewind_import_syncs_past_it_before_it_begins() {
     assert_eq!(field(rounds[0], "synced"), "3", "{out}");
     assert_ne!(field(rounds[0], "begun"), "-", "{out}");
     assert_eq!(field(rounds[1], "synced"), "0", "{out}");
+    for round in &rounds {
+        assert_eq!(field(round, "bound"), "0", "{out}");
+    }
     assert_eq!(world.borrow().refs.len(), 2, "{out}");
 }
 
@@ -1525,9 +1530,137 @@ fn an_end_during_the_syncs_begins_no_publish() {
     assert_eq!(field(rounds[0], "synced"), "3", "{out}");
     assert_eq!(field(rounds[0], "begun"), "-", "{out}");
     assert_eq!(field(rounds[0], "under_way"), "0", "{out}");
+    assert_eq!(field(rounds[0], "bound"), "0", "{out}");
     assert_eq!(world.borrow().synced_at.len(), 3, "{out}");
     assert!(world.borrow().programs.is_empty(), "{out}");
     assert!(keep.0.borrow().record.is_none());
+}
+
+/// A round whose sync made no cut begins no publish and is `ok`, and its
+/// line does not say the bound was met (`bound=0`): only a round stopped
+/// at the bound says so (the lead's ruling 3 on #170). Mutant: `bound`
+/// set for every cause a round is behind.
+#[test]
+fn a_round_whose_sync_made_no_cut_is_not_at_the_bound() {
+    let world = rewound_t(5);
+    world.borrow_mut().plain_sync = true;
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let (code, out, err) = scheduled(
+        &mut agent,
+        Duration::from_secs(60),
+        &mut until(&world, start + 30_000),
+    );
+    assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+    let rounds = rounds(&out);
+    assert!(!rounds.is_empty(), "{out}");
+    for round in &rounds {
+        assert!(round.contains(" ok "), "{out}{err}");
+        assert_eq!(field(round, "synced"), "1", "{out}");
+        assert_eq!(field(round, "begun"), "-", "{out}");
+        assert_eq!(field(round, "bound"), "0", "{out}");
+    }
+    assert!(err.contains("round 1: no publish begun"), "{err}");
+    assert!(world.borrow().programs.is_empty(), "{out}");
+}
+
+/// A round whose sync failed after others returned is `failed`, begins
+/// nothing, and its line counts the syncs that returned (L2 of the
+/// review of #170).
+#[test]
+fn a_round_whose_sync_failed_counts_the_syncs_before_it() {
+    let world = rewound_t(10);
+    {
+        let mut world = world.borrow_mut();
+        world.assist_fails = 1;
+        world.assist_fails_after = 2;
+    }
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let (_code, out, err) = scheduled(
+        &mut agent,
+        Duration::from_secs(60),
+        &mut until(&world, start + 30_000),
+    );
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 1, "{out}");
+    assert!(rounds[0].starts_with("round 1 failed "), "{out}{err}");
+    assert!(
+        err.contains("round 1: zfs: cannot set property: refused"),
+        "{err}"
+    );
+    assert_eq!(field(rounds[0], "synced"), "2", "{out}");
+    assert_eq!(field(rounds[0], "begun"), "-", "{out}");
+    assert_eq!(world.borrow().synced_at.len(), 2, "{out}");
+}
+
+/// A round whose syncs met a pool its premise refuses begins nothing
+/// and syncs nothing: one error, the premise's (R9 of the review of
+/// #170).
+#[test]
+fn a_round_whose_syncs_were_refused_begins_nothing() {
+    let world = rewound_t(5);
+    world.borrow_mut().user(User::Attach, "");
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let (_code, out, err) = scheduled(
+        &mut agent,
+        Duration::from_secs(60),
+        &mut until(&world, start + 30_000),
+    );
+    let rounds = rounds(&out);
+    assert!(rounds[0].starts_with("round 1 failed "), "{out}{err}");
+    assert_eq!(field(rounds[0], "begun"), "-", "{out}");
+    assert_eq!(
+        err.lines().filter(|l| l.contains("round 1: ")).count(),
+        1,
+        "{err}"
+    );
+    assert_eq!(world.borrow().synced_at.len(), 0, "{out}");
+    assert!(world.borrow().programs.is_empty(), "{out}");
+}
+
+/// With the daemon unread at the syncs, the round still begins, and its
+/// begin says what is wrong (R3 of the review of #170).
+#[test]
+fn a_round_with_the_daemon_unread_still_begins() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().away_until = u64::MAX;
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let (_code, out, err) = scheduled(
+        &mut agent,
+        Duration::from_secs(60),
+        &mut until(&world, start + 30_000),
+    );
+    assert!(rounds(&out)[0].starts_with("round 1 failed "), "{out}{err}");
+    assert!(err.contains("round 1: "), "{err}");
+    assert!(!err.contains("no publish begun"), "{err}");
+}
+
+/// A round still behind settles what is under way (R20 of the review of
+/// #170).
+#[test]
+fn a_round_still_behind_still_settles() {
+    let world = rewound_t(10_000);
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let (_code, out, _err) = scheduled(
+        &mut agent,
+        Duration::from_secs(60),
+        &mut until(&world, start + 30_000),
+    );
+    assert_eq!(field(rounds(&out)[0], "begun"), "-", "{out}");
+    let calls = world.borrow().calls.clone();
+    assert!(
+        calls.contains(&"count"),
+        "the settle did not run: {calls:?}"
+    );
 }
 
 /// A round whose syncs stop with the newest cut still behind begins no
@@ -1552,6 +1685,7 @@ fn a_round_still_behind_begins_no_publish() {
         assert_eq!(field(round, "begun"), "-", "{out}");
         assert_eq!(field(round, "synced"), synced, "{out}");
         assert_eq!(field(round, "under_way"), "0", "{out}");
+        assert_eq!(field(round, "bound"), "1", "{out}");
     }
     let lines: Vec<&str> = err.lines().collect();
     assert_eq!(lines.len(), 2, "{err}");
@@ -2051,6 +2185,81 @@ mod restarts {
                 publish.name
             );
         }
+    }
+
+    /// An agent on `world` whose directory fails its `fail_load`-th load
+    /// (0: none) and saves always.
+    fn loading(
+        world: &Rc<RefCell<World>>,
+        fail_load: usize,
+    ) -> Agent<FakeZfs, FakeDaemon, Flaky, FakeClock> {
+        let (keep, _files, _failed) = flaky(Box::new(|_: &Record| false), fail_load);
+        Agent::new(
+            FakeZfs(world.clone()),
+            FakeDaemon(world.clone()),
+            keep,
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent")
+    }
+
+    /// An error of the syncs after a rewind import reads the record
+    /// again at once, as a begin's does (R8 of the review of #170).
+    #[test]
+    fn an_error_of_the_syncs_reads_the_record_again() {
+        let world = rewound_t(5);
+        world.borrow_mut().assist_fails = 1;
+        let mut agent = loading(&world, 0);
+        assert_eq!(agent.parts().2.loads.get(), 1);
+        let mut asked = 0u32;
+        let mut go = || {
+            asked += 1;
+            asked <= 3
+        };
+        let (_code, out, err) = sched_any(&mut agent, Duration::from_secs(60), &mut go);
+        assert!(rounds(&out)[0].starts_with("round 1 failed "), "{out}{err}");
+        assert_eq!(agent.parts().2.loads.get(), 2, "{out}{err}");
+    }
+
+    /// A refusal of the pool's premise at the syncs reads the record no
+    /// more than a begin's refusal does (R12 of the review of #170).
+    #[test]
+    fn a_refusal_at_the_syncs_reads_the_record_once() {
+        let world = rewound_t(5);
+        world.borrow_mut().user(User::Attach, "");
+        let mut agent = loading(&world, 0);
+        let mut asked = 0u32;
+        let mut go = || {
+            asked += 1;
+            asked <= 3
+        };
+        let (_code, out, err) = sched_any(&mut agent, Duration::from_secs(60), &mut go);
+        assert!(rounds(&out)[0].starts_with("round 1 failed "), "{out}{err}");
+        assert_eq!(agent.parts().2.loads.get(), 1, "{out}{err}");
+    }
+
+    /// An error of the syncs whose reading of the record fails settles
+    /// nothing in that round (R10 of the review of #170).
+    #[test]
+    fn a_failed_reading_after_an_error_of_the_syncs_settles_nothing() {
+        let world = rewound_t(5);
+        world.borrow_mut().assist_fails = 1;
+        let mut agent = loading(&world, 2);
+        let mut asked = 0u32;
+        let mut go = || {
+            asked += 1;
+            asked <= 3
+        };
+        let (_code, out, err) = sched_any(&mut agent, Duration::from_secs(60), &mut go);
+        assert!(rounds(&out)[0].starts_with("round 1 failed "), "{out}{err}");
+        assert!(
+            err.contains("round 1: the record's directory: the record could not be read"),
+            "{err}"
+        );
+        let calls = world.borrow().calls.clone();
+        assert!(!calls.contains(&"count"), "the settle ran: {calls:?}");
     }
 
     /// Another volume's.

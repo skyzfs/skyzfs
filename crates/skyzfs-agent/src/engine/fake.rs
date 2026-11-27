@@ -490,6 +490,9 @@ pub struct World {
     /// The agent's next sync tasks that fail before they write anything,
     /// as a `zfs set` that ZFS refuses (Astra's P2 on #170).
     pub assist_fails: u32,
+    /// The agent's sync tasks that land before those of `assist_fails`
+    /// begin to fail.
+    pub assist_fails_after: u32,
     abandon_next: bool,
     err_low_next: bool,
     erred_low: bool,
@@ -539,6 +542,7 @@ impl World {
             calls: Vec::new(),
             plain_sync: false,
             assist_fails: 0,
+            assist_fails_after: 0,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
             erred_low: false,
@@ -1655,7 +1659,9 @@ impl Zfs for FakeZfs {
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
-        if world.assist_fails > 0 {
+        if world.assist_fails > 0 && world.assist_fails_after > 0 {
+            world.assist_fails_after -= 1;
+        } else if world.assist_fails > 0 {
             world.assist_fails -= 1;
             world
                 .log

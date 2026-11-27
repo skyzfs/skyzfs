@@ -99,8 +99,14 @@
 #                               sweep-list-rI, sweep-list-idle-rI,
 #                               sweep-holds-rI and sweep-holds-idle-rI,
 #                               and about.txt gives both sides' longest
-#                               writes, groups committed and longest
-#                               zpool sync, with their medians. A round
+#                               writes, groups committed, groups a
+#                               second, longest zpool sync and windows,
+#                               with their medians, and the reads' runs,
+#                               failures and share of their window; a
+#                               round whose read was cut at its limit is
+#                               in no median. A kind whose step read was
+#                               cut or ended with a status but 0 has no
+#                               rounds. A round
 #                               takes about 2 * (window + 40) s: 5
 #                               rounds of both reads, about 17 minutes
 #                               a scale
@@ -1291,11 +1297,13 @@ idle_for() { sleep "$1"; }
 # What is left of SECS after the last run is waited out, so that the
 # window is as long as the idle control's (whose committed groups it is
 # compared with), unless a run itself went past SECS. Prints runs=N
-# failed=F longest=S (the longest run, seconds). A run cut by rec's limit is
+# failed=F longest=S busy=S (the longest run and the runs' sum,
+# seconds: after the last run the window has no read in it). A run cut
+# by rec's limit is
 # killed with this function's shell, and its command may be left
 # running: the rounds' window keeps SECS well under the limit.
 reading_for() {
-    local secs=$1 t0 a b n=0 f=0 last=0 longest=0 left
+    local secs=$1 t0 a b n=0 f=0 last=0 longest=0 busy=0 left
     shift
     t0=$(date +%s.%N)
     while :; do
@@ -1305,12 +1313,13 @@ reading_for() {
         n=$((n + 1))
         last=$(secs_between "$a" "$b")
         longest=$(awk -v x="$longest" -v y="$last" 'BEGIN { printf "%.3f\n", (y > x) ? y : x }')
+        busy=$(awk -v x="$busy" -v y="$last" 'BEGIN { printf "%.3f\n", x + y }')
         awk -v t0="$t0" -v now="$b" -v l="$last" -v s="$secs" 'BEGIN { exit !(now - t0 + l <= s) }' || break
     done
     b=$(date +%s.%N)
     left=$(awk -v t0="$t0" -v now="$b" -v s="$secs" 'BEGIN { l = s - (now - t0); if (l > 0) printf "%.3f\n", l }')
     [ -z "$left" ] || sleep "$left"
-    echo "runs=$n failed=$f longest=$longest"
+    echo "runs=$n failed=$f longest=$longest busy=$busy"
 }
 
 # window_of NAME: how long the record NAME's window lasted, seconds
@@ -1330,6 +1339,19 @@ field_of() {
 # file's longest=), or ? where there is none.
 stall_of() { field_of "$1" stall longest; }
 
+# rate_of GROUPS SECONDS: groups committed a second of a window, two
+# decimals, or ? where either is not a number or the window is 0 (D4 of
+# #169's review: a rate, not a count, compares windows of two lengths).
+rate_of() {
+    awk -v g="$1" -v s="$2" 'BEGIN { if (g !~ /^[0-9]+$/ || s !~ /^[0-9]+(\.[0-9]+)?$/ || s + 0 == 0) print "?"; else printf "%.2f\n", g / s }'
+}
+
+# share_of SECONDS WINDOW: the share of a window with a read in it, two
+# decimals, or ? where either is not a number or the window is 0.
+share_of() {
+    awk -v b="$1" -v s="$2" 'BEGIN { if (b !~ /^[0-9]+(\.[0-9]+)?$/ || s !~ /^[0-9]+(\.[0-9]+)?$/ || s + 0 == 0) print "?"; else printf "%.2f\n", b / s }'
+}
+
 # median VALUE...: the median of the values that are numbers ("<x" and
 # ">x" read as x), or ? where there is none.
 median() {
@@ -1348,13 +1370,16 @@ median() {
 # settle), so that their sync is not what is measured (R1 of #164's
 # review). Records scale-LBL-sweep-KIND-rI and
 # scale-LBL-sweep-KIND-idle-rI; about.txt gets, for each kind and side,
-# each round's longest write, groups committed in the window and longest
-# `zpool sync`, and their medians, with the reads' runs. Not run for a
-# kind whose step's read has no time or was cut at its limit, and no
-# round is started that the budget cannot hold.
+# each round's longest write, groups committed in the window, groups a
+# second of the window's own length, longest `zpool sync` and window,
+# and their medians, with the reads' runs, failures and share of their
+# window. A round whose read was cut at a record's limit is "cut" on
+# both sides and in no median. Not run for a kind whose step's read has
+# no time, was cut at its limit or ended with any status but 0, and no
+# round is started that the budget or a record's limit cannot hold.
 sweep_rounds() {
-    local lbl=$1 wdir=$2 p=$3 rounds=${ZCR_SWEEP_ROUNDS:-5} win=${ZCR_SWEEP_WINDOW:-10} kind i r c secs w m need left held cmd src ss
-    local -a runs fl rl il rt it rs is rw iw
+    local lbl=$1 wdir=$2 p=$3 rounds=${ZCR_SWEEP_ROUNDS:-5} win=${ZCR_SWEEP_WINDOW:-10} kind i r c secs w m need left held cmd src ss st
+    local -a runs fl rb rl il rt it rr ir rs is rw iw
     case $rounds in
         *[!0-9]* | '' | ???*) echo "scale $lbl: the sweep's rounds not run: ZCR_SWEEP_ROUNDS is not a count of at most 99: $rounds" >> "$OUT/about.txt"; return 0 ;;
     esac
@@ -1397,13 +1422,22 @@ sweep_rounds() {
         fi
         # The window: at least one whole read.
         w=$(awk -v s="$secs" -v w="$win" 'BEGIN { c = int(s); if (c < s) c++; print (c > w) ? c : w }')
-        runs=() fl=() rl=() il=() rt=() it=() rs=() is=() rw=() iw=()
+        runs=() fl=() rb=() rl=() il=() rt=() it=() rr=() ir=() rs=() is=() rw=() iw=()
         m=${ZCR_WRITER_MARGIN:-2}
         m=${m%.*}
         # A round: two windows, each with its margins rounded up, its
-        # settle and its starts and stops.
-        ss=${ZCR_SETTLE_S:-30}
-        if [[ $ss =~ ^[0-9]{1,4}$ ]]; then ss=$((10#$ss)); else ss=30; fi
+        # settle and its starts and stops. The settle waits as
+        # settle_txgs does: not at all where it is off or its settings
+        # are not counts, else up to ZCR_SETTLE_S (a count of more than
+        # six digits as 999999 s, which no budget holds).
+        st=${ZCR_SETTLE_TXGS:-2} ss=${ZCR_SETTLE_S:-30}
+        if [[ ! $st$ss =~ ^[0-9]+$ ]] || [[ $st =~ ^0+$ ]]; then
+            ss=0
+        elif [ "${#ss}" -gt 6 ]; then
+            ss=999999
+        else
+            ss=$((10#$ss))
+        fi
         need=$((2 * (w + 2 * (${m:-0} + 1) + ss + 2)))
         for ((i = 1; i <= rounds; i++)); do
             if ! scale_limit; then
@@ -1429,13 +1463,22 @@ sweep_rounds() {
                 writing "$r" "$wdir" "$p" rec "$r" reading_for "$w" "${cmd[@]}"
                 writing "$c" "$wdir" "$p" idle_for "$w"
             fi
+            if [ "$(cat "$OUT/$r/rc" 2> /dev/null)" = 124 ]; then
+                # The read was cut at its limit: the round is not the
+                # window's, on either side (the review's nit on #169).
+                runs+=(cut) fl+=(cut) rb+=(cut) rl+=(cut) il+=(cut) rt+=(cut) it+=(cut) rr+=(cut) ir+=(cut)
+                rs+=(cut) is+=(cut) rw+=(cut) iw+=(cut)
+                continue
+            fi
             runs+=("$(field_of "$r" stdout runs)") fl+=("$(field_of "$r" stdout failed)")
             rl+=("$(stall_of "$r")") il+=("$(stall_of "$c")")
             rt+=("$(field_of "$r" txg txgs)") it+=("$(field_of "$c" txg txgs)")
             rs+=("$(field_of "$r" txg sync_longest)") is+=("$(field_of "$c" txg sync_longest)")
             rw+=("$(window_of "$r")") iw+=("$(window_of "$c")")
+            rr+=("$(rate_of "${rt[-1]}" "${rw[-1]}")") ir+=("$(rate_of "${it[-1]}" "${iw[-1]}")")
+            rb+=("$(share_of "$(field_of "$r" stdout busy)" "${rw[-1]}")")
         done
-        echo "scale $lbl: sweep-$kind against an idle control, ${#rl[@]} rounds of $w s (odd rounds idle first): reads run ${runs[*]:-none}, failed ${fl[*]:-none}; longest write read ${rl[*]:-none} (median $(median "${rl[@]}")), idle ${il[*]:-none} (median $(median "${il[@]}")); groups committed read ${rt[*]:-none} (median $(median "${rt[@]}")), idle ${it[*]:-none} (median $(median "${it[@]}")); longest zpool sync read ${rs[*]:-none} (median $(median "${rs[@]}")), idle ${is[*]:-none} (median $(median "${is[@]}")); windows read ${rw[*]:-none} s, idle ${iw[*]:-none} s" >> "$OUT/about.txt"
+        echo "scale $lbl: sweep-$kind against an idle control, ${#rl[@]} rounds of $w s (odd rounds idle first): reads run ${runs[*]:-none}, failed ${fl[*]:-none}, a read in ${rb[*]:-none} of their window (median $(median "${rb[@]}")); longest write read ${rl[*]:-none} (median $(median "${rl[@]}")), idle ${il[*]:-none} (median $(median "${il[@]}")); groups committed read ${rt[*]:-none} (median $(median "${rt[@]}")), idle ${it[*]:-none} (median $(median "${it[@]}")); groups a second of each window read ${rr[*]:-none} (median $(median "${rr[@]}")), idle ${ir[*]:-none} (median $(median "${ir[@]}")); longest zpool sync read ${rs[*]:-none} (median $(median "${rs[@]}")), idle ${is[*]:-none} (median $(median "${is[@]}")); windows read ${rw[*]:-none} s, idle ${iw[*]:-none} s" >> "$OUT/about.txt"
     done
 }
 
