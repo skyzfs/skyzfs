@@ -1,0 +1,14 @@
+passes BASE (no plant: the suite passes in the copy)
+caught rcase: no recover: FAIL rcase: no kill: got 'status status-before scen;scen --trace-points TMP/rt/cases/X/trace.t
+caught rt_after: rig hold kept: FAIL rt_after: the rig's hold, the names, the agent's hold: got 'adump record-after;snaps snaps-after;status s
+caught rt_after: agent holds kept: FAIL rt_after: the rig's hold, the names, the agent's hold: got 'zfs release skz-rig skzcut/c1@t1;adump record
+caught rt_after: abandoned names not asked: FAIL rt_after: the rig's hold, the names, the agent's hold: got 'zfs release skz-rig skzcut/c1@t1;adump record
+caught K: keep 3: FAIL K: keep 2, the two snapshots under t1 not the agent's, seven rounds: got 'abg publish run --every-s 10 --
+caught S: dump after round 3: FAIL S: the hold after round 1, the looks after round 4, the release, seven rounds: got 'abg publish run --eve
+caught S: release before the dump: FAIL S: the hold after round 1, the looks after round 4, the release, seven rounds: got 'abg publish run --eve
+caught X: run2 keep 2: FAIL X: killed, the snapshots, run2 two rounds: got 'abg publish run --every-s 10 --keep 1 --trace-points x --
+caught B: nine rounds: FAIL B: keep 60 ten rounds, then keep 1 three: got 'abg publish run --every-s 10 --keep 60 --trace-points x;rr
+caught A-old: no wait for abandoned: FAIL A-old: frozen, too old at 8 s, the thaw after round 1, the dump after the give-up, four rounds: got 'free
+caught A-person: no give-up: FAIL A-*: killed, given up, the dump, the run three rounds: got 'acmd publish publish --limit-s 600 --trace-po
+caught rec: X-destroy point: FAIL aretain: the children, then its cases in order: got 'begin|children|K keep|S stuck|X-retire retkill retir
+caught cases.tsv line dropped: FAIL rt_after: the rig's hold, the names, the agent's hold: got 'zfs release skz-rig skzcut/c1@t1;adump record

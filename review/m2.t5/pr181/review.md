@@ -186,10 +186,31 @@ Each of these plants survives:
   `agent-record.sh` and `cut-record.sh` are the same as on the base, and
   the +44 on `test_agent_record.sh` are the local version's SC2317/SC2218
   noise on stub functions. CI's lint is the verdict (see CI).
-- Plants in the check: 63 (`plants.py`, `plants.out`). Plants in the
-  recorder: `plants-sh.py`, `plants-sh.out`. Isolations: `isolate.py`,
-  `isolate.out`. "caught" means the suite failed; the test names after it
-  are the first failing ones and not always the one aimed at.
+- Plants in the check: 62, each in a copy of `tests/kernel`, where the
+  suite passes unplanted (`plants.py`, `plants.out`). 45 caught and 17
+  survive; the meaningful survivors are T1 to T4. "caught" means the suite
+  failed; the test names after it are the first failing ones and not always
+  the one aimed at. Isolations: `isolate.py`, `isolate.out`.
+- Plants in the recorder: 13 in a copy of `tests/kernel` and `tests/lib`,
+  with a baseline that passes (`plants-sh.py`, `plants-sh.out`). Each is
+  caught by the test aimed at it: no recover, the rig's hold or the agent's
+  kept, abandoned names not asked of node B, K's keep, S's dump round and
+  order, X's run2 keep, B's rounds, A-old's wait, A-person's give-up, a kill
+  point, the cases.tsv line.
+
+## CI at the head (72a70ac)
+
+All completed runs at the head are green. The first set (45997990…) was
+cancelled by the concurrency group when the second set started. In the
+agent rig (45998074504) every part has worst exit 0 with no FAILED, ERROR
+or MISSED line: rt 100 ok and 2 CAUGHT, a1 150 ok, a2 148 ok, d 96 ok,
+k 1068 ok, r 98 ok, f and fz 21 ok each. That matters because
+`agent_check.py`'s hand-off changed. Also green: ci (lint with shellcheck,
+test, unit-arm64), coverage, e2e, the publish rig, the cut rig and
+cut-daemon, node B, the daemon rig (24.04, 26.04, 26.04-arm daemon, and the
+stand-ins), the replay rig and the probe. None of those sources a changed
+file apart from the shared `cut-record.sh` list. Codex: no findings at
+72a70ac.
 
 ## Kernel runs
 

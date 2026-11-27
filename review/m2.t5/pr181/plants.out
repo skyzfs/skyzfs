@@ -60,5 +60,3 @@ caught  control: MISSED not failing: caught test_the_control_missed
 MISSED  main: exception is exit 1: MISSED
 MISSED  ctl_K_keep_3 judged at 2: MISSED
 caught  premise_B_backlog never: caught test_a_report_makes_round_one_unjudged | test_nine_in_a_round_with_a_report
-
-[exited with code 0]

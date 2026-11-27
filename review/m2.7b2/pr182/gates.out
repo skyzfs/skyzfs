@@ -1,0 +1,4 @@
+head a034d39fb5bfc623220de973bcde610767b315c1 clean=0
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy plain rc=0
