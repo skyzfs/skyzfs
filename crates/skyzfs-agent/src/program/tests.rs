@@ -3754,4 +3754,98 @@ mod retention_in_rounds {
             "nothing published in the first round after the uploader is back: {out2}{err2}"
         );
     }
+
+    /// The daemon of a stopped uploader as skyzfsd answers it: while
+    /// `stopped` holds, a retire is refused `stopped`
+    /// (`bins/skyzfsd/src/control.rs`, `RetireRefused::Stopped`). It
+    /// counts the retires asked.
+    struct StoppedRetires {
+        daemon: FakeDaemon,
+        stopped: Rc<Cell<bool>>,
+        retires: Rc<Cell<usize>>,
+    }
+
+    impl Daemon for StoppedRetires {
+        fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+            if let Request::Retire(_) = request {
+                self.retires.set(self.retires.get() + 1);
+                if self.stopped.get() {
+                    return Ok(Reply::Refused(
+                        Code::Stopped,
+                        "the uploader steps no more; nothing was retired".into(),
+                    ));
+                }
+            }
+            self.daemon.ask(request, manifest)
+        }
+        fn device(&mut self) -> io::Result<u64> {
+            self.daemon.device()
+        }
+        fn failure(&mut self) -> io::Result<Option<Noted>> {
+            self.daemon.failure()
+        }
+    }
+
+    /// As `hours_of_give_ups_leave_room_and_the_publishes_resume_at_once`,
+    /// with eleven names marked to be retired when the uploader stops
+    /// (`--keep 1` over twelve published), and their retires refused
+    /// `stopped` as the publishes are (N1 of the review of #179; its
+    /// scratch test, taken). The first retire refused `stopped` ends the
+    /// round's retires (the lead's ruling), so the marked names cost one
+    /// step a round and the early leave of the give-ups keeps its steps:
+    /// every round begins, and the first round after the uploader is
+    /// back publishes. Before the ruling, the eleven took all eight steps
+    /// of each round, and from about round 257 nothing began.
+    #[test]
+    fn a_backlog_of_marked_names_does_not_starve_the_early_leave() {
+        let (world, keep) = twelve();
+        world.borrow_mut().mode = Mode::Busy;
+        world.borrow_mut().refuse_every_publish = Some(Code::Stopped);
+        let stopped = Rc::new(Cell::new(true));
+        let retires = Rc::new(Cell::new(0));
+        let daemon = StoppedRetires {
+            daemon: FakeDaemon(world.clone()),
+            stopped: stopped.clone(),
+            retires: retires.clone(),
+        };
+        let mut agent = agent_on(&world, daemon, &keep);
+        let every = Duration::from_secs(60);
+        let start = mono(&world);
+        let (_, out, err) = scheduled_kept(
+            &mut agent,
+            every,
+            keep_one(),
+            &mut until(&world, start + 5 * 3600 * 1000),
+        );
+        let lines = rounds(&out);
+        assert!(lines.len() >= 290, "{} rounds in 5 h", lines.len());
+        let idle = lines.iter().filter(|l| field(l, "begun") == "-").count();
+        assert_eq!(idle, 0, "rounds that began nothing while stopped\n{err}");
+        assert!(
+            retires.get() <= lines.len(),
+            "{} retires asked in {} rounds: more than one a round while stopped",
+            retires.get(),
+            lines.len()
+        );
+        let marked = agent
+            .record()
+            .published
+            .iter()
+            .filter(|p| p.retire.is_some())
+            .count();
+        assert_eq!(marked, 11, "the marked names stay marked while stopped");
+        // The uploader is back.
+        world.borrow_mut().refuse_every_publish = None;
+        stopped.set(false);
+        let back = mono(&world);
+        let (_, out2, err2) = scheduled_kept(
+            &mut agent,
+            every,
+            keep_one(),
+            &mut until(&world, back + 60_000),
+        );
+        let first = rounds(&out2);
+        assert!(!first.is_empty(), "{out2}{err2}");
+        assert_ne!(field(first[0], "begun"), "-", "{out2}{err2}");
+    }
 }
