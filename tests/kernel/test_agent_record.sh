@@ -12,7 +12,10 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPT=$HERE/agent-record.sh
 if ! T=$(mktemp -d) || [ -z "$T" ] || [ ! -d "$T" ]; then echo "no temporary directory"; exit 2; fi
-trap 'rm -rf "$T"' EXIT
+# Only this shell removes T: a background child that gets a signal
+# before its exec runs the EXIT trap too, and would delete T under the
+# tests after it.
+trap '[ "$BASHPID" != '"$$"' ] || rm -rf "$T"' EXIT
 fails=0
 is() { # name got want
     if [ "$2" = "skipped: not root and no sudo" ]; then echo "skip $1: $2"; return; fi
@@ -1252,7 +1255,7 @@ is "arun: its cases" "$(arun_cases)" \
 # The failure course (afail).
 is "a zed that is neither on nor off" "$(refused CUT_AGENT=/bin/true CUT_S3_DOWN=x CUT_S3_UP=y CUT_AGENT_ZED=maybe)" \
     "64 CUT_AGENT_ZED is on or off, not maybe"
-for f in astamp_now astamp afinish fail_now failed_end note_stat fcase frun fail_unknown fail_wait afail_zed afail_end rec_afail; do
+for f in astamp_now astamp afinish astop fail_now failed_end note_stat fcase frun fail_unknown fail_wait afail_zed afail_end rec_afail; do
     is "$f is in the script" "$([ -n "$(fn "$f")" ] && echo yes)" yes
 done
 # astamp: each line of the run's output and errors stamped once; 0 on a
@@ -1350,24 +1353,46 @@ fnow() {
         log() { :; }; rig_error() { echo "rig_error $*"; }
         sleep 30 & SERVE_PID=$!; pid=$SERVE_PID
         eval "$(fn fail_now)"
+        DAEMON_GONE="" POOL_LOST=""
         fail_now
         st=0; wait "$pid" || st=$?
         echo "[$SERVE_PID] $([ "$FAILED_PID" = "$pid" ] && echo handed) $st" \
-            "$(awk -F '\t' 'NF == 2 && $1 ~ /^[0-9]+\.[0-9]+$/ && $2 ~ /^[0-9]+$/ { print "clocks" }' "$CDIR/fail-at")"
+            "$(awk -F '\t' 'NF == 2 && $1 ~ /^[0-9]+\.[0-9]+$/ && $2 ~ /^[0-9]+$/ { print "clocks" }' "$CDIR/fail-at")" \
+            "gone=$DAEMON_GONE lost=$POOL_LOST"
     )
 }
-is "fail_now: the signal, both clocks, SERVE_PID emptied" "$(fnow)" "[] handed $((128 + 10)) clocks"
-# afail_end: the pool and the daemon are lost to the course's end.
-fend() {
+is "fail_now: the signal, both clocks, SERVE_PID emptied, no daemon to stop and no pool to export from then on" \
+    "$(fnow)" "[] handed $((128 + 10)) clocks gone=1 lost=1"
+# afail_end: the flags as the cases left them; the watcher stopped as
+# after any recording, its status kept (watcher_stop); zed's journal
+# read before it, since a watcher's rig error ends the recording.
+fend() { # WATCH_PID DAEMON_GONE POOL_LOST -> the calls and the flags
     (
-        WRITER="" WATCH_PID="" S3_IS_DOWN="" POOL_LOST="" DAEMON_GONE=""
-        afail_zed_log() { :; }
+        WRITER="" WATCH_PID=$1 S3_IS_DOWN="" DAEMON_GONE=$2 POOL_LOST=$3
+        afail_zed_log() { printf 'zed;'; }; watcher_stop() { printf 'watcher_stop;'; }
         eval "$(fn afail_end)"
         afail_end
-        echo "$POOL_LOST $DAEMON_GONE"
+        echo "gone=$DAEMON_GONE lost=$POOL_LOST"
     )
 }
-is "afail_end: no pool to export and no daemon to stop" "$(fend)" "1 1"
+is "afail_end: after a failure, zed's journal, the watcher stopped" "$(fend 123 1 1)" "zed;watcher_stop;gone=1 lost=1"
+is "afail_end: after a W that ended before its failure, the daemon and the pool as U left them" "$(fend 123 "" "")" \
+    "zed;watcher_stop;gone= lost="
+is "afail_end: no watcher" "$(fend "" 1 1)" "zed;gone=1 lost=1"
+# astop: the run killed after the rig's own error, its lines stamped,
+# status `killed`, and no verdict (afinish would make one).
+fstop() {
+    (
+        CDIR=$T/fs; rm -rf "$CDIR"; mkdir -p "$CDIR"
+        printf 'round 1 x\n' > "$CDIR/publish.out"; : > "$CDIR/publish.err"
+        eval "$(fn astamp_now)"; eval "$(fn astop)"
+        sleep 30 & AGENT_PID=$!; pid=$AGENT_PID
+        astop publish
+        echo "$(cat "$CDIR/publish.rc") [$AGENT_PID] $(kill -0 "$pid" 2>/dev/null && echo alive || echo gone)" \
+            "$(wc -l < "$CDIR/publish.out.tsv") $([ -e "$CDIR/verdicts.tsv" ] && echo verdict || echo no-verdict)"
+    )
+}
+is "astop: killed, stamped, no verdict" "$(fstop)" "killed [] gone 1 no-verdict"
 # U's steps with stand-ins, and its error where round 1 leaves too little
 # time to export the pool before the next round.
 fu() { # TOOK_MS -> the calls
@@ -1380,22 +1405,26 @@ fu() { # TOOK_MS -> the calls
         astamp() { c astamp "$*"; }
         afinish() { c afinish "$*"; }
         writer_off() { c writer_off; }; writer_on() { c writer_on; }
-        export_pool() { c export; }; import_pool() { c import; }
+        export_pool() { c export; }
         udevadm() { :; }
-        fail_now() { c fail_now; }; failed_end() { c failed_end; }; note_stat() { c note "$1"; }
-        serve_start() { c serve_start "$*" "[${SERVE_ARGS[*]}]"; }
+        failed_end() { c failed_end; }; note_stat() { c note "$1"; }
+        serve_start() { c serve_start "$*" "[${SERVE_ARGS[*]}]" "gone=$DAEMON_GONE"; }
+        import_pool() { c import "lost=$POOL_LOST"; }
+        fail_now() { c fail_now; DAEMON_GONE=1 POOL_LOST=1; }
         case_error() { c case_error "$*"; }
         verdict() { c verdict "$*"; }
+        astop() { c astop "$*"; }
         eval "$(fn fail_unknown)"
-        took=$1
+        took=$1 DAEMON_GONE="" POOL_LOST=""
         fail_unknown --trace-points x
-        tr '\n' ';' < "$CDIR/calls"; echo " rc=$(cat "$CDIR/refused.rc" 2>/dev/null) [$(cat "$CDIR/skz.args" 2>/dev/null)]"
+        tr '\n' ';' < "$CDIR/calls"; echo " rc=$(cat "$CDIR/refused.rc" 2>/dev/null) [$(cat "$CDIR/skz.args" 2>/dev/null)]" \
+            "gone=$DAEMON_GONE lost=$POOL_LOST"
     )
 }
 is "U: round 1, the export, the failure, the refused start, round 3, the acknowledged start, the import, the end" "$(fu 9000)" \
-    "frun publish --trace-points x;astamp publish 180 ^round 1 ;writer_off;export;fail_now;astamp publish 90 ^lost ;failed_end;note failed;note refused;astamp publish 150 ^round 3 ;serve_start 2 acknowledged [--lease-ttl-s 300];import;note served;writer_on;afinish publish 150; rc=4 [serve --dir $T/fuv --run-dir $T/fur --lease-ttl-s 300]"
-is "U: round 1 with less than 20 s to its tick is the rig's error" "$(fu 41000)" \
-    "frun publish --trace-points x;astamp publish 180 ^round 1 ;case_error round 1 left 19000 ms to its tick, not 20 s or more: no time to export the pool between two rounds;afinish publish 1; rc= []"
+    "frun publish --trace-points x;astamp publish 180 ^round 1 ;writer_off;export;fail_now;astamp publish 90 ^lost ;failed_end;note failed;note refused;astamp publish 150 ^round 3 ;serve_start 2 acknowledged [--lease-ttl-s 300] gone=1;import lost=1;note served;writer_on;afinish publish 150; rc=4 [serve --dir $T/fuv --run-dir $T/fur --lease-ttl-s 300] gone= lost="
+is "U: round 1 with less than 20 s to its tick is the rig's error, the run stopped with no verdict" "$(fu 41000)" \
+    "frun publish --trace-points x;astamp publish 180 ^round 1 ;case_error round 1 left 19000 ms to its tick, not 20 s or more: no time to export the pool between two rounds;astop publish; rc= [] gone= lost="
 # W's steps with stand-ins; a run that ended before the failure is a
 # verdict, and nothing fails the volume.
 fw() { # ASTAMP_STATUS -> the calls

@@ -1050,7 +1050,7 @@ rec_arun() {
     agent_end
 }
 
-# The failure course (afail, part f; M2.7c, #76): `skyzfs-agent run` on
+# The failure course (afail, parts f and fz; M2.7c, #76): `skyzfs-agent run` on
 # its default schedule (no --every-s: 60 s) on a volume that fails while
 # it is served. The test build's SIGUSR1 fails the volume: the daemon
 # writes the failure note beside its socket ($(vrun)/failed), deletes
@@ -1071,18 +1071,24 @@ rec_arun() {
 #   new attachment), the pool is imported on its device, and the round
 #   at the tick after ends the run with 12.
 # - W: a writer on the pool and the store frozen; a new run (traced)
-#   whose first round begins a publish that waits for its cut, the
-#   agent's assist syncs going (FAIL_AFTER s after `asked:after`, past
-#   the agent's ASSIST_AFTER of 10 s); the volume fails with the pool
+#   whose first round begins a publish that waits for its cut; the
+#   volume fails FAIL_AFTER s after `asked:after`, past the agent's
+#   ASSIST_AFTER of 10 s, so an assist sync may have begun (obs_W_in_flight
+#   says; none had in the runs so far), with the pool
 #   imported on the device (held=yes). The run's wait ends, and its next
 #   round reopens the pool and looks at it until it reads SUSPENDED:
 #   exit 11. Then `run` again in the same directory (again): 11 again,
 #   and no reopen.
 #
-# The pool is left suspended, with no device under it: the course has
-# no stop of a daemon at its end (DAEMON_GONE), the cleanup does not
-# export the pool (POOL_LOST), and afail is the last recording of its
-# job. Its files, in DIR/cases/U and DIR/cases/W:
+# The pool is left suspended, with no device under it. From each
+# failure on (fail_now) the course has no daemon to stop at its end
+# (DAEMON_GONE) and the cleanup does not export the pool (POOL_LOST),
+# until U serves the volume again and imports the pool; a W that ends
+# before its failure leaves both as U left them. afail is the last
+# recording of its job. The watcher is stopped at the course's end as
+# after any recording (watcher_stop, with no drain: no daemon is left):
+# its verdict goes to the check (pin_watcher_reads), its other errors
+# are the rig's. Its files, in DIR/cases/U and DIR/cases/W:
 #
 # - LABEL.{out,err,rc} (publish, again): the run; LABEL.out.tsv and
 #   LABEL.err.tsv the arrival of each line (its number, the rig's
@@ -1154,17 +1160,31 @@ afinish() {
     astamp "$1" "$2" || true
     await_agent "$1" 1
 }
+# LABEL: the run stopped after the rig's own error in the case: its
+# lines stamped, then SIGKILL, its status `killed`. No verdict: the
+# run does not end by itself, and the case is not judged (D1 of #180's
+# review).
+astop() {
+    astamp_now "$1"
+    if [ -n "$AGENT_PID" ]; then
+        kill -9 "$AGENT_PID" 2>/dev/null || true
+        wait "$AGENT_PID" 2>/dev/null || true
+        AGENT_PID=""
+    fi
+    echo killed > "$CDIR/$1.rc"
+}
 # The volume failed by the test build's SIGUSR1 to the daemon serving
 # it, the signal's time on both clocks in CDIR/fail-at. From then on the
 # daemon is FAILED_PID and not SERVE_PID, so that no step of the rig's
-# stops it or takes its end for a verdict.
+# stops it or takes its end for a verdict, and the end and the cleanup
+# neither stop a daemon nor export the pool (D2 of #180's review).
 fail_now() {
     python3 -I -c 'import os, signal, sys, time
 r, m = time.time(), time.monotonic_ns()
 os.kill(int(sys.argv[1]), signal.SIGUSR1)
 print(f"{r:.6f}\t{m}")' "$SERVE_PID" > "$CDIR/fail-at" 2>&1 \
         || rig_error "SIGUSR1 to skyzfsd serve $SERVE_K failed: $(tail -n 1 "$CDIR/fail-at")"
-    FAILED_PID=$SERVE_PID SERVE_PID=""
+    FAILED_PID=$SERVE_PID SERVE_PID="" DAEMON_GONE=1 POOL_LOST=1
     log "$NAME: case $(basename "$CDIR"): the volume failed (SIGUSR1 to skyzfsd serve $SERVE_K)"
 }
 # The failed daemon's end, for up to 60 s: its status in CDIR/failed.rc.
@@ -1224,7 +1244,7 @@ fail_unknown() {
         print 60000 - v["took_ms"] - v["late_ms"]; exit }' "$CDIR/publish.out")
     if [ "${left:-0}" -lt 20000 ]; then
         case_error "round 1 left ${left:-0} ms to its tick, not 20 s or more: no time to export the pool between two rounds"
-        afinish publish 1
+        astop publish
         return 0
     fi
     writer_off
@@ -1245,7 +1265,9 @@ fail_unknown() {
     SERVE_K=$((SERVE_K + 1))
     SERVE_ARGS=("${AGENT_SERVE[@]}")
     serve_start "$SERVE_K" acknowledged
+    DAEMON_GONE=""
     import_pool
+    POOL_LOST=""
     echo "$EPOCHREALTIME" > "$CDIR/served-at"
     note_stat served
     writer_on
@@ -1297,25 +1319,18 @@ afail_zed_log() {
         > "$RDIR/zed.log" 2>&1 || true
 }
 # The course's end: the writer killed and not waited for (it may be
-# stuck in the suspended pool), the store thawed, the watcher stopped;
-# no daemon to stop and no pool to export.
+# stuck in the suspended pool), the store thawed, zed's journal read,
+# the watcher stopped with its status kept (watcher_stop; B1 of #180's
+# review). DAEMON_GONE and POOL_LOST are as the cases left them.
 afail_end() {
-    local _i
-    POOL_LOST=1 DAEMON_GONE=1
     if [ -n "$WRITER" ]; then
         touch "$WORK/writer.stop"
         kill -9 "$WRITER" 2>/dev/null || true
         WRITER=""
     fi
     [ -z "$S3_IS_DOWN" ] || thaw
-    if [ -n "$WATCH_PID" ]; then
-        touch "$WORK/watch.stop"
-        for _i in $(seq 1 60); do kill -0 "$WATCH_PID" 2>/dev/null || break; sleep 1; done
-        kill "$WATCH_PID" 2>/dev/null || true
-        wait "$WATCH_PID" 2>/dev/null || true
-        WATCH_PID=""
-    fi
     afail_zed_log
+    [ -z "$WATCH_PID" ] || watcher_stop
 }
 rec_afail() {
     afail_zed

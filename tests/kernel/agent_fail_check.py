@@ -15,13 +15,19 @@ Case U (lost with no pool imported, then no client, then a new
 attachment):
 - premise_U_round_1 (rig): round 1's line came before the failure, with
   the pool imported then.
+- premise_U_failed_before_tick (rig): the failure came STEP_WITHIN s or
+  more before round 2's tick (round 1's tick and 60 s), so that a step
+  within STEP_WITHIN s is the note's doing and not the tick's. Where
+  not, pin_U_lost_line and pin_U_step_within are not judged (INFO): the
+  rig's lateness is not the agent's (D3 of #180's review).
 - pin_U_daemon_failed (server): the daemon ended with 3 on the failure,
   and its note was there after it, written after the signal.
 - pin_U_lost_line (server): one `lost` line, the next round's: note=whole
   reason=image-failed held=unknown (nothing held the device, and the
   daemon's exclusive open proves no holder) step=not-imported reopen=-
   state=- looked_ms=- verdict=failed, for the pool; that round ok, it
-  begins nothing, its words on standard error, and the run goes on.
+  begins nothing, its words on standard error, and the run goes on
+  (round 3 is there).
 - pin_U_step_within (server): the lost line came within STEP_WITHIN s
   of the note's writing: the note is watched about every second
   (NOTE_EVERY) and ends the wait for the tick, so the step runs within
@@ -57,6 +63,11 @@ Case W (lost while a publish waits for its cut, the device held):
   reopened (reopen ok or failed) or suspended (zed may suspend the pool
   first); a reopened step looked for at most LOOK_LIMIT_MS; its round
   begins nothing.
+- pin_W_step_within (server): the lost line came within W_STEP_WITHIN s
+  of the note's writing: the wait for the cut ends on the note, and the
+  step (a reopen looks for at most 10 s) is not let run to its limit
+  (G1 of #180's review; 0.20 to 2.17 s from the failure to the end in
+  the first ten jobs).
 - pin_W_exit (server): the run ended with 11 within END_WITHIN s of its
   last line.
 - pin_W_suspended (kernel): the pool's kstat state read SUSPENDED after
@@ -72,6 +83,13 @@ Case W (lost while a publish waits for its cut, the device held):
 And the course's:
 - premise_zed (rig): zed runs where the workflow asked for it, and not
   otherwise (zed.tsv); obs_zed its lines in zed.log.
+- pin_watcher_reads (kernel and server): the watcher beside the daemon
+  (cut_watch.py, node B's side of the uploads, stopped at the course's
+  end) wrote no VERDICT line to watch.log: node B read the content of
+  every cut it found at head, the cuts uploaded before each failure
+  included. A watch.log with no line or with an ERROR line is the rig's
+  error (premise_watcher). B1 of #180's review: agent_check.py's own
+  pin is not reached for afail.
 - pin_ID_PIN (server) for each verdict the recorder wrote
   (cases/ID/verdicts.tsv); rig_error_in_the_course for DIR/rig-error.tsv;
   premise_ID_rig for a case's rig-error.txt (that case not judged).
@@ -85,6 +103,7 @@ COURSES = ('afail',)
 POOL = 'skzcut'
 EVERY_DEFAULT = 60
 STEP_WITHIN = 3.0
+W_STEP_WITHIN = 5.0
 END_WITHIN = 2.0
 TICK_SLACK = 1.0
 LOOK_LIMIT_MS = 10_500
@@ -245,6 +264,15 @@ def judge_unknown(c, j):
               'round 1 came before the failure, with the pool imported then')
     j.holds('pin_U_daemon_failed', judge_failed('U', c['failed_rc'], c['notes'], fail_real), 'server',
             'the daemon ended with 3, its note written after the signal')
+    b1 = began(r1)
+    tick2 = None if b1 is None else b1 - r1['f']['late_ms'] / 1000 + EVERY_DEFAULT
+    in_time = j.premise(
+        'premise_U_failed_before_tick',
+        [] if tick2 is not None and fail_real + STEP_WITHIN <= tick2 else
+        ['no round 1 to time round 2\'s tick from' if tick2 is None else
+         f'the volume failed {tick2 - fail_real:.2f} s before round 2\'s tick, not {STEP_WITHIN} s or more: '
+         'a step within the limit could be the tick\'s'],
+        f'the volume failed {tick2 - fail_real:.1f} s before round 2\'s tick' if tick2 is not None else '')
     lost = [ln for ln in run['lines'] if ln['kind'] == 'lost']
     lines = run['lines']
     bad = []
@@ -273,14 +301,19 @@ def judge_unknown(c, j):
         bad.append('no line on standard error that round 2 found the pool not imported and goes on')
     if round_of(run, 3) is None:
         bad.append('no round 3: the run did not go on')
-    j.holds('pin_U_lost_line', bad, 'server',
-            'one lost line, held=unknown step=not-imported verdict=failed; round 2 ok, nothing begun; the run '
-            'went on')
+    if in_time:
+        j.holds('pin_U_lost_line', bad, 'server',
+                'one lost line, held=unknown step=not-imported verdict=failed; round 2 ok, nothing begun; the run '
+                'went on')
+    else:
+        j.info('pin_U_lost_line', 'rig', 'not judged: the failure came too near round 2\'s tick')
     note = c['notes'].get('failed', (None, None))[0]
     at = lost[0]['at'] if lost else None
     j.info('obs_U_times', 'server', f'failure to note {ms(fail_real, note)} ms, note to lost line {ms(note, at)} ms, '
            f'failure to lost line {ms(fail_real, at)} ms; round 2 took {r2["f"]["took_ms"] if r2 else "?"} ms')
-    if note is None or at is None:
+    if not in_time:
+        j.info('pin_U_step_within', 'rig', 'not judged: the failure came too near round 2\'s tick')
+    elif note is None or at is None:
         j.holds('pin_U_step_within', ['no note or no lost line to time'], 'server', '')
     else:
         j.holds('pin_U_step_within',
@@ -338,7 +371,6 @@ def judge_unknown(c, j):
                        f'{END_WITHIN} s')
     j.holds('pin_U_moved', bad, 'server', 'ended with 12 after round 4, the new attachment said')
     bad = []
-    b1 = began(r1)
     for r in (r3, r4):
         if r is None or b1 is None or began(r) is None:
             continue
@@ -446,10 +478,17 @@ def judge_wait(c, j):
     j.holds('pin_W_lost_line', bad, 'server',
             f"round 1, then lost with step={lo['f']['step']} reopen={lo['f']['reopen']} "
             f"looked_ms={lo['f']['looked_ms']}" if lo else '')
-    j.holds('pin_W_exit', end, 'server', 'ended with 11 on its lost line')
     note = c['notes'].get('failed', (None, None))[0]
     at1 = r1['at'] if r1 else None
     atl = lo['at'] if lo else None
+    if note is None or atl is None:
+        j.holds('pin_W_step_within', ['no note or no lost line to time'], 'server', '')
+    else:
+        j.holds('pin_W_step_within',
+                [] if atl - note <= W_STEP_WITHIN else
+                [f'the lost line came {atl - note:.2f} s after the note, not within {W_STEP_WITHIN} s'],
+                'server', f'the lost line came {atl - note:.2f} s after the note')
+    j.holds('pin_W_exit', end, 'server', 'ended with 11 on its lost line')
     j.info('obs_W_times', 'server',
            f'failure to note {ms(fail_real, note)} ms, note to round 1\'s line {ms(note, at1)} ms (the wait '
            f'ended), round 1\'s line to the lost line {ms(at1, atl)} ms (the step), looked_ms '
@@ -584,6 +623,21 @@ def judge_course(rdir, j):
             j.premise(f'premise_{cid}_files', [str(e)], '')
             continue
         judge(c, j)
+    judge_watcher(text_of('watch.log', need=False), j)
+
+
+def judge_watcher(text, j):
+    """watch.log's lines: no line or an ERROR is the rig's error, a
+    VERDICT a verdict (node B could not read head's content)."""
+    watch = text.splitlines()
+    err = [ln.split('\t', 1)[-1] for ln in watch if '\tERROR ' in ln]
+    if j.premise('premise_watcher',
+                 ['the watcher wrote no line to watch.log'] if not watch else
+                 [f'the watcher: {err[0]}'] if err else [],
+                 f'{len(watch)} lines in watch.log'):
+        bad = [ln.split('\tVERDICT ', 1)[1] for ln in watch if '\tVERDICT ' in ln]
+        j.holds('pin_watcher_reads', bad, 'kernel and server',
+                f'node B read the content of every cut the watcher found at head ({len(watch)} lines)')
 
 
 def main(argv=None):

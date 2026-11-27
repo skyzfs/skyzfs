@@ -88,7 +88,7 @@ class Unknown(unittest.TestCase):
         self.assertEqual(j.status(), 0)
         for k in ('pin_U_daemon_failed', 'pin_U_lost_line', 'pin_U_step_within', 'pin_U_refused', 'pin_U_unheld',
                   'pin_U_moved', 'pin_U_default_schedule', 'premise_U_round_1', 'premise_U_refused_in_time',
-                  'premise_U_served_in_time'):
+                  'premise_U_served_in_time', 'premise_U_failed_before_tick'):
             self.assertEqual(v[k], 'ok', k)
         self.assertIn('note to lost line 1150 ms', next(ln for ln in j.lines if ln.startswith('obs_U_times')))
 
@@ -161,6 +161,46 @@ class Unknown(unittest.TestCase):
             c['run']['lines'][2]['at'] = 1075.0
         self.wrong(late, 'pin_U_step_within')
 
+    def test_the_step_10_s_after_the_note(self):
+        # A limit widened to 10 s or more lets it through.
+        self.wrong(lambda c: self.lines(c, 2, at=1025.05), 'pin_U_step_within')
+
+    def test_the_failure_near_round_2_s_tick(self):
+        # Round 1 began at 1001.0: round 2's tick is 1061.0. A failure
+        # less than STEP_WITHIN s before it leaves the step to the tick:
+        # the rig's error, and the two timed pins are not judged.
+        c = case_u()
+        c['fail'] = (1058.5, 58_500_000_000)
+        c['notes']['failed'] = (1058.55, 60)
+        c['run']['lines'][2]['at'] = 1061.2
+        c['run']['lines'][3]['at'] = 1061.2
+        v, j = verdicts(f.judge_unknown, c)
+        self.assertEqual(v['premise_U_failed_before_tick'], 'ERROR')
+        self.assertEqual(v['pin_U_lost_line'], 'INFO')
+        self.assertEqual(v['pin_U_step_within'], 'INFO')
+        self.assertEqual(j.status(), 2)
+        # The same with a step that came late: still not the agent's.
+        c['run']['lines'][2]['at'] = 1063.0
+        v, j = verdicts(f.judge_unknown, c)
+        self.assertEqual(v['pin_U_step_within'], 'INFO')
+        self.assertEqual(j.status(), 2)
+        # Just in time: judged.
+        c = case_u()
+        c['fail'] = (1061.0 - f.STEP_WITHIN, 58_000_000_000)
+        c['notes']['failed'] = (1058.05, 60)
+        c['run']['lines'][2]['at'] = 1059.0
+        c['run']['lines'][3]['at'] = 1059.0
+        v, _ = verdicts(f.judge_unknown, c)
+        self.assertEqual(v['premise_U_failed_before_tick'], 'ok')
+        self.assertEqual(v['pin_U_step_within'], 'ok')
+        self.assertEqual(v['pin_U_lost_line'], 'ok')
+        # The tick counts from round 1's tick, not its begin: late_ms moves
+        # it earlier.
+        c = case_u()
+        c['run'] = run([(x['text'] if i != 0 else rnd(1, 9000, 'skz-1', late=45000), x['at'])
+                        for i, x in enumerate(c['run']['lines'])], c['run']['errs'])
+        self.assertEqual(verdicts(f.judge_unknown, c)[0]['premise_U_failed_before_tick'], 'ERROR')
+
     def test_the_step_just_within(self):
         c = case_u()
         c['run']['lines'][2]['at'] = 1015.05 + f.STEP_WITHIN
@@ -181,8 +221,13 @@ class Unknown(unittest.TestCase):
         self.wrong(lambda c: c['run'].update(errs=[c['run']['errs'][0], c['run']['errs'][2]]), 'pin_U_unheld')
         self.wrong(lambda c: self.lines(c, 4, rnd(3, 50, ok='failed')), 'pin_U_unheld')
 
+    def test_round_3_began(self):
+        self.wrong(lambda c: self.lines(c, 4, rnd(3, 50, 'skz-2')), 'pin_U_unheld')
+
     def test_not_12(self):
         self.wrong(lambda c: c.update(rc='0'), 'pin_U_moved')
+        self.wrong(lambda c: c.update(rc='10'), 'pin_U_moved')
+        self.wrong(lambda c: c.update(rc='9'), 'pin_U_moved')
         self.wrong(lambda c: c.update(ended_at=1190.0), 'pin_U_moved')
         self.wrong(lambda c: c['run'].update(errs=c['run']['errs'][:2]), 'pin_U_moved')
         self.wrong(lambda c: c['run'].update(errs=c['run']['errs'][:2] + [(SAID_4.replace('round 4', 'round 3'),
@@ -219,8 +264,8 @@ class Wait(unittest.TestCase):
         v, j = verdicts(f.judge_wait, case_w())
         bad = {k: x for k, x in v.items() if x not in ('ok', 'INFO')}
         self.assertEqual(bad, {}, j.lines)
-        for k in ('premise_W_waiting', 'pin_W_daemon_failed', 'pin_W_lost_line', 'pin_W_exit', 'pin_W_suspended',
-                  'pin_W_again'):
+        for k in ('premise_W_waiting', 'pin_W_daemon_failed', 'pin_W_lost_line', 'pin_W_step_within', 'pin_W_exit',
+                  'pin_W_suspended', 'pin_W_again'):
             self.assertEqual(v[k], 'ok', k)
         flight = next(ln for ln in j.lines if ln.startswith('obs_W_in_flight'))
         self.assertIn('one in flight at it: yes, returned 500 ms after the failure', flight)
@@ -279,8 +324,26 @@ class Wait(unittest.TestCase):
                             (rnd(3, 10), 2079.0)])
         self.wrong(change, 'pin_W_lost_line')
 
+    def test_the_step_late(self):
+        # The note at 2017.02; a reopen let run to its 10 s limit.
+        def late(c, at):
+            c['run'] = run([(rnd(1, 17500, 'skz-3', under=1), 2018.2), (LOST_W, at), (rnd(2, 11000), at)])
+            c['ended_at'] = at + 0.1
+        self.wrong(lambda c: late(c, 2029.0), 'pin_W_step_within')
+        # A limit widened to 8 s or more lets this through.
+        self.wrong(lambda c: late(c, 2025.0), 'pin_W_step_within')
+        c = case_w()
+        late(c, 2017.02 + f.W_STEP_WITHIN)
+        self.assertEqual(verdicts(f.judge_wait, c)[0]['pin_W_step_within'], 'ok')
+        late(c, 2017.02 + f.W_STEP_WITHIN + 0.01)
+        self.assertEqual(verdicts(f.judge_wait, c)[0]['pin_W_step_within'], 'FAILED')
+        self.wrong(lambda c: c['notes'].update(failed=(None, None)), 'pin_W_step_within')
+
     def test_not_11_or_late(self):
         self.wrong(lambda c: c.update(rc='0'), 'pin_W_exit')
+        self.wrong(lambda c: c.update(rc='9'), 'pin_W_exit')
+        self.wrong(lambda c: c.update(rc='10'), 'pin_W_exit')
+        self.wrong(lambda c: c['again'].update(rc='9'), 'pin_W_again')
         self.wrong(lambda c: c.update(rc='timeout'), 'pin_W_exit')
         self.wrong(lambda c: c.update(ended_at=2025.0), 'pin_W_exit')
 
@@ -405,6 +468,10 @@ def write_case(d, cid, c):
         put_run('again', a['run'], a['rc'], a['started_at'], a['ended_at'])
 
 
+WATCH = ('1000.1\tfetch head: cut 1 of group 9\n1000.9\tget ok: cut 1\n'
+         '1020.0\tfetch head: cut 4 of group 14\n2040.0\tstopped\n')
+
+
 class Course(unittest.TestCase):
     def course(self, change=None):
         d = tempfile.mkdtemp()
@@ -416,6 +483,8 @@ class Course(unittest.TestCase):
             fh.write('U\tunknown\t-\t12\t-\nW\twait\t-\t11\t-\n')
         with open(os.path.join(d, 'zed.tsv'), 'w') as fh:
             fh.write('want\toff\nruns\toff\npid\t-\n')
+        with open(os.path.join(d, 'watch.log'), 'w') as fh:
+            fh.write(WATCH)
         if change:
             change(d)
         return d
@@ -450,6 +519,32 @@ class Course(unittest.TestCase):
         self.assertEqual(v['premise_U_rig'], 'ERROR')
         self.assertNotIn('pin_U_moved', v)
         self.assertEqual(v['pin_W_again'], 'ok')
+        self.assertEqual(rc, 2)
+
+    def test_the_watcher(self):
+        rc, v = self.results(self.course())
+        self.assertEqual(v['premise_watcher'], 'ok')
+        self.assertEqual(v['pin_watcher_reads'], 'ok')
+
+        def put(text):
+            def change(d):
+                with open(os.path.join(d, 'watch.log'), 'w') as fh:
+                    fh.write(text)
+            return change
+        # Node B could not read head's content: a verdict.
+        rc, v = self.results(self.course(put(WATCH + '2041.0\tVERDICT node B could not read cut 4: get exit 4\n')))
+        self.assertEqual(v['pin_watcher_reads'], 'FAILED')
+        self.assertEqual(v['pin_W_again'], 'ok')
+        self.assertEqual(rc, 1)
+        # The watcher's own error, or no line: the rig's.
+        for text in (WATCH + '2041.0\tERROR the last look did not fetch what head holds in 3 tries\n', ''):
+            rc, v = self.results(self.course(put(text)))
+            self.assertEqual(v['premise_watcher'], 'ERROR', text)
+            self.assertNotIn('pin_watcher_reads', v)
+            self.assertEqual(v['pin_U_moved'], 'ok')
+            self.assertEqual(rc, 2)
+        rc, v = self.results(self.course(lambda d: os.remove(os.path.join(d, 'watch.log'))))
+        self.assertEqual(v['premise_watcher'], 'ERROR')
         self.assertEqual(rc, 2)
 
     def test_a_case_not_reached(self):

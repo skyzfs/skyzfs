@@ -749,6 +749,29 @@ cleans() { # POOL_LOST -> what lim was asked
 }
 is "cleanup with the pool lost: no export" "$(cleans 1)" "skz detach --dir $T/cv --run-dir $T/cr;"
 is "cleanup: the export" "$(cleans '')" "zpool export -f p;skz detach --dir $T/cv --run-dir $T/cr;"
+# watcher_stop: the watcher's end kept. 0 is nothing; 1 with a VERDICT
+# line goes to the check; any other end is the rig's error (B1 of #180's
+# review: afail's end stops the watcher with it).
+stopfn=$(sed -n '/^watcher_stop() {$/,/^}$/p' "$SCRIPT")
+is "watcher_stop is in the script" "$([ -n "$stopfn" ] && echo yes)" yes
+wstops() { # EXIT LOG_LINE -> what watcher_stop did
+    # shellcheck disable=SC2034,SC2329
+    (
+        WORK=$T/ws RDIR=$T/ws NAME=w; rm -rf "$WORK"; mkdir -p "$WORK"
+        printf '1.0\t%s\n' "$2" > "$RDIR/watch.log"
+        log() { printf 'log;'; }; rig_error() { printf 'rig_error %s;' "$1"; }
+        bash -c "while [ ! -e '$WORK/watch.stop' ]; do sleep 0.05; done; exit $1" & WATCH_PID=$!
+        eval "$stopfn"
+        watcher_stop
+        echo "[$WATCH_PID]"
+    )
+}
+is "watcher_stop: ended 0" "$(wstops 0 stopped)" "[]"
+is "watcher_stop: a verdict goes to the check" "$(wstops 1 'VERDICT node B could not read cut 3')" "log;[]"
+is "watcher_stop: 1 with no verdict is the rig's error" "$(wstops 1 stopped)" \
+    "rig_error the watcher ended with 1: 1.0	stopped;[]"
+is "watcher_stop: 2 is the rig's error" "$(wstops 2 'ERROR the last look')" \
+    "rig_error the watcher ended with 2: 1.0	ERROR the last look;[]"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

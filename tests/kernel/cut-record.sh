@@ -520,12 +520,16 @@ watcher_start() {
     WATCH_PID=$!
 }
 # After the export: wait up to 300 s for the daemon to upload what it
-# holds (drain), then let the watcher fetch head once more. Its
-# verdict (1 and a VERDICT line: node B could not read head's content)
-# goes to the check; any other end but 0 is the rig's error.
+# holds (drain), then stop the watcher.
 watcher_end() {
-    local _i rc=0
     drain drain.txt
+    watcher_stop
+}
+# Let the watcher fetch head once more and end. Its verdict (1 and a
+# VERDICT line: node B could not read head's content) goes to the check;
+# any other end but 0 is the rig's error.
+watcher_stop() {
+    local _i rc=0
     touch "$WORK/watch.stop"
     for _i in $(seq 1 600); do kill -0 "$WATCH_PID" 2>/dev/null || break; sleep 1; done
     if kill -0 "$WATCH_PID" 2>/dev/null; then
