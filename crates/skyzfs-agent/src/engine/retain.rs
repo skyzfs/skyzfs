@@ -33,9 +33,17 @@
 //! fails (a clone of the snapshot, a hold of another's) leaves the
 //! names published or given up for [`Record::stuck`], in one save, at
 //! its first failed destroy, so that it counts for no room
-//! ([`Record::room`]) and cannot stop the publishes. Each name stuck is
-//! tried again at each round, outside the round's steps, and leaves
-//! with `retired` once its destroy succeeds. At most [`STUCK_MAX`] are
+//! ([`Record::room`]) and cannot stop the publishes. At most
+//! [`STUCK_STEPS`] names stuck are tried again in a round, besides the
+//! round's steps, in turn by name from the one after the last tried
+//! (round-robin from the one tried longest ago, the lead's ruling), so
+//! that at the cap every name is tried within
+//! `STUCK_MAX / STUCK_STEPS` (8) rounds and a slow pool does not
+//! stretch a round far past its tick. The turn is kept in the process:
+//! a restart begins it again at the first name, since the record does
+//! not keep when each was tried (no save at each round; this module's
+//! reading). A name leaves with `retired` once its destroy succeeds.
+//! At most [`STUCK_MAX`] are
 //! kept: past that the oldest is forgotten with the line
 //! `forgotten <t> (destroy failed; destroy by hand)`, told before the
 //! save that drops it. A name given up moves there too, though the
@@ -91,6 +99,8 @@ pub const KEEP_DEFAULT: usize = 60;
 pub const ABANDONED_KEEP_DEFAULT: Duration = Duration::from_secs(24 * 60 * 60);
 /// The steps of retention in one round.
 pub const STEPS_MAX: usize = 8;
+/// The names stuck tried again in one round, at most.
+pub const STUCK_STEPS: usize = 8;
 /// Why the oldest name stuck is forgotten past [`STUCK_MAX`].
 pub const STUCK_FORGOTTEN: &str = "destroy failed; destroy by hand";
 
@@ -104,6 +114,9 @@ pub(super) struct Retention {
     /// What was last told of each name: told again only when it changes.
     /// Forgotten at a restart, and for a name that left the record.
     pub told: BTreeMap<String, String>,
+    /// The name stuck last tried in this process: the next round's
+    /// turn begins after it.
+    pub stuck_last: Option<String>,
 }
 
 impl Default for Retention {
@@ -112,6 +125,7 @@ impl Default for Retention {
             keep: KEEP_DEFAULT,
             abandoned_keep: ABANDONED_KEEP_DEFAULT,
             told: BTreeMap::new(),
+            stuck_last: None,
         }
     }
 }
@@ -272,17 +286,26 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         Ok(())
     }
 
-    /// Try again the destroy of each name stuck, oldest first; one that
+    /// Try again the destroy of at most [`STUCK_STEPS`] names stuck, in
+    /// turn by name from the one after the last tried; one that
     /// succeeds is told `retired` and leaves.
     fn retry_stuck(&mut self) -> Result<(), Error> {
-        let stuck: Vec<(String, Vec<Member>)> = self
+        let mut stuck: Vec<(String, Vec<Member>)> = self
             .record
             .stuck
             .iter()
             .map(|s| (s.name.clone(), s.members.clone()))
             .collect();
+        stuck.sort_by(|a, b| a.0.cmp(&b.0));
+        let first = match &self.retention.stuck_last {
+            Some(last) => stuck.iter().position(|(n, _)| n > last).unwrap_or(0),
+            None => 0,
+        };
+        stuck.rotate_left(first);
+        stuck.truncate(STUCK_STEPS);
         for (name, members) in stuck {
             self.at.clone_from(&name);
+            self.retention.stuck_last = Some(name.clone());
             if self.destroy_members(&name, &members)? {
                 self.told(name.clone(), Outcome::Retired);
                 self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;

@@ -9,7 +9,7 @@ use super::super::fake::{
     FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Snap, World, POOL, VOLUME,
 };
 use super::super::{Agent, Effect, Error, Outcome, Point, Points};
-use super::{ABANDONED_KEEP_DEFAULT, STEPS_MAX, STUCK_FORGOTTEN};
+use super::{ABANDONED_KEEP_DEFAULT, STEPS_MAX, STUCK_FORGOTTEN, STUCK_STEPS};
 use crate::plan::Report;
 use crate::record::{Left, Member, Record, Retire, Stuck, Why, RETIRING_MAX, STUCK_MAX};
 
@@ -663,13 +663,10 @@ fn refused(world: &Rc<RefCell<World>>, t: &str) -> usize {
 
 /// With [`STUCK_MAX`] stuck, one more stuck forgets the oldest: it is
 /// told `forgotten <t> (destroy failed; destroy by hand)` once, its
-/// snapshot is left, and the new name is the newest stuck. Every name
-/// stuck is tried at each round, outside the round's steps, and told
-/// once while its reason stays.
+/// snapshot is left, and the new name is the newest stuck.
 ///
 /// Mutants: none forgotten past the cap, the newest forgotten, the
-/// oldest forgotten with no line, the names stuck tried within the
-/// round's steps or not at all, told at each round.
+/// oldest forgotten with no line.
 #[test]
 fn past_stuck_max_the_oldest_stuck_is_forgotten() {
     let (world, keep, names) = published(2);
@@ -697,16 +694,55 @@ fn past_stuck_max_the_oldest_stuck_is_forgotten() {
     );
     assert_eq!(STUCK_FORGOTTEN, "destroy failed; destroy by hand");
     assert_eq!(snaps_of(&world, &seeds[0]).len(), 1, "left for a person");
-    const { assert!(STUCK_MAX > STEPS_MAX) };
-    for seed in &seeds {
-        assert_eq!(refused(&world, seed), 1, "{seed}");
+}
+
+/// The names stuck are tried at most [`STUCK_STEPS`] a round, in turn:
+/// at the cap, every name is tried once in each `STUCK_MAX /
+/// STUCK_STEPS` rounds, none twice before all were tried, and each is
+/// told once while its reason stays.
+///
+/// Mutants: all tried each round, the turn begun again at the first
+/// name each round (the later names starved), told at each round.
+#[test]
+fn the_names_stuck_are_tried_a_few_a_round_in_turn() {
+    let (world, keep, names) = published(2);
+    let seeds = seed_stuck(&world, &keep, STUCK_MAX - 1);
+    let t = names[0].clone();
+    world
+        .borrow_mut()
+        .destroy_refused
+        .insert(format!("{POOL}@{t}"), "held by another".into());
+    let mut a = agent(&world, &keep);
+    a.set_keep(1);
+    let mut all: Vec<String> = seeds.clone();
+    all.push(t.clone());
+    let tries = |world: &Rc<RefCell<World>>| -> Vec<usize> {
+        all.iter().map(|n| refused(world, n)).collect()
+    };
+    // The first round tries the first STUCK_STEPS by name, and then
+    // retires `t`, whose destroy fails: it is stuck, the cap reached.
+    a.retain().expect("retained");
+    assert_eq!(a.record().stuck.len(), STUCK_MAX);
+    let first = tries(&world);
+    assert_eq!(first.iter().sum::<usize>(), STUCK_STEPS + 1, "{first:?}");
+    let rounds = STUCK_MAX / STUCK_STEPS;
+    let mut before = first.clone();
+    for round in 0..rounds {
+        a.retain().expect("retained");
+        let now = tries(&world);
+        let tried: usize = now.iter().zip(&before).map(|(n, b)| n - b).sum();
+        assert_eq!(tried, STUCK_STEPS, "round {round}");
+        assert!(now.iter().zip(&before).all(|(n, b)| n - b <= 1));
+        before = now;
     }
-    a.retain().expect("retained again");
-    assert_eq!(refused(&world, &seeds[0]), 1, "forgotten: not tried");
-    for seed in &seeds[1..] {
-        assert_eq!(refused(&world, seed), 2, "{seed}");
-    }
-    assert_eq!(refused(&world, &t), 2);
+    // In the `rounds` after the first, each name was tried once: none
+    // starved, none tried twice.
+    let more: Vec<usize> = tries(&world)
+        .iter()
+        .zip(&first)
+        .map(|(n, f)| n - f)
+        .collect();
+    assert!(more.iter().all(|m| *m == 1), "{more:?}");
     let told = a
         .reports()
         .iter()
@@ -714,7 +750,6 @@ fn past_stuck_max_the_oldest_stuck_is_forgotten() {
         .count();
     assert_eq!(told, 1);
     assert_eq!(a.record().stuck.len(), STUCK_MAX);
-    assert!(a.outcomes().iter().all(|(n, _)| *n != seeds[1]));
 }
 
 /// The oldest name stuck is told `forgotten` before the save that drops
