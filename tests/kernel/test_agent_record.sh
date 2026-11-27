@@ -1449,5 +1449,107 @@ is "W: frozen, asked, 12 s, the failure, the end, the note, run again" "$(fw 2)"
 is "W: a run that ended before the failure" "$(fw 1)" \
     "freeze;frun publish --trace-points x;wait_point asked after 120;astamp publish 12;verdict publish_waiting;afinish publish 1;"
 
+# The retention course (aretain).
+for f in rt_datasets rt_snaps rt_status rt_first rt_rounds rcase rt_after ret_keep ret_stuck ret_retkill ret_backlog ret_aold ret_aperson rec_aretain; do
+    is "$f is in the script" "$([ -n "$(fn "$f")" ] && echo yes)" yes
+done
+is "aretain: the children, then its cases in order" "$(
+    agent_begin() { printf 'begin|'; }; agent_end() { printf 'end|'; }; rt_datasets() { printf 'children|'; }
+    rcase() { printf '%s|' "$*"; }
+    eval "$(fn rec_aretain)"; rec_aretain)" \
+    "begin|children|K keep|S stuck|X-retire retkill retire:after:1|X-retain retkill retain:before:1|X-destroy retkill destroy-member:after:1|B backlog|A-old aold|A-nothing aperson intent:after:1|A-members aperson taken:after:1|end|"
+# rcase: its own directory, the status before, the scenario with the
+# trace and the kill, recover, then rt_after; CDIR emptied.
+rcases() { # KILL
+    (
+        RDIR=$T/rt; rm -rf "$RDIR"; mkdir -p "$RDIR/cases/X/old"
+        rt_status() { echo "status $1 $SCEN" >> "$RDIR/calls"; }
+        ret_scen() { echo "scen $* adir=${ADIR#"$RDIR"/} $([ -d "$ADIR" ] && echo fresh)" >> "$RDIR/calls"; }
+        recover() { echo recover >> "$RDIR/calls"; }
+        rt_after() { echo "after ${CDIR#"$RDIR"/} kill=$KILL" >> "$RDIR/calls"; }
+        eval "$(fn rcase)"
+        rcase X scen "$1"
+        tr '\n' ';' < "$RDIR/calls"; echo "cdir=$CDIR old=$([ -e "$RDIR/cases/X/old" ] && echo kept || echo gone)"
+    )
+}
+is "rcase: no kill" "$(rcases "")" \
+    "status status-before scen;scen --trace-points $T/rt/cases/X/trace.tsv adir=cases/X/agent fresh;recover;after cases/X kill=;cdir= old=gone"
+is "rcase: a kill" "$(rcases retire:after:1)" \
+    "status status-before scen;scen --trace-points $T/rt/cases/X/trace.tsv --kill-at retire:after:1 adir=cases/X/agent fresh;recover;after cases/X kill=retire:after:1;cdir= old=gone"
+# rt_after: the rig's hold let go, the names the runs named asked of node
+# B, the agent's holds released, the case's line.
+rtafter() { # RIG_HOLD
+    (
+        RDIR=$T/ra; CDIR=$RDIR/cases/K; rm -rf "$RDIR"; mkdir -p "$CDIR"; : > "$RDIR/cases.tsv"
+        SCEN=keep KILL="" NAME=aretain POOL=skzcut HOLD_TAG=skyzfs-publish RIG_TAG=skz-rig RIG_HOLD=$1
+        printf 'snap/t1 ab\nround 1 ok\nretired t0\nsnap/t2 cd\n' > "$CDIR/publish.out"
+        printf 'abandoned t3 person\n' > "$CDIR/giveup.out"
+        echo t4 > "$CDIR/names.txt"; echo 0 > "$CDIR/publish.rc"
+        c() { echo "$*" >> "$RDIR/calls"; }
+        adump() { c adump "$1"; }; rt_snaps() { c snaps "$1"; }; rt_status() { c status "$1"; }
+        snaprow() { c snaprow "$1" "$2"; }
+        log() { :; }; rig_error() { c rig_error "$*"; }
+        # zfs as a program, for xargs.
+        mkdir -p "$RDIR/bin"
+        printf '#!/bin/bash\ncase $1 in\n  list) echo skzcut@t1; echo skzcut@t2 ;;\n  holds) shift; for s in "$@"; do [ "$s" != skzcut@t1 ] || printf "skzcut@t1\\tskyzfs-publish\\tx\\n"; [ "$s" != skzcut@t2 ] || printf "skzcut@t2\\tother\\tx\\n"; done ;;\n  *) echo "zfs $*" >> %s/calls ;;\nesac\n' "$RDIR" > "$RDIR/bin/zfs"
+        chmod +x "$RDIR/bin/zfs"; PATH=$RDIR/bin:$PATH
+        eval "$(fn rt_after)"
+        rt_after
+        tr '\n' ';' < "$RDIR/calls"; echo " hold=$RIG_HOLD [$(tr '\n' ' ' < "$CDIR/printed.txt")]" \
+            "[$(cat "$CDIR/holds-released.txt")] [$(cat "$RDIR/cases.tsv")] [$(cat "$CDIR/recovered.txt" 2>/dev/null)]"
+    )
+}
+is "rt_after: the rig's hold, the names, the agent's hold" "$(rtafter skzcut/c1@t1)" \
+    "zfs release skz-rig skzcut/c1@t1;adump record-after;snaps snaps-after;status status-after;snaprow t1 row-t1.txt;snaprow t2 row-t2.txt;snaprow t3 row-t3.txt;snaprow t4 row-t4.txt;zfs release skyzfs-publish skzcut@t1; hold= [t1 t2 t3 t4 ] [skzcut@t1] [K	keep	-	0	-] [the rig's hold on skzcut/c1@t1 released]"
+is "rt_after: no hold of the rig's" "$(rtafter "" | cut -d';' -f1)" "adump record-after"
+# The scenarios with stand-ins: the calls in order.
+rtscen() { # SCENARIO ROUND1/ROUND3 NAME [ARG...] -> the calls (a round's await: 0 came, 1 not)
+    (
+        CDIR=$T/rs; rm -rf "$CDIR"; mkdir -p "$CDIR"; : > "$CDIR/publish.err"
+        POOL=skzcut RUN_EVERY=10 RIG_TAG=skz-rig RIG_HOLD=""
+        scen=$1 ok=$2 name=$3; shift 3
+        c() { echo "$*" >> "$CDIR/calls"; }
+        abg() { c abg "$*"; [ -z "$name" ] || printf 'snap/%s ab\n' "$name" > "$CDIR/$1.out"; }
+        acmd() { c acmd "$*"; }
+        await_rounds() { c await_rounds "$*"; if [ "$2" = 3 ]; then return "${ok#*/}"; fi; return "${ok%/*}"; }
+        await_agent() { c await_agent "$*"; }
+        run_rounds_then_term() { c rrtt "$*"; }
+        rt_rounds() { c rt_rounds "$1"; echo 1; }
+        case_name() { echo "$name"; }
+        zfs() { c zfs "$*"; [ "$1" != get ] || echo 300; }
+        adump() { c adump "$1"; }; rt_snaps() { c snaps "$1"; }; snaprow() { c snaprow "$*"; }
+        freeze() { c freeze; }; thaw() { c thaw; }
+        case_error() { c case_error "$*"; }; verdict() { c verdict "$1"; }; rig_error() { c rig_error "$*"; }
+        eval "$(fn rt_first)"; eval "$(fn "ret_$scen")"
+        "ret_$scen" "$@"
+        tr '\n' ';' < "$CDIR/calls"
+        [ ! -e "$CDIR/others.tsv" ] || printf ' [%s]' "$(tr '\t\n' ' ;' < "$CDIR/others.tsv")"
+        [ ! -e "$CDIR/names.txt" ] || printf ' names=%s' "$(cat "$CDIR/names.txt")"
+        printf ' hold=%s' "$RIG_HOLD"
+    )
+}
+is "K: keep 2, the two snapshots under t1 not the agent's, seven rounds" "$(rtscen keep 0/0 t1 --trace-points x)" \
+    "abg publish run --every-s 10 --keep 2 --trace-points x;await_rounds publish 1 120;zfs get -Hp -o value guid skzcut/c2@t1;zfs create skzcut/late;zfs snapshot skzcut/late@t1;zfs destroy skzcut/c2@t1;zfs snapshot skzcut/c2@t1;zfs get -Hp -o value guid skzcut/late@t1;zfs get -Hp -o value guid skzcut/c2@t1;rt_rounds publish;rrtt publish 7; [late skzcut/late@t1 - 300;remade skzcut/c2@t1 300 300;] hold="
+is "K: no name in round 1 is the rig's error, and nothing is made" "$(rtscen keep 0/0 "" --trace-points x)" \
+    "abg publish run --every-s 10 --keep 2 --trace-points x;await_rounds publish 1 120;case_error round 1 published no name: ; hold="
+is "K: no round 1" "$(rtscen keep 1/0 t1 --trace-points x)" \
+    "abg publish run --every-s 10 --keep 2 --trace-points x;await_rounds publish 1 120;case_error round 1 published no name: ; hold="
+is "S: the hold after round 1, the looks after round 3, the release, six rounds" "$(rtscen stuck 0/0 s1 --trace-points x)" \
+    "abg publish run --every-s 10 --keep 1 --trace-points x;await_rounds publish 1 120;zfs hold skz-rig skzcut/c1@s1;rt_rounds publish;await_rounds publish 3 240;adump stuck-dump;snaps stuck-snaps;snaprow s1 stuck-row.txt;zfs release skz-rig skzcut/c1@s1;rt_rounds publish;rrtt publish 6; hold="
+is "S: no round 3 is a verdict, the hold left to rt_after" "$(rtscen stuck 0/1 s1 --trace-points x)" \
+    "abg publish run --every-s 10 --keep 1 --trace-points x;await_rounds publish 1 120;zfs hold skz-rig skzcut/c1@s1;rt_rounds publish;await_rounds publish 3 240;rt_rounds publish;verdict rounds; hold=skzcut/c1@s1"
+is "X: killed, the snapshots, run2 two rounds" "$(rtscen retkill 0/0 "" --trace-points x --kill-at retire:after:1)" \
+    "abg publish run --every-s 10 --keep 1 --trace-points x --kill-at retire:after:1;await_agent publish 120;snaps killed-snaps;abg run2 run --every-s 10 --keep 1;rrtt run2 2; hold="
+is "B: keep 60 ten rounds, then keep 1 three" "$(rtscen backlog 0/0 "" --trace-points x)" \
+    "abg publish run --every-s 10 --keep 60 --trace-points x;rrtt publish 10;abg run2 run --every-s 10 --keep 1;rrtt run2 3; hold="
+is "A-old: frozen, too old at 8 s, the dump and the thaw after round 1, four rounds" "$(rtscen aold 0/0 "" --trace-points x)" \
+    "freeze;abg publish run --every-s 10 --age-max-s 8 --abandoned-keep-s 5 --trace-points x;await_rounds publish 1 120;adump given-up;thaw;rrtt publish 4; hold="
+is "A-old: no round 1, no thaw (recover thaws)" "$(rtscen aold 1/0 "" --trace-points x)" \
+    "freeze;abg publish run --every-s 10 --age-max-s 8 --abandoned-keep-s 5 --trace-points x;await_rounds publish 1 120;rrtt publish 4; hold="
+is "A-*: killed, given up, the dump, the run three rounds" "$(rtscen aperson 0/0 n1 --trace-points x --kill-at intent:after:1)" \
+    "acmd publish publish --limit-s 600 --trace-points x --kill-at intent:after:1;acmd giveup recover --name n1 --give-up --limit-s 120;adump given-up;abg run run --every-s 10 --abandoned-keep-s 5;rrtt run 3; names=n1 hold="
+is "A-*: no name before the kill" "$(rtscen aperson 0/0 "" --trace-points x --kill-at intent:after:1)" \
+    "acmd publish publish --limit-s 600 --trace-points x --kill-at intent:after:1;case_error no name in the trace before the kill; names=- hold="
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

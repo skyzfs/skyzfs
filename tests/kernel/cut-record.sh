@@ -109,8 +109,9 @@
 # publish_check.py (their CUT_CHECK).
 # The agent rig's courses (skyzfs-agent-rig.yml, M2.T5 stage 1; in
 # agent-record.sh, which says what they do) are made then too, by name
-# only: aplain, adaemon, arare and arun, with agent_check.py as their
-# CUT_CHECK.
+# only: aplain, adaemon, arare, arun, afail and aretain, with
+# agent_check.py as their CUT_CHECK (it hands afail to
+# agent_fail_check.py and aretain to agent_retain_check.py).
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
@@ -188,7 +189,7 @@ UPLOAD_NAMED="unostore ukillput ufailed"
 # The channel rig's (skyzfs-publish-rig.yml), by name only.
 PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist pretire pkillret"
 # The agent rig's (skyzfs-agent-rig.yml; agent-record.sh), by name only.
-AGENT_NAMED="aplain adaemon arare arun afail"
+AGENT_NAMED="aplain adaemon arare arun afail aretain"
 KNOWN=$ALL
 [ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED $AGENT_NAMED"; }
 RECS=${*:-$ALL}
@@ -2170,7 +2171,7 @@ record() {
         pkillpub) SERVE_ARGS=(--kill-at-upload publish:1) ;;
         pkillret) SERVE_ARGS=(--kill-at-upload retire:1) ;;
         pchannel) PRE_SERVE=ulease_other ;;
-        aplain|adaemon|arare|arun|afail) SERVE_ARGS=("${AGENT_SERVE[@]}") ;;
+        aplain|adaemon|arare|arun|afail|aretain) SERVE_ARGS=("${AGENT_SERVE[@]}") ;;
         ulost) SERVE_ARGS=(--lease-ttl-s 3); DRAIN_STATE=lease_lost; DRAIN_HELD="" ;;
     esac
     if [ "$1" = stray ]; then begin "$1" delay-end; else begin "$1"; fi
