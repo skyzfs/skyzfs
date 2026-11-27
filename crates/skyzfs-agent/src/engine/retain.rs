@@ -235,6 +235,10 @@ enum Due {
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Keep the newest `keep` names published; at most
     /// [`crate::record::KEEP_MAX`] (`--keep`).
+    ///
+    /// `0` is taken here and retires every name published: it is for
+    /// tests only. The command line takes `--keep` from 1 (L4 of the
+    /// review of #179; the lead ruled to keep it so).
     pub fn set_keep(&mut self, keep: usize) {
         self.retention.keep = keep.min(KEEP_MAX);
     }
