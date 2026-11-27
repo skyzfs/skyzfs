@@ -109,6 +109,20 @@ pub fn reply_of(progress: &Progress) -> Reply {
     }
 }
 
+/// How the text of a retire's `refused other` begins: the commit that
+/// `snap/T` names follows, in hex ([`other_commit`]).
+const OTHER_NAMES: &str = "snap/T names commit ";
+
+/// The commit that `snap/T` names, as a retire's `refused other` from
+/// [`retired_reply`] says it; None for another answer. The request
+/// log's `retire` line carries it (M2.7b-2).
+pub fn other_commit(reply: &Reply) -> Option<[u8; 32]> {
+    match reply {
+        Reply::Refused(Code::Other, text) => unhex(text.strip_prefix(OTHER_NAMES)?.get(..64)?),
+        _ => None,
+    }
+}
+
 /// The answer to `retire`: the uploader's, or why it retired nothing.
 pub fn retired_reply(answer: &Result<Retired, RetireRefused>) -> Reply {
     match answer {
@@ -117,7 +131,7 @@ pub fn retired_reply(answer: &Result<Retired, RetireRefused>) -> Reply {
         Ok(Retired::Other(commit)) => Reply::Refused(
             Code::Other,
             format!(
-                "snap/T names commit {}, not the request's; it is left as it is",
+                "{OTHER_NAMES}{}, not the request's; it is left as it is",
                 hex(commit)
             ),
         ),
