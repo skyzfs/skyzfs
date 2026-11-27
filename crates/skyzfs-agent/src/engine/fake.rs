@@ -507,6 +507,9 @@ pub struct World {
     pub reopen_refused: bool,
     /// How many times the pool was reopened.
     pub reopens: u32,
+    /// The device's number as the daemon's adapter reads it, where it is
+    /// not [`DEVICE`] (a new device after a restart; M2.7c).
+    pub device_now: Option<u64>,
     abandon_next: bool,
     err_low_next: bool,
     erred_low: bool,
@@ -562,6 +565,7 @@ impl World {
             suspends_after_ms: None,
             reopen_refused: false,
             reopens: 0,
+            device_now: None,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
             erred_low: false,
@@ -1739,7 +1743,7 @@ impl Daemon for FakeDaemon {
     }
 
     fn device(&mut self) -> io::Result<u64> {
-        Ok(DEVICE)
+        Ok(self.0.borrow().device_now.unwrap_or(DEVICE))
     }
 
     fn failure(&mut self) -> io::Result<Option<Noted>> {

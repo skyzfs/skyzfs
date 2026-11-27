@@ -159,6 +159,59 @@
 //!   where every sync fails, only the tick limits them, one a round, each
 //!   round `failed` with the error.
 //!
+//! **A volume that failed in this boot** (M2.7c; [`crate::engine::Failed`]).
+//! Each round first reads the volume's failure note, which a daemon
+//! leaves beside its socket when its volume fails or a start refuses it.
+//! - **No note of this boot**: the round goes on.
+//! - **The note says no client held the device**: the round says so on
+//!   standard error, touches no pool, and goes on (the daemon is gone, so
+//!   it fails at the daemon; a start with `--acknowledge-failure` serves
+//!   the volume afresh and removes the note, and `run` then ends with 10,
+//!   below).
+//! - **The note says a client held it, or may have, or the note is torn**
+//!   (a file there that is not a whole note, which the daemon's start
+//!   counts as held too): the volume is lost for this boot, and so is a
+//!   pool on it. A pool that only writes never suspends by itself, so
+//!   the round makes the agent's pool read ([`Agent::lose`]): `zpool
+//!   reopen` within 10 s, then a look at the pool's state every 250 ms
+//!   for at most 10 s, until it reads SUSPENDED. **The look, not the
+//!   reopen's status, is the signal**: the reopen returns with status 0
+//!   before the pool suspends, and is refused where zed suspended it
+//!   first; its error is on standard error and changes nothing. No
+//!   reopen is made of a pool that is not imported or reads SUSPENDED
+//!   already. The round begins and settles nothing, prints
+//!
+//!   ```text
+//!   lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
+//!     step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-> looked_ms=<ms|->
+//!   ```
+//!
+//!   on one line ([`lost_line`]), then its round line, and `run` ends with
+//!   9 ([`exit::LOST`]). A torn note reads `note=torn reason=-
+//!   held=yes`. `state` is the pool's state at the last look; a pool that
+//!   still reads ONLINE there was not shown suspended. A service manager
+//!   must not start `run` again on 9: the volume is not served again
+//!   before a reboot, and a `run` started again on the same note finds the
+//!   pool suspended, makes no second reopen, and ends with 9 again. A
+//!   note of another boot is no note.
+//!
+//! `publish` and `settle` read the note too, before anything else, and
+//! touch no pool: a lost volume is refused with 9, one that failed with
+//! no client holding its device with 1 (its daemon is gone), with words
+//! on standard error. `recover` and `record` do not read it.
+//!
+//! **A new device, or a new attachment** (the lead's D4 on #167). `run`
+//! ends with 10 ([`exit::MOVED`]) after the round line of the round in
+//! which it saw the daemon's attachment change (a new attach of the
+//! volume's device, at each `cuts`; a take-over keeps it), or the
+//! volume's device number change (at each check of the pool's premise),
+//! from what it first saw in this process, with the change on standard
+//! error. A service manager starts it again, with `--device` as the
+//! device now is: the engine reads both afresh at its start.
+//!
+//! The codes 9 and 10 are the agent's, and not the daemon's codes of the
+//! same numbers.
+//!
 //! `publish` does not sync before its begin: a publish asked while the
 //! pool is below the abandoned groups pends, and the planner's own syncs
 //! carry it (the case M2's criterion tests).
@@ -186,7 +239,9 @@
 //! release with no agent's marker: a person judges those. It ends with
 //! 1 or 8 where it cannot start (the record unread, or the directory
 //! held), and with 6 where the record it starts on is one a person
-//! judges. `recover` of a volume whose `run` holds its directory exits 8:
+//! judges. It ends with 9 after a lost volume's round, and with 10 after
+//! the round that saw its device or the daemon's attachment change
+//! (above). `recover` of a volume whose `run` holds its directory exits 8:
 //! a person stops `run`, recovers, and starts it again.
 //!
 //! # What it prints
@@ -213,7 +268,9 @@
 //! failed on another, prints its `snap/` line and exits 1. 5 comes only
 //! from `publish`, where the pool's premise refuses the publish it
 //! begins; a publish under way whose premise is refused later is given
-//! up (`abandoned <t> premise`, 3), under any command.
+//! up (`abandoned <t> premise`, 3), under any command. 9 and 10 are
+//! `run`'s ends above; `publish` and `settle` also refuse a lost volume
+//! with 9 ([`exit`]).
 //!
 //! `record` of a directory with no record prints `absent` and exits 0;
 //! of a path that is not a directory it exits 1.
@@ -254,7 +311,8 @@ use std::time::Duration;
 use skyzfs_control::{hex, EXPIRY_MAX};
 
 use crate::engine::{
-    Agent, Choice, Clock, Daemon, Effect, Error, Outcome, Past, Point, Points, Stuck,
+    Agent, Choice, Clock, Daemon, Effect, Error, Failed, Note, Outcome, Past, Point, Points, Step,
+    Stuck,
 };
 use crate::plan::Report;
 use crate::record::{Keep, Loaded, Person, Phase, Why};
@@ -299,6 +357,17 @@ pub mod exit {
     pub const UNSETTLED: i32 = 7;
     /// Another agent holds the record's directory.
     pub const HELD: i32 = 8;
+    /// The volume is lost for this boot: its daemon failed, or refused
+    /// it, while a client held its device, and `run` made the pool read
+    /// (`lost` line). Not to be started again before a reboot: a
+    /// restart on the same note ends with 9 again, with no second
+    /// reopen. `publish` and `settle` refuse with it where the note is
+    /// there. The agent's code, not the daemon's 9.
+    pub const LOST: i32 = 9;
+    /// `run` saw the daemon's attachment or the volume's device change:
+    /// to be started again, on the device as it is now (the lead's D4
+    /// on #167). The agent's code, not the daemon's 10.
+    pub const MOVED: i32 = 10;
 }
 
 /// What the program is asked to do.
@@ -857,6 +926,11 @@ pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    if matches!(task, Task::Publish | Task::Settle) {
+        if let Some(code) = refused_failed(agent, err) {
+            return code;
+        }
+    }
     let mine = match task {
         Task::Publish => match agent.begin() {
             Ok(name) => Some(name),
@@ -896,6 +970,90 @@ pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         }
         None => worst(agent.outcomes(), !unsettled.is_empty()),
     }
+}
+
+/// Whether `publish` or `settle` refuses for the volume's failure note
+/// of this boot, and with what code, the words on `err`: [`exit::LOST`]
+/// where the volume is lost, [`exit::ERROR`] where it failed with no
+/// client holding its device, and the note's error where it cannot be
+/// read. Neither touches the pool: only `run` does (the lead's answer
+/// to Q5 of the plan of M2.7c). A daemon whose volume failed is gone, so
+/// neither could publish; a start that acknowledges a failure no client
+/// held removes the note.
+fn refused_failed<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
+    agent: &mut Agent<Z, D, K, C>,
+    err: &mut dyn Write,
+) -> Option<i32> {
+    match agent.failure() {
+        Ok(Failed::No) => None,
+        Ok(Failed::Unheld(failure)) => {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: the volume failed in this boot ({}), and no client held its \
+                 device: nothing is published; a start of the daemon with \
+                 --acknowledge-failure serves it afresh",
+                failure.reason
+            );
+            Some(exit::ERROR)
+        }
+        Ok(Failed::Lost(note)) => {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: the volume is lost for this boot (note={} reason={} held={}): \
+                 nothing is published; `run` makes its pool read",
+                note_word(&note),
+                note.reason_word(),
+                note.held_word()
+            );
+            Some(exit::LOST)
+        }
+        Err(e) => Some(failed(&e, err)),
+    }
+}
+
+/// `whole` or `torn`.
+fn note_word(note: &Note) -> &'static str {
+    match note {
+        Note::Whole(_) => "whole",
+        Note::Torn => "torn",
+    }
+}
+
+/// The line of standard output for a volume lost in this boot, before
+/// the round line of the round that found it ([module docs](self),
+/// "`run`"):
+///
+/// ```text
+/// lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
+///   step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-> looked_ms=<ms|->
+/// ```
+///
+/// on one line. `step` is `None` where the step failed (its error is
+/// on standard error).
+pub fn lost_line(pool: &str, volume: &[u8; 16], note: &Note, step: Option<&Step>) -> String {
+    let (word, reopen, state, looked) = match step {
+        None => ("failed", "-", "-".to_string(), "-".to_string()),
+        Some(Step::Reopened {
+            error,
+            state,
+            looked_ms,
+        }) => (
+            "reopened",
+            if error.is_some() { "failed" } else { "ok" },
+            state.as_ref().map_or("-".to_string(), ToString::to_string),
+            looked_ms.to_string(),
+        ),
+        Some(Step::Suspended) => ("suspended", "-", "SUSPENDED".to_string(), "-".to_string()),
+        Some(step) => (step.word(), "-", "-".to_string(), "-".to_string()),
+    };
+    format!(
+        "lost {pool} volume={} note={} reason={} held={} step={word} reopen={reopen} \
+         state={state} looked_ms={looked}\n",
+        hex(volume),
+        note_word(note),
+        note.reason_word(),
+        note.held_word(),
+    )
 }
 
 /// Say `e` on `err`; its exit code.
@@ -1075,6 +1233,63 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         let mut ended = None;
         let mut synced = 0;
         let mut bound = false;
+        // The volume's failure note of this boot (M2.7c), before anything
+        // else of the round: a volume lost makes its pool read and ends
+        // `run`; one that failed with no client holding its device is
+        // said, and the round goes on (its daemon is gone, and a start
+        // that acknowledges the failure serves it afresh).
+        match agent.failure() {
+            Ok(Failed::No) => {}
+            Ok(Failed::Unheld(failure)) => {
+                let _ = writeln!(
+                    err,
+                    "skyzfs-agent: round {n}: the volume failed in this boot ({}), and no \
+                     client held its device: no pool is touched; a start of the daemon with \
+                     --acknowledge-failure serves it afresh",
+                    failure.reason
+                );
+            }
+            Ok(Failed::Lost(note)) => {
+                let step = match agent.lose() {
+                    Ok(step) => Some(step),
+                    Err(e) => {
+                        failed.push(e);
+                        None
+                    }
+                };
+                if let Some(Step::Reopened {
+                    error: Some(why), ..
+                }) = &step
+                {
+                    let _ = writeln!(
+                        err,
+                        "skyzfs-agent: round {n}: the reopen: {why} (the pool's state, not \
+                         the command, says what it did)"
+                    );
+                }
+                for e in &failed {
+                    let _ = writeln!(err, "skyzfs-agent: round {n}: {e}");
+                }
+                let line = lost_line(agent.pool(), &agent.volume(), &note, step.as_ref());
+                let _ = out.write_all(line.as_bytes());
+                let now = agent.clock().mono_ms();
+                let round = Round {
+                    n,
+                    failed: !failed.is_empty(),
+                    late_ms: began.saturating_sub(due),
+                    took_ms: now.saturating_sub(began),
+                    skipped: (now.saturating_sub(due) / every_ms).saturating_sub(1),
+                    begun: None,
+                    under_way: agent.record().under_way.len(),
+                    synced: 0,
+                    bound: false,
+                };
+                let _ = out.write_all(round_line(&round).as_bytes());
+                let _ = out.flush();
+                return exit::LOST;
+            }
+            Err(e) => failed.push(e),
+        }
         if restart {
             match agent.restart() {
                 Ok(()) => restart = false,
@@ -1180,6 +1395,14 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         let _ = out.flush();
         if let Some(code) = ended {
             return code;
+        }
+        if let Some(why) = agent.moved() {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: round {n}: {why}: run ends, to be started again on the device \
+                 as it is now"
+            );
+            return exit::MOVED;
         }
         agent.forget();
         tick = tick.saturating_add(passed.max(1));

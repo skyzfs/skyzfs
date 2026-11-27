@@ -74,6 +74,22 @@ impl std::fmt::Display for Reason {
     }
 }
 
+impl Reason {
+    /// The reason in one word, for a line a program reads (the agent's
+    /// `lost` line, M2.7c).
+    pub fn word(self) -> &'static str {
+        match self {
+            Reason::LogFailed => "log-failed",
+            Reason::Short => "short",
+            Reason::RecoveryFailed => "recovery-failed",
+            Reason::Marked => "marked",
+            Reason::PositionUnreadable => "position-unreadable",
+            Reason::DeviceNoteUnreadable => "device-note-unreadable",
+            Reason::ImageFailed => "image-failed",
+        }
+    }
+}
+
 /// Whether a client held the volume's device when the volume failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Held {
@@ -85,6 +101,17 @@ pub enum Held {
     /// settles it by what the driver then says about the recorded
     /// number, and writes the answer into the note.
     Unknown,
+}
+
+impl Held {
+    /// `no`, `yes` or `unknown`.
+    pub fn word(self) -> &'static str {
+        match self {
+            Held::No => "no",
+            Held::Yes => "yes",
+            Held::Unknown => "unknown",
+        }
+    }
 }
 
 impl From<bool> for Held {

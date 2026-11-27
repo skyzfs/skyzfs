@@ -2394,3 +2394,212 @@ mod restarts {
         assert!(err.contains("round 2: the record's directory: "), "{err}");
     }
 }
+
+/// A volume that failed in this boot (M2.7c), and the end of `run` when
+/// its device or the daemon's attachment changes (the lead's D4 on
+/// #167).
+mod failed_volume {
+    use skyzfs_control::failure::{Failure, Held, Reason};
+
+    use super::*;
+    use crate::engine::fake::Restart;
+
+    fn noted(held: Held) -> Noted {
+        Noted::Failed(Failure {
+            held,
+            reason: Reason::ImageFailed,
+            identity: [7; 16],
+        })
+    }
+
+    fn lost_world(noted: Noted) -> Rc<RefCell<World>> {
+        let world = World::new(Mode::Busy);
+        {
+            let mut w = world.borrow_mut();
+            w.noted = Some(noted);
+            w.suspends_after_ms = Some(1_050);
+        }
+        world
+    }
+
+    fn run(world: &Rc<RefCell<World>>) -> (i32, String, String) {
+        let keep = MemKeep::default();
+        let mut agent = agent_on(world, FakeDaemon(world.clone()), &keep);
+        let start = mono(world);
+        scheduled(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(world, start + 600_000),
+        )
+    }
+
+    /// `run` on a volume lost in this boot makes the pool read, says so
+    /// on a `lost` line, then the round line, and ends with 9; it begins
+    /// nothing (the lead's answers to Q3 and Q4). Mutants: no reopen;
+    /// the code of an end; the round line left out; the lost line after
+    /// the round line; a begin before the step.
+    #[test]
+    fn run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9() {
+        let world = lost_world(noted(Held::Yes));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        assert_eq!(
+            lines[0],
+            format!(
+                "lost tank volume={} note=whole reason=image-failed held=yes step=reopened \
+                 reopen=ok state=SUSPENDED looked_ms=1250",
+                hex(&VOLUME)
+            )
+        );
+        assert!(lines[1].starts_with("round 1 ok "), "{out}");
+        assert_eq!(field(lines[1], "begun"), "-");
+        assert_eq!(world.borrow().reopens, 1);
+        assert!(world.borrow().programs.is_empty(), "nothing begun");
+        assert_eq!(err, "");
+    }
+
+    /// Started again on the same note, `run` finds the pool suspended,
+    /// does not reopen it, and ends with 9 again. Mutant: a second
+    /// reopen.
+    #[test]
+    fn run_started_again_on_the_same_note_ends_with_9_and_no_reopen() {
+        let world = lost_world(noted(Held::Unknown));
+        assert_eq!(run(&world).0, exit::LOST);
+        let (code, out, _) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}");
+        let lost = out.lines().next().expect("a line");
+        assert!(lost.contains(" held=unknown step=suspended reopen=- state=SUSPENDED "));
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// A torn note counts as a failure while a client held the device
+    /// (the lead's ruling), and the line names it torn. Mutant: a torn
+    /// note taken as none.
+    #[test]
+    fn a_torn_note_is_a_lost_volume_named_torn() {
+        let world = lost_world(Noted::NotWhole);
+        let (code, out, _) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}");
+        assert!(out.starts_with(&format!(
+            "lost tank volume={} note=torn reason=- held=yes step=reopened",
+            hex(&VOLUME)
+        )));
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// A pool that is not imported is not reopened, and the volume is
+    /// lost all the same. Mutant: a reopen of a pool not there.
+    #[test]
+    fn a_pool_not_imported_is_not_reopened() {
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().pool = None;
+        let (code, out, _) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}");
+        assert!(out.contains(" step=not-imported reopen=- state=- looked_ms=-\n"));
+        assert_eq!(world.borrow().reopens, 0);
+    }
+
+    /// A volume that failed with no client holding its device: said on
+    /// standard error at each round, no pool touched, and `run` goes on
+    /// (the lead's answer to Q2). Mutants: a reopen; an end with 9.
+    #[test]
+    fn a_volume_failed_with_no_client_touches_no_pool() {
+        let world = lost_world(noted(Held::No));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        assert!(rounds(&out).len() > 1, "{out}");
+        assert!(!out.contains("lost "), "{out}");
+        assert!(
+            err.contains(
+                "round 1: the volume failed in this boot (a write or sync of the \
+                 volume's image failed), and no client held its device: no pool is touched"
+            ),
+            "{err}"
+        );
+        assert_eq!(world.borrow().reopens, 0);
+    }
+
+    /// `publish` and `settle` refuse a lost volume with 9, and one that
+    /// failed with no client with 1, touching no pool and beginning
+    /// nothing (the lead's answer to Q5). Mutants: no refusal; a reopen;
+    /// one code for both.
+    #[test]
+    fn publish_and_settle_refuse_a_failed_volume() {
+        for (noted, want) in [
+            (noted(Held::Yes), exit::LOST),
+            (Noted::NotWhole, exit::LOST),
+            (noted(Held::No), exit::ERROR),
+        ] {
+            for task in [Task::Publish, Task::Settle] {
+                let world = lost_world(noted);
+                let keep = MemKeep::default();
+                let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+                let (code, out, err) = executed(&mut agent, &task, LIMIT);
+                assert_eq!(code, want, "{task:?} {noted:?}: {out}{err}");
+                assert_eq!(out, "");
+                assert!(err.contains("nothing is published"), "{err}");
+                assert_eq!(world.borrow().reopens, 0);
+                assert!(world.borrow().programs.is_empty());
+            }
+        }
+    }
+
+    /// `run` ends with 10 after the round in which the daemon's
+    /// attachment changed (a new attach: here a power cut), and goes on
+    /// through a take-over, which keeps it. Mutants: no end; an end
+    /// before the round line; an end at a take-over.
+    #[test]
+    fn run_ends_with_10_when_the_attachment_changes() {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().restart_at_cuts = Some((3, Restart::Reboot));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::MOVED, "{out}{err}");
+        let last = out.lines().last().expect("a line");
+        assert!(last.starts_with("round "), "{out}");
+        assert!(
+            err.contains("the daemon's attachment changed from ")
+                && err.contains(": run ends, to be started again on the device as it is now"),
+            "{err}"
+        );
+
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().restart_at_cuts = Some((3, Restart::TakeOver));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+    }
+
+    /// The `lost` line's text. Mutant: a field left out or misnamed.
+    #[test]
+    fn the_lost_line() {
+        use crate::engine::{Note, Step};
+        use crate::zfs::PoolState;
+        let failure = Failure {
+            held: Held::Unknown,
+            reason: Reason::Marked,
+            identity: [0; 16],
+        };
+        let step = Step::Reopened {
+            error: Some("refused".into()),
+            state: Some(PoolState("ONLINE".into())),
+            looked_ms: 10_000,
+        };
+        assert_eq!(
+            lost_line("p", &[0xab; 16], &Note::Whole(failure), Some(&step)),
+            format!(
+                "lost p volume={} note=whole reason=marked held=unknown step=reopened \
+                 reopen=failed state=ONLINE looked_ms=10000\n",
+                "ab".repeat(16)
+            )
+        );
+        assert_eq!(
+            lost_line("p", &[0; 16], &Note::Torn, None),
+            format!(
+                "lost p volume={} note=torn reason=- held=yes step=failed reopen=- state=- \
+                 looked_ms=-\n",
+                "00".repeat(16)
+            )
+        );
+    }
+}

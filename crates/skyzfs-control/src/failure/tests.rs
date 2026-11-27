@@ -189,3 +189,18 @@ fn the_failure_note_has_the_documented_layout() {
     assert_eq!(bytes[40], 2);
     assert_eq!(decode_failure(&bytes), Some(unknown));
 }
+
+/// Each reason and holding has a word of its own (the agent's `lost`
+/// line). Mutant: two reasons with one word.
+#[test]
+fn every_reason_has_its_own_word() {
+    let mut words: Vec<_> = REASONS.iter().map(|(_, r)| r.word()).collect();
+    assert_eq!(words[6], "image-failed");
+    words.sort_unstable();
+    words.dedup();
+    assert_eq!(words.len(), REASONS.len());
+    assert_eq!(
+        [Held::No.word(), Held::Yes.word(), Held::Unknown.word()],
+        ["no", "yes", "unknown"]
+    );
+}

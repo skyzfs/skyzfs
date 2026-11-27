@@ -621,6 +621,13 @@ pub struct Agent<Z, D, K, C> {
     /// The syncs that the last call of [`Agent::sync_past`] ran and that
     /// returned, whatever the call returned ([`Agent::last_synced`]).
     last_synced: u32,
+    /// The daemon's attachment at the first `cuts` it answered in this
+    /// process, and the device's number at the first read of it: what
+    /// [`Agent::moved`] compares with. Kept across [`Agent::restart`].
+    first_attachment: Option<[u8; 16]>,
+    first_device: Option<u64>,
+    /// What changed since: the first change seen ([`Agent::moved`]).
+    moved: Option<String>,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -662,6 +669,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             at: String::new(),
             past_synced: 0,
             last_synced: 0,
+            first_attachment: None,
+            first_device: None,
+            moved: None,
         })
     }
 
@@ -761,6 +771,16 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self
     }
 
+    /// The volume's id.
+    pub fn volume(&self) -> [u8; 16] {
+        self.volume
+    }
+
+    /// The pool's name.
+    pub fn pool(&self) -> &str {
+        &self.pool
+    }
+
     /// The record as last saved.
     pub fn record(&self) -> &Record {
         &self.record
@@ -817,7 +837,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.last_synced = 0;
         let mut count_before: Option<u64> = None;
         loop {
-            let cuts = match self.daemon.ask(&Request::Cuts, &[]) {
+            let cuts = match self.ask_cuts() {
                 Ok(Reply::Cuts(cuts)) => cuts,
                 Ok(_) | Err(_) => return Ok(Past::Unseen),
             };
@@ -1121,7 +1141,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let assisted_ms = memory.assisted_ms;
         let assists = memory.assists;
         let withdrawn = memory.withdrawn;
-        let daemon = match self.daemon.ask(&Request::Cuts, &[]) {
+        let daemon = match self.ask_cuts() {
             Ok(Reply::Cuts(cuts)) => {
                 let answer = match (&publish.phase, kept) {
                     (_, Some(answer)) => Some(answer),
@@ -1830,9 +1850,58 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.ask(&publish, count)
     }
 
+    /// Ask the daemon `cuts`, and note its attachment ([`Agent::moved`]).
+    fn ask_cuts(&mut self) -> io::Result<Reply> {
+        let reply = self.daemon.ask(&Request::Cuts, &[]);
+        if let Ok(Reply::Cuts(cuts)) = &reply {
+            let now = cuts.attachment;
+            match self.first_attachment {
+                None => self.first_attachment = Some(now),
+                Some(first) if first != now && self.moved.is_none() => {
+                    self.moved = Some(format!(
+                        "the daemon's attachment changed from {} to {}",
+                        skyzfs_control::hex(&first),
+                        skyzfs_control::hex(&now)
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        reply
+    }
+
+    /// Note the device's number ([`Agent::moved`]).
+    fn saw_device(&mut self, now: u64) {
+        match self.first_device {
+            None => self.first_device = Some(now),
+            Some(first) if first != now && self.moved.is_none() => {
+                self.moved = Some(format!(
+                    "the volume's device changed from {}:{} to {}:{}",
+                    major(first),
+                    minor(first),
+                    major(now),
+                    minor(now)
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Whether the volume's device or the daemon's attachment changed
+    /// in this process, and how: the first change seen. The attachment
+    /// is a nonce that each attach of a device makes afresh and a
+    /// take-over keeps (`skyzfs_control::CutsReply`), read at each
+    /// `cuts`; the device's number is read at each check of the pool's
+    /// premise. Once set it stays set: `run` then ends with its own exit
+    /// code, so that a service manager starts it again on the device
+    /// as it is now (the lead's D4 on #167; M2.7c).
+    pub fn moved(&self) -> Option<&str> {
+        self.moved.as_deref()
+    }
+
     /// The count of cuts now, with `load_guid` read before it.
     fn count(&mut self, load_guid: u64) -> Result<Count, String> {
-        match self.daemon.ask(&Request::Cuts, &[]) {
+        match self.ask_cuts() {
             Ok(Reply::Cuts(CutsReply {
                 attachment,
                 state: Some(state),
@@ -1857,6 +1926,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let device = match self.daemon.device() {
             Ok(device) => {
                 self.device = Some(device);
+                self.saw_device(device);
                 device
             }
             Err(e) => match self.device {
@@ -2043,6 +2113,19 @@ fn set(record: &mut Record, name: &str, change: impl FnOnce(&mut Publish)) {
 fn ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
+
+/// The major number of a device number (glibc's `gnu_dev_major`).
+fn major(dev: u64) -> u64 {
+    ((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0x0000_0fff)
+}
+
+/// The minor number of a device number (glibc's `gnu_dev_minor`).
+fn minor(dev: u64) -> u64 {
+    ((dev >> 12) & 0xffff_ff00) | (dev & 0x0000_00ff)
+}
+
+mod lost;
+pub use lost::{Failed, Note, Step, LOOK_EVERY, LOOK_MAX};
 
 #[cfg(test)]
 pub(crate) mod fake;
