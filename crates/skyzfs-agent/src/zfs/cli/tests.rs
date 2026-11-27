@@ -433,6 +433,10 @@ fn the_reopen_is_zpool_reopen_within_its_limit() {
     assert_eq!(ran.words, REOPEN);
     assert_eq!(ran.limit, Limits::default().reopen);
     assert_eq!(Limits::default().reopen, Duration::from_secs(10));
+    // Run as the step's own, apart from the other commands' children
+    // left running (the lead's ruling on M2 of #179's review). Mutant:
+    // the reopen run as any other command.
+    assert_eq!(zfs.host().steps, [REOPEN]);
 
     let said = "cannot reopen 'tank': pool I/O is currently suspended";
     let mut fake = Fake::default();
@@ -453,7 +457,7 @@ fn the_reopen_is_zpool_reopen_within_its_limit() {
     let mut fake = Fake::default();
     fake.give(REOPEN, Err(io::ErrorKind::TimedOut));
     let mut zfs = cli(fake);
-    assert!(matches!(zfs.reopen("tank"), Err(ZfsError::Other(_))));
+    assert!(matches!(zfs.reopen("tank"), Err(ZfsError::NotRun(_))));
 
     // A reopen ended by a signal is not done (the review of #173).
     // Mutant: no exit code read as 0.
@@ -1334,9 +1338,11 @@ fn the_destroy_is_zfs_destroy_r() {
     // (TL-F3 of #147's review).
     let mut fake = Fake::default();
     fake.give(DESTROY, Err(std::io::ErrorKind::TimedOut));
+    // Not ZFS's answer: retention tries it again and does not stick
+    // the name (the lead's ruling on decision 4 of #179's review).
     assert!(matches!(
         cli(fake).destroy("tank", "skz-1"),
-        Err(ZfsError::Other(why))
+        Err(ZfsError::NotRun(why))
             if why.starts_with("tank@skz-1 may not have been destroyed: ") && why.contains(DESTROY)
     ));
 }

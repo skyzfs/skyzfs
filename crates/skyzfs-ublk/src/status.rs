@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1416
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1440
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,13 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's nineteenth version (M2.4f). It adds, after the
+//! This is the file's twentieth version (M2.7b-2). It adds, after the
+//! nineteenth's fields, the retires the uploader answered for the
+//! agent's retention: `snap/<t>` retired, gone already, or naming
+//! another commit. Nothing is dropped or moved. The nineteenth
+//! (`SKYZST19`, 1416 bytes) is still read, without them.
+//!
+//! The nineteenth version (M2.4f) added, after the
 //! eighteenth's fields, the uploader's whole cuts that went before their
 //! commit, and a state of the uploader: waiting after one of them. A
 //! reader of an earlier version refuses the file by its magic, so it
@@ -173,6 +179,7 @@
 //! | 1376 | 8 | `control`: the daemon's channel (`DIR/control` under the volume's run directory, M2.5-2): 0 none (a daemon that did not reach serving, or one whose file is of an earlier version); 1 it answers through the uploader; 2 it refuses every request `no-upload` (this daemon does not upload, another holds the lease, or the attachment record could not be read); 3 the socket could not be made, and the volume is served without it. Any other value is read as "not said" |
 //! | 1384 | 24 | the channel's counts since this daemon started serving: requests answered, refusals included (`control_answered`); connections refused for their peer's user before they were read (`control_peer`); requests refused as `version` or `malformed` (`control_malformed`) |
 //! | 1408 | 8 | `upload_cuts_lost_whole`: among the cuts lost before their commit (`upload_cuts_lost`), those that held the whole volume, since this daemon started serving (M2.4f). Each left the segments it PUT in object storage, in no commit |
+//! | 1416 | 24 | the retires answered since this daemon started serving (M2.7b-2): `snap/<t>` retired (`publish_retired`), none there (`publish_retire_gone`), and naming another commit than the one asked, which is left (`publish_retire_other`). A retire that failed on object storage is in none: it counts as a step's error (`upload_errors`) |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -224,10 +231,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST19";
+const MAGIC: &[u8; 8] = b"SKYZST20";
 /// The version this crate writes.
-pub const VERSION: u32 = 19;
-const LEN: usize = 1416;
+pub const VERSION: u32 = 20;
+const LEN: usize = 1440;
+
+/// The nineteenth version, still read: up to the retires, at the same
+/// places.
+const NINETEENTH_MAGIC: &[u8; 8] = b"SKYZST19";
+const NINETEENTH_LEN: usize = 1416;
 
 /// The eighteenth version, still read: up to the whole cuts lost, at
 /// the same places.
@@ -694,6 +706,21 @@ pub struct PublishShown {
     pub oldest: Text,
     /// The last snapshot's name; empty before the first.
     pub last: Text,
+    /// The retires answered (M2.7b-2). `None` in a file of a version
+    /// before the twentieth.
+    pub retires: Option<RetiresShown>,
+}
+
+/// The retires the uploader answered since the daemon started serving,
+/// as the status file says them (M2.7b-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RetiresShown {
+    /// `snap/<t>` named the commit asked, and was retired.
+    pub retired: u64,
+    /// There was no `snap/<t>`.
+    pub gone: u64,
+    /// `snap/<t>` named another commit, and was left.
+    pub other: u64,
 }
 
 coded! {
@@ -1195,6 +1222,13 @@ fn encode(status: &Status) -> [u8; LEN] {
         bytes[1376 + 8 * i..1384 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
     bytes[1408..1416].copy_from_slice(&upload.figures.lost_whole.unwrap_or(0).to_le_bytes());
+    let retires = publish.retires.unwrap_or_default();
+    for (i, field) in [retires.retired, retires.gone, retires.other]
+        .iter()
+        .enumerate()
+    {
+        bytes[1416 + 8 * i..1424 + 8 * i].copy_from_slice(&field.to_le_bytes());
+    }
     bytes
 }
 
@@ -1229,6 +1263,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        20
+    } else if is(NINETEENTH_LEN, NINETEENTH_MAGIC) {
         19
     } else if is(EIGHTEENTH_LEN, EIGHTEENTH_MAGIC) {
         18
@@ -1362,6 +1398,11 @@ fn decode(bytes: &[u8]) -> Option<Status> {
                 last_group: field(1112),
                 oldest: Text::of(&bytes[1120..]),
                 last: Text::of(&bytes[1248..]),
+                retires: (version >= 20).then(|| RetiresShown {
+                    retired: field(1416),
+                    gone: field(1424),
+                    other: field(1432),
+                }),
             }),
         });
         let channel = (version >= 18).then(|| ChannelShown {
@@ -2155,6 +2196,12 @@ pub fn report(
                 lines.push(("publish_last", text(p.last)));
                 lines.push(("publish_last_cut", p.last_cut.to_string()));
                 lines.push(("publish_last_group", p.last_group.to_string()));
+                // From a file of the twentieth version on (M2.7b-2).
+                if let Some(r) = p.retires {
+                    lines.push(("publish_retired", r.retired.to_string()));
+                    lines.push(("publish_retire_gone", r.gone.to_string()));
+                    lines.push(("publish_retire_other", r.other.to_string()));
+                }
             }
         }
         // The channel, from a file that has it: every key, whether or not

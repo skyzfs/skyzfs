@@ -138,6 +138,28 @@ fn at_the_most_children_left_running_a_call_is_refused() {
     assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{e}");
 }
 
+/// The step's commands are counted apart (the lead's ruling on M2 of
+/// #179's review): at [`STUCK_MAX`] other children left running, a
+/// command of the step still runs; at [`STUCK_MAX`] of the step's, it is
+/// refused while the others run. Mutants: one count for both, the
+/// step's count not checked.
+#[test]
+fn the_step_s_commands_are_counted_apart() {
+    let _runs = runs();
+    assert!(soon(|| stuck() == 0 && stuck_step() == 0), "left counted");
+    STUCK_NOW.fetch_add(STUCK_MAX, Ordering::SeqCst);
+    let step = System.run_step("true", &[], &[], LIMIT);
+    STUCK_NOW.fetch_sub(STUCK_MAX, Ordering::SeqCst);
+    STEP_STUCK_NOW.fetch_add(STUCK_MAX, Ordering::SeqCst);
+    let refused = System.run_step("true", &[], &[], LIMIT);
+    let other = System.run("true", &[], &[], LIMIT);
+    STEP_STUCK_NOW.fetch_sub(STUCK_MAX, Ordering::SeqCst);
+    assert_eq!(step.expect("the step beside others held").code, Some(0));
+    let e = refused.expect_err("at the step's cap");
+    assert_eq!(e.kind(), io::ErrorKind::WouldBlock, "{e}");
+    assert_eq!(other.expect("others beside the step's held").code, Some(0));
+}
+
 /// A program that ends and leaves its output open to a child of its own
 /// is not waited for past the limit either. Mutant: the output read
 /// with no limit.

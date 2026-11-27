@@ -32,6 +32,8 @@ pub(crate) struct Fake {
     /// #173: an error that is not `NotFound`).
     pub(crate) read_errors: BTreeMap<PathBuf, io::ErrorKind>,
     pub(crate) ran: Vec<Ran>,
+    /// The words of each command run as the step's ([`Host::run_step`]).
+    pub(crate) steps: Vec<String>,
 }
 
 impl Fake {
@@ -92,6 +94,19 @@ impl Host for Fake {
             given[0].clone()
         };
         next.map_err(io::Error::from)
+    }
+
+    fn run_step(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        stdin: &[u8],
+        limit: Duration,
+    ) -> io::Result<Output> {
+        let mut words = vec![program];
+        words.extend(args);
+        self.steps.push(words.join(" "));
+        self.run(program, args, stdin, limit)
     }
 
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {

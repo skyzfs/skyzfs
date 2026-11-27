@@ -135,7 +135,11 @@
 //!   `ended`. The result column holds the snapshot's name as asked, a
 //!   space, and the answer as the channel words it without a refusal's
 //!   text: `accepted`, `refused CODE`, `withdrawn`, `done commit=H`,
-//!   `expired`, `retired`, `gone`. `retire` is written on the channel's
+//!   `expired`, `retired`, `gone`. A `retire` line adds the request's
+//!   commit H as ` commit=H` after the answer, and after `refused other`
+//!   also the commit that `snap/T` names as ` found=H2` (M2.7b-2, for
+//!   the rigs' retire courses): `T retired commit=H`,
+//!   `T refused other commit=H found=H2`. `retire` is written on the channel's
 //!   thread once the uploader has answered, so after its transaction
 //!   landed: a kill between them leaves `snap/T` retired with no line.
 //!   `asked` and `withdraw` are written on the channel's thread once the
@@ -288,13 +292,19 @@ impl Lines {
         let (op, sector, sectors) = match what {
             PublishLine::Asked { group, after } => ("asked", group.to_string(), after.to_string()),
             PublishLine::Withdraw => ("withdraw", "-".into(), "-".into()),
-            PublishLine::Retire => ("retire", "-".into(), "-".into()),
+            PublishLine::Retire { .. } => ("retire", "-".into(), "-".into()),
             PublishLine::Ended => ("ended", "-".into(), "-".into()),
         };
-        let answer = match reply {
+        let mut answer = match reply {
             Reply::Refused(code, _) => format!("refused {}", code.word()),
             other => other.line(),
         };
+        if let PublishLine::Retire { commit } = what {
+            answer.push_str(&format!(" commit={}", hex(&commit)));
+            if let Some(found) = crate::control::other_commit(reply) {
+                answer.push_str(&format!(" found={}", hex(&found)));
+            }
+        }
         self.line(&format!(
             "publish\t-\t{op}\t{sector}\t{sectors}\t{name} {answer}"
         ));
@@ -327,8 +337,11 @@ pub enum PublishLine {
     },
     /// A `withdraw` request answered.
     Withdraw,
-    /// A `retire` request answered.
-    Retire,
+    /// A `retire` request answered, of the commit `commit`.
+    Retire {
+        /// The request's H.
+        commit: [u8; 32],
+    },
     /// A publish that ended.
     Ended,
 }
@@ -348,7 +361,9 @@ pub fn channel(mut handler: Handler, mut lines: Lines) -> Handler {
                 &reply,
             ),
             Request::Withdraw(name) => lines.publish(PublishLine::Withdraw, name, &reply),
-            Request::Retire(r) => lines.publish(PublishLine::Retire, &r.name, &reply),
+            Request::Retire(r) => {
+                lines.publish(PublishLine::Retire { commit: r.commit }, &r.name, &reply)
+            }
             Request::Cuts | Request::Progress(_) | Request::Look(_) => {}
         }
         reply

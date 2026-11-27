@@ -79,12 +79,52 @@ fn full() -> Record {
                 },
                 true,
             ),
+            publish(
+                "skz-20261125T010600Z",
+                Phase::Abandoning {
+                    why: Why::TooOld,
+                    left: Left::Members(taken(45).members),
+                },
+                false,
+            ),
         ],
-        abandoned: vec![Abandoned {
-            name: "skz-20261125T005900Z".into(),
-            why: Why::ManifestLost,
-            at_ms: 5,
+        abandoned: vec![
+            Abandoned {
+                name: "skz-20261125T005900Z".into(),
+                why: Why::ManifestLost,
+                at_ms: 5,
+                left: Left::Unknown,
+            },
+            Abandoned {
+                name: "skz-20261125T005800Z".into(),
+                why: Why::Destroyed,
+                at_ms: 4,
+                left: Left::Nothing,
+            },
+        ],
+        published: vec![
+            published("skz-20261125T005000Z", None),
+            published("skz-20261125T005100Z", Some(Retire::Ref)),
+            published("skz-20261125T005200Z", Some(Retire::Members)),
+            published("skz-20261125T005300Z", Some(Retire::Other)),
+        ],
+        stuck: vec![Stuck {
+            name: "skz-20261125T004900Z".into(),
+            members: taken(46).members,
+            at_ms: 9,
         }],
+    }
+}
+
+/// A name published, with its retirement at `retire`.
+pub(super) fn published(name: &str, retire: Option<Retire>) -> Published {
+    Published {
+        name: name.into(),
+        commit: [0xc1; 32],
+        group: 30,
+        members: taken(30).members,
+        at_ms: 1_700_000_100_000,
+        retire,
     }
 }
 
@@ -94,7 +134,7 @@ fn a_record_reads_back_as_written() {
     for record in [Record::new([1; 16]), full()] {
         let bytes = record.encode().expect("encoded");
         assert_eq!(&bytes[..4], b"SZAG");
-        assert_eq!(&bytes[4..8], &[2, 0, 0, 0]);
+        assert_eq!(&bytes[4..8], &[3, 0, 0, 0]);
         assert_eq!(Record::decode(&bytes), Ok(record));
     }
     let mut record = full();
@@ -116,6 +156,7 @@ fn a_record_reads_back_as_written() {
             name: format!("{why:?}"),
             why,
             at_ms: 9,
+            left: Left::Nothing,
         });
     }
     let bytes = record.encode().expect("encoded");
@@ -145,7 +186,7 @@ fn a_record_changed_or_cut_short_is_corrupt() {
 /// Mutant: a check of the head left out (each read past by a body that
 /// is otherwise good).
 #[test]
-fn a_head_that_is_not_version_2s_is_named() {
+fn a_head_that_is_not_version_3s_is_named() {
     let good = full().encode().expect("encoded");
     let with = |at: usize, value: &[u8]| {
         let mut bytes = good.clone();
@@ -157,7 +198,12 @@ fn a_head_that_is_not_version_2s_is_named() {
     };
     assert_eq!(with(0, b"SAGT"), Err(Corrupt::Magic(*b"SAGT")));
     assert_eq!(with(4, &1u16.to_le_bytes()), Err(Corrupt::Version(1)));
-    assert_eq!(with(4, &3u16.to_le_bytes()), Err(Corrupt::Version(3)));
+    assert_eq!(with(4, &4u16.to_le_bytes()), Err(Corrupt::Version(4)));
+    // A body of version 3 under a head of version 2 is not read as one.
+    assert!(matches!(
+        with(4, &2u16.to_le_bytes()),
+        Err(Corrupt::Body(_))
+    ));
     assert_eq!(with(4, &0u16.to_le_bytes()), Err(Corrupt::Version(0)));
     assert_eq!(with(6, &1u16.to_le_bytes()), Err(Corrupt::Flags(1)));
     let is = (good.len() - HEAD - SUM) as u64;
@@ -206,8 +252,70 @@ fn a_record_that_breaks_a_rule_is_neither_written_nor_read() {
     });
     broken.push(("a manifest too large", large));
     let mut kept = full();
-    kept.abandoned = vec![kept.abandoned[0].clone(); ABANDONED_KEPT + 1];
+    kept.abandoned = vec![kept.abandoned[0].clone(); ABANDONED_MAX + 1];
     broken.push(("too many given up", kept));
+    let mut no_members = full();
+    no_members.abandoned[0].left = Left::Members(Vec::new());
+    broken.push(("given up leaving no members", no_members));
+    let mut held_giving_up = full();
+    held_giving_up.under_way[6].held = true;
+    broken.push(("held while given up", held_giving_up));
+    let many = |n: usize, retire: Option<Retire>| -> Vec<Published> {
+        (0..n)
+            .map(|i| published(&format!("skz-20261101T{:06}Z", i), retire))
+            .collect()
+    };
+    let mut kept_published = full();
+    kept_published.published = many(PUBLISHED_MAX + 1, None);
+    broken.push(("too many published", kept_published));
+    let mut retiring = full();
+    retiring.published = many(RETIRING_MAX + 1, Some(Retire::Ref));
+    broken.push(("too many being retired", retiring));
+    let mut published_twice = full();
+    published_twice
+        .published
+        .push(published_twice.published[0].clone());
+    broken.push(("published twice", published_twice));
+    let mut published_under_way = full();
+    let under_way_name = published_under_way.under_way[0].name.clone();
+    published_under_way.published[0].name = under_way_name;
+    broken.push(("published and under way", published_under_way));
+    let mut published_empty = full();
+    published_empty.published[0].members.clear();
+    broken.push(("published with no members", published_empty));
+    let mut published_badly = full();
+    published_badly.published[0].name = "a/b".into();
+    broken.push(("published with a bad name", published_badly));
+    let stuck_many = |n: usize| -> Vec<Stuck> {
+        (0..n)
+            .map(|i| Stuck {
+                name: format!("skz-20261001T{i:06}Z"),
+                members: taken(46).members,
+                at_ms: 9,
+            })
+            .collect()
+    };
+    let mut too_stuck = full();
+    too_stuck.stuck = stuck_many(STUCK_MAX + 1);
+    broken.push(("too many stuck", too_stuck));
+    let mut stuck_twice = full();
+    stuck_twice.stuck.push(stuck_twice.stuck[0].clone());
+    broken.push(("stuck twice", stuck_twice));
+    for other in ["under way", "given up", "published"] {
+        let mut stuck_too = full();
+        stuck_too.stuck[0].name = match other {
+            "under way" => stuck_too.under_way[0].name.clone(),
+            "given up" => stuck_too.abandoned[0].name.clone(),
+            _ => stuck_too.published[0].name.clone(),
+        };
+        broken.push(("stuck and kept otherwise too", stuck_too));
+    }
+    let mut stuck_empty = full();
+    stuck_empty.stuck[0].members.clear();
+    broken.push(("stuck with no members", stuck_empty));
+    let mut stuck_badly = full();
+    stuck_badly.stuck[0].name = "a/b".into();
+    broken.push(("stuck with a bad name", stuck_badly));
     for (what, record) in broken {
         assert!(
             matches!(record.encode(), Err(Corrupt::Rule(_))),
@@ -219,40 +327,170 @@ fn a_record_that_breaks_a_rule_is_neither_written_nor_read() {
             "{what}: decoded"
         );
     }
-    // Eight under way, the most, and 64 given up, are a record.
+    // Eight under way, the most, the most given up, the most published
+    // and the most of them being retired, are a record.
     let mut most = full();
     most.under_way = (0..UNDER_WAY_MAX)
         .map(|i| publish(&name(i), Phase::Intent, false))
         .collect();
-    most.abandoned = vec![most.abandoned[0].clone(); ABANDONED_KEPT];
+    most.abandoned = vec![most.abandoned[0].clone(); ABANDONED_MAX];
+    most.published = many(KEEP_MAX, None);
+    most.published.extend(
+        many(KEEP_MAX + RETIRING_MAX, Some(Retire::Members))
+            .into_iter()
+            .skip(KEEP_MAX),
+    );
+    most.stuck = stuck_many(STUCK_MAX);
     assert!(most.encode().is_ok());
 }
 
-/// Mutant: the oldest name kept in place of the newest, or none dropped.
+/// A name given up leaves those under way and is kept with what it left;
+/// none is dropped to make room (version 3: retention decides what
+/// becomes of each). Mutant: a name dropped.
 #[test]
-fn a_name_given_up_leaves_those_under_way_and_the_newest_are_kept() {
+fn a_name_given_up_leaves_those_under_way_and_is_kept() {
     let mut record = full();
     let name = record.under_way[3].name.clone();
-    record.abandon(&name, Why::Destroyed, 77);
+    let left = Left::Members(taken(42).members);
+    record.abandon(&name, Why::Destroyed, 77, left.clone());
     assert!(record.publish(&name).is_none());
-    assert_eq!(record.under_way.len(), 5);
+    assert_eq!(record.under_way.len(), 6);
     assert_eq!(
         record.abandoned.last(),
         Some(&Abandoned {
             name,
             why: Why::Destroyed,
-            at_ms: 77
+            at_ms: 77,
+            left,
         })
     );
-    for i in 0..ABANDONED_KEPT as u64 {
-        record.abandon(&format!("n{i}"), Why::Premise, 100 + i);
+    for i in 0..ABANDONED_MAX as u64 {
+        record.abandon(&format!("n{i}"), Why::Premise, 100 + i, Left::Nothing);
     }
-    assert_eq!(record.abandoned.len(), ABANDONED_KEPT);
-    assert_eq!(record.abandoned[0].at_ms, 100);
+    assert_eq!(record.abandoned.len(), ABANDONED_MAX + 3);
+    assert_eq!(record.abandoned[0].at_ms, 5);
+}
+
+/// A publish done leaves those under way for the names published, with
+/// its commit, its group and its members; one not done does not move.
+/// Mutants: the commit, the group or the members not carried; a publish
+/// not done moved.
+#[test]
+fn a_publish_done_is_kept_among_the_names_published() {
+    let mut record = full();
+    record.published.clear();
+    record.leave_published("skz-20261125T010300Z", 9);
+    assert!(record.published.is_empty(), "not done");
+    record.leave_published("skz-20261125T010500Z", 9);
+    assert!(record.publish("skz-20261125T010500Z").is_none());
     assert_eq!(
-        record.abandoned.last().map(|a| a.at_ms),
-        Some(100 + ABANDONED_KEPT as u64 - 1)
+        record.published,
+        vec![Published {
+            name: "skz-20261125T010500Z".into(),
+            commit: [0xc0; 32],
+            group: 44,
+            members: taken(44).members,
+            at_ms: 9,
+            retire: None,
+        }]
     );
+    assert!(record.names("skz-20261125T010500Z"));
+    assert!(record.names("skz-20261125T005900Z"));
+    assert!(record.names("skz-20261125T010000Z"));
+    assert!(!record.names("skz-20261125T020000Z"));
+}
+
+/// A publish is begun only where it, and each under way, would find room
+/// whichever way it ends. Mutants: the room of the names given up or of
+/// those published not asked; the one to begin not counted.
+#[test]
+fn a_publish_is_begun_only_with_room_for_its_end() {
+    let mut record = full();
+    record.under_way.truncate(2);
+    assert!(record.room());
+    let given_up = record.abandoned[0].clone();
+    record.abandoned = vec![given_up.clone(); ABANDONED_MAX - 3];
+    assert!(record.room());
+    record.abandoned.push(given_up);
+    assert!(!record.room(), "two under way and one more: no room");
+    record.abandoned.truncate(ABANDONED_MAX - 3);
+    let one = record.published[0].clone();
+    record.published = vec![one.clone(); PUBLISHED_MAX - 3];
+    assert!(record.room());
+    record.published.push(one);
+    assert!(!record.room());
+    record.published.truncate(1);
+    record.under_way = (0..UNDER_WAY_MAX)
+        .map(|i| publish(&format!("skz-20261125T0200{i:02}Z"), Phase::Intent, false))
+        .collect();
+    assert!(!record.room(), "eight under way");
+}
+
+/// At `--keep` at its bound, with as many names being retired as there
+/// may be and none of them leaving (stopped `other`, or their retires
+/// unanswered), the record still has room for [`PUBLISHED_SLACK`] (64)
+/// publishes (the lead's ruling on decision 5 of #179's review).
+/// Mutant: no slack.
+#[test]
+fn at_the_bound_of_keep_a_slack_of_publishes_is_left() {
+    let mut record = full();
+    record.under_way.clear();
+    let one = record.published[0].clone();
+    let held = KEEP_MAX + RETIRING_MAX;
+    record.published = vec![one.clone(); held];
+    assert!(record.room());
+    record.published = vec![one.clone(); held + PUBLISHED_SLACK - 1];
+    assert!(record.room(), "the slack's last");
+    record.published.push(one);
+    assert!(!record.room());
+    const { assert!(PUBLISHED_SLACK >= 64) };
+}
+
+/// Where the names given up alone stand between the record and its
+/// room, [`Record::abandoned_over`] counts them; where the publishes
+/// under way or the names published are short of it too, none (the
+/// lead's ruling on M1 of #179's review). Mutants: counted whatever
+/// else is short, one off.
+#[test]
+fn the_names_given_up_over_the_room_are_counted_where_alone() {
+    let mut record = full();
+    record.under_way.truncate(2);
+    let given_up = record.abandoned[0].clone();
+    record.abandoned = vec![given_up.clone(); ABANDONED_MAX - 3];
+    record.published.truncate(1);
+    assert_eq!(record.abandoned_over(), 0);
+    record.abandoned.push(given_up.clone());
+    assert_eq!(record.abandoned_over(), 1);
+    record.abandoned.push(given_up);
+    assert_eq!(record.abandoned_over(), 2);
+    let one = record.published[0].clone();
+    record.published = vec![one; PUBLISHED_MAX];
+    assert_eq!(record.abandoned_over(), 0, "the published are short too");
+    record.published.truncate(1);
+    record.under_way = (0..UNDER_WAY_MAX)
+        .map(|i| publish(&format!("skz-20261125T0200{i:02}Z"), Phase::Intent, false))
+        .collect();
+    assert_eq!(record.abandoned_over(), 0, "eight under way");
+}
+
+/// The names stuck count for no room: the most of them, beside the
+/// most published that leave room for one more, still let a publish
+/// begin. Mutant: the names stuck counted among those published.
+#[test]
+fn the_names_stuck_count_for_no_room() {
+    let mut record = full();
+    record.under_way.truncate(2);
+    let one = record.published[0].clone();
+    record.published = vec![one; PUBLISHED_MAX - 3];
+    let stuck = record.stuck[0].clone();
+    record.stuck = (0..STUCK_MAX)
+        .map(|i| Stuck {
+            name: format!("skz-20261001T{i:06}Z"),
+            ..stuck.clone()
+        })
+        .collect();
+    assert!(record.room());
+    assert!(record.names("skz-20261001T000063Z"));
 }
 
 fn store() -> (tempfile::TempDir, Store) {
@@ -365,9 +603,10 @@ fn manifests_are_kept_by_name_beside_the_record() {
     assert!(matches!(store.load(), Ok(Loaded::Absent)));
 }
 
-/// One publish in each phase and one name given up for each reason, each
-/// field a value of its own: the record [`GOLDEN`] holds.
-fn golden() -> Record {
+/// One publish in each phase of version 2 and one name given up for each
+/// reason, each field a value of its own: the record [`GOLDEN_V2`] holds,
+/// as version 3 reads it (each name given up leaving [`Left::Unknown`]).
+fn golden_v2() -> Record {
     let taken = |group: u64, guid: u64, hash: u8| Taken {
         group,
         members: vec![Member {
@@ -451,16 +690,61 @@ fn golden() -> Record {
                 // Not the variant's index: `why` and `at_ms` must differ
                 // for a swap of the two to change the bytes.
                 at_ms: 1000 + i,
+                left: Left::Unknown,
             })
             .collect(),
+        published: Vec::new(),
+        stuck: Vec::new(),
     }
 }
 
-/// The bytes of [`golden`] at version 2. postcard writes fields and
-/// variants by position, so a field moved or added, or a variant inserted
-/// before another, changes these bytes without a test of reading back
-/// noticing: such a change is a new version ([`VERSION`]).
-const GOLDEN: [&str; 18] = [
+/// [`golden_v2`] with what version 3 adds, each value of its own: a
+/// publish being given up, each thing a give-up leaves, and a name
+/// published at each step of its retirement, and a name stuck. The
+/// record [`GOLDEN`] holds.
+fn golden() -> Record {
+    let mut record = golden_v2();
+    let members = |guid: u64| {
+        vec![Member {
+            name: "p/e".into(),
+            snapshot_guid: guid,
+        }]
+    };
+    record.under_way.push(Publish {
+        name: "g".into(),
+        phase: Phase::Abandoning {
+            why: Why::Rewound,
+            left: Left::Members(members(5)),
+        },
+        held: false,
+        ..record.under_way[0].clone()
+    });
+    record.abandoned[0].left = Left::Nothing;
+    record.abandoned[1].left = Left::Members(members(6));
+    let published = |name: &str, i: u8, retire: Option<Retire>| Published {
+        name: name.into(),
+        commit: [0xd0 + i; 32],
+        group: 50 + u64::from(i),
+        members: members(10 + u64::from(i)),
+        at_ms: 2000 + u64::from(i),
+        retire,
+    };
+    record.published = vec![
+        published("p0", 0, None),
+        published("p1", 1, Some(Retire::Ref)),
+        published("p2", 2, Some(Retire::Members)),
+        published("p3", 3, Some(Retire::Other)),
+    ];
+    record.stuck = vec![Stuck {
+        name: "s0".into(),
+        members: members(20),
+        at_ms: 3000,
+    }];
+    record
+}
+
+/// The bytes of [`golden_v2`] as an agent of version 2 wrote them.
+const GOLDEN_V2: [&str; 18] = [
     "535a414702000000020200000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201050169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
     "5e5e5e5e5e5e03ad210000001460000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -481,18 +765,105 @@ const GOLDEN: [&str; 18] = [
     "84c62c3cb819be7cea6883bc1446",
 ];
 
-/// Mutant: two fields of a type swapped, a variant inserted before
-/// another, or the head's order changed. Any of these is a record of
-/// another version read as version 2.
-#[test]
-fn version_2s_bytes_are_these() {
-    let hex: String = GOLDEN.concat();
-    let bytes: Vec<u8> = (0..hex.len())
+/// The bytes of [`golden`] at version 3. postcard writes fields and
+/// variants by position, so a field moved or added, or a variant inserted
+/// before another, changes these bytes without a test of reading back
+/// noticing: such a change is a new version ([`VERSION`]).
+const GOLDEN: [&str; 26] = [
+    "535a4147030000000b0300000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+    "018201060169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e5e03ad210000001460000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141",
+    "4141414141414141414141414141414141414141414141414141414141410001",
+    "1561000168a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e03ad2102290103702f6402ac024242424242424242424242424242",
+    "4242424242424242424242424242424242420102166201000161a1a1a1a1a1a1",
+    "a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21032a01",
+    "03702f6403ac0243434343434343434343434343434343434343434343434343",
+    "4343434343434306070103176301010164a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad21042b0103702f6404ac024444",
+    "444444444444444444444444444444444444444444444444444444444444c0c0",
+    "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c00104",
+    "1864000167a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e5e",
+    "5e5e5e5e5e03ad210506010103702f650500001460000c02773000e807000277",
+    "3101e907010103702f650602773202ea070202773303eb070202773404ec0702",
+    "02773505ed070202773606ee070202773707ef070202773808f0070202773909",
+    "f10702037731300af20702037731310bf3070204027030d0d0d0d0d0d0d0d0d0",
+    "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0320103702f650ad00f",
+    "00027031d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+    "d1d1d1d1330103702f650bd10f0100027032d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
+    "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2340103702f650cd20f0101027033",
+    "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
+    "350103702f650dd30f0102010273300103702f6514b8177ca47de4d9bdff3ed8",
+    "81d9a1c4aa456ccb02adf889aa4a5b9eaa3750409df8f6",
+];
+
+fn unhex(lines: &[&str]) -> Vec<u8> {
+    let hex: String = lines.concat();
+    (0..hex.len())
         .step_by(2)
         .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).expect("hex"))
-        .collect();
-    assert_eq!(golden().encode().expect("encoded"), bytes);
+        .collect()
+}
+
+/// Mutant: two fields of a type swapped, a variant inserted before
+/// another, or the head's order changed. Any of these is a record of
+/// another version read as version 3.
+#[test]
+fn version_3s_bytes_are_these() {
+    let bytes = unhex(&GOLDEN);
+    let encoded = golden().encode().expect("encoded");
+    let hex: String = encoded.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(encoded, bytes, "{hex}");
     assert_eq!(Record::decode(&bytes), Ok(golden()));
+}
+
+/// A record of version 2 reads as version 3: nothing published, and each
+/// name given up leaving [`Left::Unknown`]. Its next save is version 3.
+/// Mutants: version 2 refused; its body read as version 3's; a name given
+/// up read as leaving nothing.
+#[test]
+fn version_2s_bytes_read_as_version_3() {
+    let bytes = unhex(&GOLDEN_V2);
+    assert_eq!(Record::decode(&bytes), Ok(golden_v2()));
+    let saved = golden_v2().encode().expect("encoded");
+    assert_eq!(&saved[4..6], &VERSION.to_le_bytes());
+    assert_ne!(saved, bytes);
+    // A body of version 2 under a head of version 3 is not read.
+    let mut as_3 = bytes.clone();
+    as_3[4..6].copy_from_slice(&VERSION.to_le_bytes());
+    let end = as_3.len() - SUM;
+    let sum = blake3::hash(&as_3[..end]);
+    as_3[end..].copy_from_slice(sum.as_bytes());
+    assert!(Record::decode(&as_3).is_err());
+    // Nor is a phase of version 3 under a head of version 2.
+    let mut record = golden_v2();
+    record.under_way[0].phase = Phase::Abandoning {
+        why: Why::Person,
+        left: Left::Nothing,
+    };
+    let v2 = postcard::to_allocvec(&(
+        record.volume,
+        &record.enrolled,
+        &record.under_way,
+        record
+            .abandoned
+            .iter()
+            .map(|a| (&a.name, a.why, a.at_ms))
+            .collect::<Vec<_>>(),
+    ))
+    .expect("a body");
+    let mut framed = frame(&v2);
+    framed[4..6].copy_from_slice(&VERSION_2.to_le_bytes());
+    let end = framed.len() - SUM;
+    let sum = blake3::hash(&framed[..end]);
+    framed[end..].copy_from_slice(sum.as_bytes());
+    assert_eq!(
+        Record::decode(&framed),
+        Err(Corrupt::Body(
+            "a phase of version 3 in a record of version 2".into()
+        ))
+    );
 }
 
 /// Mutant: bytes left after the body read past.

@@ -252,6 +252,10 @@ pub struct Pool {
     /// The highest group of a history a rewind abandoned: until the pool
     /// passes it, its groups do not open as themselves (`-T`).
     pub abandoned_top: u64,
+    /// How many groups at or under `abandoned_top` open as themselves
+    /// all the same: with 4 KiB ring slots the new history overwrites the
+    /// abandoned top's slot first (#175, "The rewind mark in `cuts`").
+    pub itself_under_top: u64,
     /// The datasets, the root first.
     pub datasets: Vec<Ds>,
     /// The snapshots, by `dataset@t`.
@@ -440,6 +444,14 @@ pub struct World {
     /// The highest group written to the volume, of any history: what
     /// its rings show.
     pub highest_written: u64,
+    /// The member snapshots (`dataset@t`) whose `zfs destroy` ZFS refuses,
+    /// with what it says (a clone of one, say).
+    pub destroy_refused: BTreeMap<String, String>,
+    /// The member snapshots whose `zfs destroy` the host does not run to
+    /// its end ([`ZfsError::NotRun`]): killed at its limit, say.
+    pub destroy_not_run: BTreeSet<String>,
+    /// Whether a read of a snapshot's members is not run to its end.
+    pub members_not_run: bool,
     /// Each take of the agent's, by name: the manifest of the pool as it
     /// was in the take's group, which the agent must publish.
     pub programs: BTreeMap<String, Manifest>,
@@ -561,6 +573,9 @@ impl World {
             destroyer: None,
             rule: DAEMON_RULE,
             highest_written: 0,
+            destroy_refused: BTreeMap::new(),
+            destroy_not_run: BTreeSet::new(),
+            members_not_run: false,
             programs: BTreeMap::new(),
             retakes: BTreeMap::new(),
             late_take: None,
@@ -632,6 +647,7 @@ impl World {
             load_guid: world.guid(),
             txg: 4,
             abandoned_top: 0,
+            itself_under_top: 0,
             datasets,
             snaps: BTreeMap::new(),
             history: BTreeMap::from([(4, BTreeMap::new())]),
@@ -673,7 +689,7 @@ impl World {
         let txg = pool.next_txg.take().unwrap_or(pool.txg + 1);
         pool.txg = txg;
         pool.history.insert(txg, pool.snaps.clone());
-        let itself = txg > pool.abandoned_top;
+        let itself = txg > pool.abandoned_top.saturating_sub(pool.itself_under_top);
         let snaps = pool
             .snaps
             .iter()
@@ -1377,16 +1393,42 @@ impl World {
                     manifest_hash: manifest::hash(&r.manifest),
                 }),
             },
-            // As the daemon retires (M2.7b-1): only where `snap/T` names
-            // the request's commit.
-            Request::Retire(r) => match self.refs.get(&r.name) {
-                None => Reply::Gone,
-                Some(s) if s.commit == r.commit => {
-                    self.refs.remove(&r.name);
-                    Reply::Retired
+            // As the daemon retires (M2.7b-1): refused `stopped` once
+            // the uploader has stopped and `asked` while a publish of the
+            // name pends; otherwise only where `snap/T` names the
+            // request's commit. `retired` and `gone` end what the daemon
+            // kept of the name's publish, so that its progress then
+            // answers `unknown` (D4 of the review of #175; L3 of its next
+            // look).
+            Request::Retire(r) => {
+                if self.daemon.stopped {
+                    return Ok(Reply::Refused(
+                        Code::Stopped,
+                        "the uploader has stopped".into(),
+                    ));
                 }
-                Some(_) => Reply::Refused(Code::Other, "snap/T names another commit".into()),
-            },
+                if self.daemon.pending.iter().any(|p| p.request.name == r.name) {
+                    return Ok(Reply::Refused(
+                        Code::Asked,
+                        "a publish of the name pends".into(),
+                    ));
+                }
+                let reply = match self.refs.get(&r.name) {
+                    None => Reply::Gone,
+                    Some(s) if s.commit == r.commit => {
+                        self.refs.remove(&r.name);
+                        Reply::Retired
+                    }
+                    Some(_) => {
+                        return Ok(Reply::Refused(
+                            Code::Other,
+                            "snap/T names another commit".into(),
+                        ))
+                    }
+                };
+                self.daemon.ended.remove(&r.name);
+                reply
+            }
         })
     }
 
@@ -1559,6 +1601,41 @@ impl Zfs for FakeZfs {
         })
     }
 
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        self.pool(pool, |_| ())?;
+        let mut world = self.0.borrow_mut();
+        world.zfs_call();
+        world.calls.push("destroy_one");
+        let key = format!("{dataset}@{t}");
+        if world.destroy_not_run.contains(&key) {
+            world.log.push(format!("agent destroy {key}: not run"));
+            return Err(ZfsError::NotRun(format!(
+                "zfs destroy {key}: timed out; {key} may not have been destroyed"
+            )));
+        }
+        if let Some(why) = world.destroy_refused.get(&key).cloned() {
+            world.log.push(format!("agent destroy {key}: refused"));
+            return Err(ZfsError::Other(why));
+        }
+        let Some(pool) = world.pool.as_mut() else {
+            return Err(ZfsError::NoPool("fake".into()));
+        };
+        let Some(snap) = pool.snaps.get(&key) else {
+            world.log.push(format!("agent destroy {key}: not there"));
+            return Ok(());
+        };
+        if !snap.holds.is_empty() {
+            world.log.push(format!("agent destroy {key}: busy"));
+            return Err(ZfsError::Other(format!(
+                "cannot destroy snapshot {key}: dataset is busy"
+            )));
+        }
+        pool.snaps.remove(&key);
+        world.log.push(format!("agent destroy {key}"));
+        world.sync("destroy one");
+        Ok(())
+    }
+
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
@@ -1580,6 +1657,11 @@ impl Zfs for FakeZfs {
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<record::Member>>, ZfsError> {
         self.0.borrow_mut().zfs_call();
         self.0.borrow_mut().calls.push("members");
+        if self.0.borrow().members_not_run {
+            return Err(ZfsError::NotRun(format!(
+                "zfs program {pool} (members of @{t}): timed out"
+            )));
+        }
         let members = self.pool(pool, |p| {
             p.snaps.get(&format!("{POOL}@{t}"))?;
             let suffix = format!("@{t}");

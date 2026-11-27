@@ -364,7 +364,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       `accepted` says only that it pends: publish-progress says how it
       stands (pending, done commit=H, expired, withdrawn, unknown, or
       refused), and withdraw ends it unless it is made already. Asking
-      the same publish again is asking it once.
+      the same publish again is asking it once. unknown: not asked of
+      this daemon, or long ended, or retired since.
       look prints what the snapshot snap/T is in object storage, read
       there when asked: absent; or snap commit=H state=S number=N
       group=G manifest-len=L manifest-hash=X, the commit it names and
@@ -376,11 +377,11 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       and its record in one transaction, where the ref still names the
       commit H (64 hexadecimal digits): `retired`. `gone` where there is
       no snap/T; refused other where snap/T names another commit (the
-      text names it), which is left as it is. A retire goes through the uploader, under
-      its lease: refused stopped once the uploader has stopped, and no
-      answer while it is in a long step. A monitor treats `retired` as
-      repeatable: asked again after its answer was lost, the same retire
-      answers `gone`.
+      text names it), which is left as it is. A retire goes through the
+      uploader, under its lease: refused stopped once the uploader has
+      stopped, and no answer while it is in a long step. A monitor
+      treats `retired` as repeatable: asked again after its answer was
+      lost, the same retire answers `gone`.
       A daemon with no place in object storage, or serving without
       upload, refuses each request no-upload.
 

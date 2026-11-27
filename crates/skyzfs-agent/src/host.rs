@@ -39,6 +39,13 @@
 //! that starts anew each time (`publish` or `settle` run by a timer)
 //! starts with none counted, while the children an earlier one left may
 //! still run (NL-D1 of #147's review).
+//!
+//! The step on a lost volume runs its commands with [`Host::run_step`],
+//! whose children left running are counted apart ([`stuck_step`], at
+//! most [`STUCK_MAX`] too): destroys of retention, or any other command,
+//! held in the kernel by a pool that no longer answers do not keep the
+//! step from its `zpool reopen` (the lead's ruling on M2 of #179's
+//! review). Only the step's own commands left running hold it back.
 
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt as _;
@@ -59,9 +66,20 @@ pub const STUCK: &str = "commands that did not end are still running";
 /// The children left running past their limit ([module docs](self)).
 static STUCK_NOW: AtomicUsize = AtomicUsize::new(0);
 
-/// The children left running past their limit, now.
+/// The children of [`Host::run_step`] left running past their limit
+/// ([module docs](self)).
+static STEP_STUCK_NOW: AtomicUsize = AtomicUsize::new(0);
+
+/// The children left running past their limit, now: those of
+/// [`Host::run`].
 pub fn stuck() -> usize {
     STUCK_NOW.load(Ordering::SeqCst)
+}
+
+/// The children of [`Host::run_step`] left running past their limit,
+/// now.
+pub fn stuck_step() -> usize {
+    STEP_STUCK_NOW.load(Ordering::SeqCst)
 }
 
 /// The most of a program's standard output, or of its standard error,
@@ -103,6 +121,18 @@ pub trait Host {
         stdin: &[u8],
         limit: Duration,
     ) -> io::Result<Output>;
+    /// As [`Host::run`], for a command of the step on a lost volume: its
+    /// children left running are counted apart from those of
+    /// [`Host::run`] ([module docs](self)).
+    fn run_step(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        stdin: &[u8],
+        limit: Duration,
+    ) -> io::Result<Output> {
+        self.run(program, args, stdin, limit)
+    }
     /// The bytes of the file at `path`.
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
     /// What `path` names.
@@ -124,87 +154,17 @@ impl Host for System {
         stdin: &[u8],
         limit: Duration,
     ) -> io::Result<Output> {
-        let until = Instant::now().checked_add(limit).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("a limit of {} s is too long", limit.as_secs_f64()),
-            )
-        })?;
-        let held = stuck();
-        if held >= STUCK_MAX {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                format!("{STUCK}: {held}, the most there may be"),
-            ));
-        }
-        let mut child = Command::new(program)
-            .args(args)
-            .env("LC_ALL", "C")
-            .process_group(0)
-            .stdin(if stdin.is_empty() {
-                Stdio::null()
-            } else {
-                Stdio::piped()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        // Each pipe on a thread of its own, so that a child that fills
-        // one while the other is read does not stall, and so that a child
-        // that never ends holds only its threads.
-        if let Some(mut input) = child.stdin.take() {
-            let bytes = stdin.to_vec();
-            thread::spawn(move || {
-                // A child that exits before reading all of it closes the
-                // pipe; its exit code says what it made of it.
-                let _ = input.write_all(&bytes);
-            });
-        }
-        let stdout = drain(child.stdout.take());
-        let stderr = drain(child.stderr.take());
-        let mut pause = Duration::from_millis(1);
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) => {}
-                Err(e) => {
-                    abandon(child);
-                    return Err(e);
-                }
-            }
-            let left = until.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                abandon(child);
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!(
-                        "`{program}` did not end within {} s: killed, and not waited for",
-                        limit.as_secs_f64()
-                    ),
-                ));
-            }
-            thread::sleep(pause.min(left));
-            pause = (pause * 2).min(POLL_MAX);
-        };
-        // A child that has ended may have left its pipes to a child of
-        // its own: their ends are waited for within the limit too.
-        let take = |pipe: mpsc::Receiver<io::Result<Vec<u8>>>, which: &str| {
-            let left = until.saturating_duration_since(Instant::now());
-            match pipe.recv_timeout(left.max(Duration::from_millis(1))) {
-                Ok(read) => read,
-                Err(_) => Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!("`{program}` ended and its {which} stayed open past the limit"),
-                )),
-            }
-        };
-        let stdout = take(stdout, "standard output")?;
-        let stderr = take(stderr, "standard error")?;
-        Ok(Output {
-            code: status.code(),
-            stdout,
-            stderr,
-        })
+        run_counted(&STUCK_NOW, program, args, stdin, limit)
+    }
+
+    fn run_step(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        stdin: &[u8],
+        limit: Duration,
+    ) -> io::Result<Output> {
+        run_counted(&STEP_STUCK_NOW, program, args, stdin, limit)
     }
 
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
@@ -223,6 +183,97 @@ impl Host for System {
             Node::Other
         })
     }
+}
+
+/// [`System::run`], its children left running counted in `stuck`.
+fn run_counted(
+    stuck: &'static AtomicUsize,
+    program: &str,
+    args: &[&str],
+    stdin: &[u8],
+    limit: Duration,
+) -> io::Result<Output> {
+    let until = Instant::now().checked_add(limit).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("a limit of {} s is too long", limit.as_secs_f64()),
+        )
+    })?;
+    let held = stuck.load(Ordering::SeqCst);
+    if held >= STUCK_MAX {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!("{STUCK}: {held}, the most there may be"),
+        ));
+    }
+    let mut child = Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .process_group(0)
+        .stdin(if stdin.is_empty() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // Each pipe on a thread of its own, so that a child that fills
+    // one while the other is read does not stall, and so that a child
+    // that never ends holds only its threads.
+    if let Some(mut input) = child.stdin.take() {
+        let bytes = stdin.to_vec();
+        thread::spawn(move || {
+            // A child that exits before reading all of it closes the
+            // pipe; its exit code says what it made of it.
+            let _ = input.write_all(&bytes);
+        });
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let mut pause = Duration::from_millis(1);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => {
+                abandon(child, stuck);
+                return Err(e);
+            }
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            abandon(child, stuck);
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "`{program}` did not end within {} s: killed, and not waited for",
+                    limit.as_secs_f64()
+                ),
+            ));
+        }
+        thread::sleep(pause.min(left));
+        pause = (pause * 2).min(POLL_MAX);
+    };
+    // A child that has ended may have left its pipes to a child of
+    // its own: their ends are waited for within the limit too.
+    let take = |pipe: mpsc::Receiver<io::Result<Vec<u8>>>, which: &str| {
+        let left = until.saturating_duration_since(Instant::now());
+        match pipe.recv_timeout(left.max(Duration::from_millis(1))) {
+            Ok(read) => read,
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("`{program}` ended and its {which} stayed open past the limit"),
+            )),
+        }
+    };
+    let stdout = take(stdout, "standard output")?;
+    let stderr = take(stderr, "standard error")?;
+    Ok(Output {
+        code: status.code(),
+        stdout,
+        stderr,
+    })
 }
 
 /// Read `pipe` to its end on a thread, at most [`OUTPUT_MAX`] bytes.
@@ -255,8 +306,8 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<io::Result<
 
 /// Kill `child`'s process group and leave the child to a thread that
 /// reaps it when it ends, which a child in the kernel's wait may never
-/// do; it is counted in [`stuck`] until then ([module docs](self)).
-fn abandon(mut child: Child) {
+/// do; it is counted in `stuck` until then ([module docs](self)).
+fn abandon(mut child: Child, stuck: &'static AtomicUsize) {
     let group = i32::try_from(child.id())
         .ok()
         .and_then(rustix::process::Pid::from_raw);
@@ -265,10 +316,10 @@ fn abandon(mut child: Child) {
     }
     // The child itself, should the group's kill have failed.
     let _ = child.kill();
-    STUCK_NOW.fetch_add(1, Ordering::SeqCst);
+    stuck.fetch_add(1, Ordering::SeqCst);
     let reaper = thread::Builder::new().spawn(move || {
         let _ = child.wait();
-        STUCK_NOW.fetch_sub(1, Ordering::SeqCst);
+        stuck.fetch_sub(1, Ordering::SeqCst);
     });
     if reaper.is_err() {
         // No thread to reap it: it stays counted, as it may never end.

@@ -48,7 +48,7 @@ fn run() -> i32 {
         Command::Publish(run) => settle(&run, &Task::Publish),
         Command::Settle(run) => settle(&run, &Task::Settle),
         Command::Recover { run, name, choice } => settle(&run, &Task::Recover(name, choice)),
-        Command::Run { run, every } => scheduled(&run, every),
+        Command::Run { run, every, kept } => scheduled(&run, every, kept),
     }
 }
 
@@ -160,7 +160,7 @@ fn settle(run: &Run, task: &Task) -> i32 {
 /// `run`: until `SIGTERM` or `SIGINT`, which it takes between two rounds
 /// of the engine ([`program::schedule`]). A second one ends it at once,
 /// with exit 1, as a kill would: the agent is made to be killed anywhere.
-fn scheduled(run: &Run, every: std::time::Duration) -> i32 {
+fn scheduled(run: &Run, every: std::time::Duration, kept: program::Kept) -> i32 {
     let told = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
         // The order is signal-hook's own for "a second one ends it": the
@@ -181,7 +181,7 @@ fn scheduled(run: &Run, every: std::time::Duration) -> i32 {
         Ok(mut agent) => {
             let (mut out, mut err) = (io::stdout(), io::stderr());
             let mut go = || !told.load(Ordering::SeqCst);
-            program::schedule(&mut agent, every, &mut go, &mut out, &mut err)
+            program::schedule(&mut agent, every, kept, &mut go, &mut out, &mut err)
         }
         Err(code) => code,
     }

@@ -14,7 +14,8 @@
 //! skyzfs-agent recover --volume VOL --run RUN --device DEV --pool POOL --dir DIR
 //!                      --name T (--give-up | --retry) [--limit-s S]
 //! skyzfs-agent run     --volume VOL --run RUN --device DEV --pool POOL --dir DIR
-//!                      [--every-s S] [--expiry-s E]
+//!                      [--every-s S] [--expiry-s E] [--keep N]
+//!                      [--abandoned-keep-s S]
 //! skyzfs-agent record  --dir DIR
 //! ```
 //!
@@ -66,13 +67,17 @@
 //!
 //! ```text
 //! round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<k> begun=<t|-> under_way=<count>
-//!   synced=<k> bound=0|1
+//!   synced=<k> bound=0|1 [early_ms=<ms>] [reopen=held]
 //! ```
 //!
 //! on one line.
 //!
 //! - `took_ms`: how long the round ran; `late_ms`: how long after its
-//!   tick it began.
+//!   tick it began. `early_ms`, only on a round begun before its tick
+//!   (news of a lost volume, or a quick retry of the step), says how
+//!   long before; such a round does not use up its tick, whose round
+//!   still comes on it (D1 of the review of #173). `reopen=held`, only
+//!   on a round whose reopen the cap held back (below).
 //! - `skipped`: ticks that passed while this round ran and had no round
 //!   of their own. Rounds never overlap: the next round begins as this
 //!   one ends, for the last tick that passed, and its `late_ms` says by
@@ -118,6 +123,31 @@
 //!   record again, walks the pool's holds again at its sweep, and tells
 //!   again every `stopped` line and every report of a stall that the
 //!   restart made it forget.
+//!
+//! **Retention** (M2.7b-2): after its begin and before it settles, a
+//! round retires the names published past the newest `--keep`
+//! ([`crate::engine::KEEP_DEFAULT`], at most
+//! [`crate::record::KEEP_MAX`]) and lets the names given up go after
+//! `--abandoned-keep-s` ([`crate::engine::ABANDONED_KEEP_DEFAULT`]), at
+//! most [`crate::engine::STEPS_MAX`] steps in a round
+//! ([`Agent::retain`]). Each name that leaves says so on standard
+//! output, before it leaves the record (so a kill between the two says
+//! it again at the next run):
+//!
+//! ```text
+//! retired <t>
+//! forgotten <t> (<why>)
+//! stopped <t> retire refused other: <the daemon's text>
+//! ```
+//!
+//! `retired`: `snap/<t>` retired where it named the publish's commit,
+//! and each member's `@t` of the GUID recorded destroyed. `forgotten`:
+//! a name given up that leaves with its local snapshot, for a person to
+//! destroy. `stopped`: `snap/<t>` names another commit; nothing is
+//! retired or destroyed, and the name stays. What retention could not
+//! do at a round is a report on standard error (`not-retired`,
+//! `no-guids`), told once and again when its reason changes, and does
+//! not fail the round; an error of saving the record does.
 //!
 //! **After a rewind import** (`zpool import -T`) no cut opens as itself
 //! until the pool's groups have passed those of the history the import
@@ -189,7 +219,7 @@
 //!
 //!   ```text
 //!   lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
-//!     step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-|unread>
+//!     step=not-imported|suspended|reopened|held|failed reopen=ok|failed|- state=<STATE|-|unread>
 //!     looked_ms=<ms|-> verdict=lost|failed|retry
 //!   ```
 //!
@@ -211,8 +241,22 @@
 //!     `run` goes on; a later start of the daemon may serve the volume.
 //!   - `retry`: the step showed neither. The pool's state could not be
 //!     read (`step=failed`, or `state=unread`), or the pool did not read
-//!     SUSPENDED at the last look (the reopen refused or not). The round
-//!     is failed, and the next round takes the step again.
+//!     SUSPENDED at the last look (the reopen refused or not), or the cap
+//!     held the reopen back (`step=held`). The round is failed, and the
+//!     step is taken again: [`QUICK_RETRY`] after the round ends, for
+//!     [`QUICK_RETRIES`] rounds in a row, then at the ticks (the lead's
+//!     ruling on D1 of the review of #173). A round with another verdict
+//!     ends the run of quick retries.
+//!
+//!   **The cap on reopens** (the lead's ruling on the review of #173).
+//!   Once [`REOPEN_CAP`] reopens of one note in this process have left
+//!   the pool unsuspended (a wrong `--pool`, a layout that keeps it
+//!   going), the pool is reopened only at every [`REOPEN_CAP`]th round
+//!   after, and standard error says so once. The rounds in between read
+//!   its state only (`step=held reopen=- state=<STATE> looked_ms=-`),
+//!   so a pool that zed suspends meanwhile is still found lost; they
+//!   take no quick retry. A reopen restarts a scrub under way, which is
+//!   what the cap spares. Another note starts the count again.
 //!
 //!   A round that reads such a note touches nothing but the step, whatever
 //!   its verdict: no sync, no begin and no settle of what is under way,
@@ -238,8 +282,8 @@
 //! where it asks whether to go on (before a sync after a rewind import,
 //! before a begin after syncs, before each pass of the settle) and ends
 //! the wait: the round's line follows, and the next round begins at once,
-//! early for its tick, and takes the step. Rounds stay `--every-s` apart
-//! otherwise. A step of the engine under way is not cut, so the note is
+//! early for its tick (`early_ms`), and takes the step. Rounds stay
+//! `--every-s` apart otherwise, but for the quick retries above. A step of the engine under way is not cut, so the note is
 //! seen after at most about a second plus that step.
 //!
 //! `publish` and `settle` read the note too, before anything else, and
@@ -270,11 +314,12 @@
 //! record or stops, among the round lines. A `snap/` line is printed
 //! before the record forgets its publish, so that a run killed in
 //! between prints it again when it starts: at least once. An
-//! `abandoned` line is printed just after the record's save that gives
-//! the publish up; a kill between the two loses that line, and so does
-//! that save failing after it was written (the give-up is then on the
-//! disk and the line was never told). The record keeps the give-up among
-//! its abandoned, which `record` prints.
+//! `abandoned` line is printed the same way (M2.7b-2): the give-up is
+//! saved first as being given up (phase `abandoning`), then told, then
+//! moved to the names given up, so that a run killed between the save
+//! and the move tells it again: at least once, and twice where the kill
+//! fell after the line. A `retired` line is printed before the record
+//! lets the name go, with the same rule.
 //!
 //! `run` ends with 0 at SIGTERM or SIGINT, between two rounds of the
 //! engine or while it waits for a tick, within [`WAKE`]; what is under
@@ -309,6 +354,9 @@
 //! abandoned <t> <why>                   given up (the words of [`why_word`])
 //! stopped <t> <why, in words>           stopped for a person; still under way
 //! unsettled <t>                         still under way at the time limit
+//! retired <t>                           retired by `run`'s retention
+//! forgotten <t> (<why>)                 let go by `run`'s retention, its
+//!                                       local snapshot left for a person
 //! ```
 //!
 //! On standard error, each report as it is made, before the agent acts
@@ -367,10 +415,10 @@ use skyzfs_control::{hex, EXPIRY_MAX};
 
 use crate::engine::{
     Agent, Choice, Clock, Daemon, Effect, Error, Failed, Note, Outcome, Past, Point, Points, Step,
-    Stuck, Verdict,
+    Stuck, Verdict, QUICK_RETRIES, QUICK_RETRY, REOPEN_CAP,
 };
 use crate::plan::Report;
-use crate::record::{Keep, Loaded, Person, Phase, Why};
+use crate::record::{Keep, Left, Loaded, Person, Phase, Retire, Why};
 use crate::zfs::Zfs;
 
 /// How long `publish`, `settle` and `recover` settle where `--limit-s`
@@ -450,6 +498,8 @@ pub enum Command {
         run: Run,
         /// The time between two rounds' ticks.
         every: Duration,
+        /// What retention keeps.
+        kept: Kept,
     },
     /// Print the record in `dir`.
     Record {
@@ -480,6 +530,25 @@ pub struct Run {
     pub expiry: Option<Duration>,
     /// The test hooks.
     pub hooks: Hooks,
+}
+
+/// What `run`'s retention keeps ([`crate::engine::Agent::retain`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kept {
+    /// `--keep`: the names published kept, from 1 to
+    /// [`crate::record::KEEP_MAX`].
+    pub keep: usize,
+    /// `--abandoned-keep-s`: how long a name given up is kept.
+    pub abandoned_keep: Duration,
+}
+
+impl Default for Kept {
+    fn default() -> Self {
+        Kept {
+            keep: crate::engine::KEEP_DEFAULT,
+            abandoned_keep: crate::engine::ABANDONED_KEEP_DEFAULT,
+        }
+    }
 }
 
 /// The test hooks ([module docs](self), "Test hooks").
@@ -524,7 +593,8 @@ usage:
   skyzfs-agent recover --volume VOL --run RUN --device DEV --pool POOL --dir DIR
                        --name T (--give-up | --retry) [--limit-s S]
   skyzfs-agent run     --volume VOL --run RUN --device DEV --pool POOL --dir DIR
-                       [--every-s S] [--expiry-s E]
+                       [--every-s S] [--expiry-s E] [--keep N]
+                       [--abandoned-keep-s S]
   skyzfs-agent record  --dir DIR
 where:
   VOL  the volume's directory, as skyzfsd create made it
@@ -609,7 +679,8 @@ pub fn parse(args: &[String], hooks: bool) -> Result<Command, Usage> {
             let mut run = take.run()?;
             run.expiry = take.expiry()?;
             let every = take.seconds("every-s")?.unwrap_or(EVERY_DEFAULT);
-            Command::Run { run, every }
+            let kept = take.kept()?;
+            Command::Run { run, every, kept }
         }
         "recover" => {
             let run = take.run()?;
@@ -699,6 +770,26 @@ impl Options {
     fn hook_seconds(&mut self, key: &str) -> Result<Option<Duration>, Usage> {
         self.hook_allowed(key)?;
         self.seconds(key)
+    }
+
+    /// `--keep` and `--abandoned-keep-s`.
+    fn kept(&mut self) -> Result<Kept, Usage> {
+        let mut kept = Kept::default();
+        if let Some(value) = self.optional("keep")? {
+            let max = crate::record::KEEP_MAX;
+            match value.parse::<usize>() {
+                Ok(n) if (1..=max).contains(&n) => kept.keep = n,
+                _ => {
+                    return Err(Usage(format!(
+                        "--keep: {value:?} is not a whole number from 1 to {max}"
+                    )))
+                }
+            }
+        }
+        if let Some(keep) = self.seconds("abandoned-keep-s")? {
+            kept.abandoned_keep = keep;
+        }
+        Ok(kept)
     }
 
     /// `--expiry-s`, at most [`EXPIRY_MAX`].
@@ -853,6 +944,8 @@ pub fn outcome_line(name: &str, outcome: &Outcome) -> String {
         Outcome::Published(commit) => format!("snap/{name} {}\n", hex(commit)),
         Outcome::Abandoned(why) => format!("abandoned {name} {}\n", why_word(*why)),
         Outcome::Stopped(why) => format!("stopped {name} {why}\n"),
+        Outcome::Retired => format!("retired {name}\n"),
+        Outcome::Forgotten(why) => format!("forgotten {name} ({why})\n"),
     }
 }
 
@@ -877,6 +970,13 @@ pub fn report_line(name: &str, report: &Report) -> String {
             "unreadable: the pool's datasets could not be read, read again at the next round: {}",
             one_line(why)
         ),
+        Report::NotRetired(why) => format!(
+            "not-retired: tried again at the next round: {}",
+            one_line(why)
+        ),
+        Report::NoGuids => "no-guids: given up with no member GUIDs recorded; its @t is not \
+             destroyed, and the name is forgotten after --abandoned-keep-s"
+            .to_string(),
     };
     format!("skyzfs-agent: report {name} {what}\n")
 }
@@ -928,6 +1028,9 @@ pub fn exit_of(outcome: Option<&Outcome>) -> i32 {
         Some(Outcome::Published(_)) => exit::PUBLISHED,
         Some(Outcome::Abandoned(_)) => exit::ABANDONED,
         Some(Outcome::Stopped(_)) => exit::STOPPED,
+        // Retention's, made by `run` only, which exits by none of these:
+        // a name that left the record and asks nothing of the caller.
+        Some(Outcome::Retired | Outcome::Forgotten(_)) => exit::PUBLISHED,
         None => exit::UNSETTLED,
     }
 }
@@ -1134,13 +1237,15 @@ fn lost_said(n: u64, note: &Note, step: Option<&Step>, verdict: Verdict, err: &m
 ///
 /// ```text
 /// lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
-///   step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-|unread>
+///   step=not-imported|suspended|reopened|held|failed reopen=ok|failed|- state=<STATE|-|unread>
 ///   looked_ms=<ms|-> verdict=lost|failed|retry
 /// ```
 ///
 /// on one line. `step` is `None` where the step failed before the
 /// reopen (its error is on standard error). `state=unread` where a look
-/// after the reopen failed; `verdict` is [`Step::verdict`].
+/// after the reopen failed; `step=held` where `run`'s cap on reopens
+/// ([`crate::engine::REOPEN_CAP`]) held the reopen back and the pool
+/// read `state`; `verdict` is [`Step::verdict`].
 pub fn lost_line(pool: &str, volume: &[u8; 16], note: &Note, step: Option<&Step>) -> String {
     let verdict = Step::verdict(step).word();
     let (word, reopen, state, looked) = match step {
@@ -1161,6 +1266,7 @@ pub fn lost_line(pool: &str, volume: &[u8; 16], note: &Note, step: Option<&Step>
             looked_ms.to_string(),
         ),
         Some(Step::Suspended) => ("suspended", "-", "SUSPENDED".to_string(), "-".to_string()),
+        Some(Step::Held { state }) => ("held", "-", state.to_string(), "-".to_string()),
         Some(step) => (step.word(), "-", "-".to_string(), "-".to_string()),
     };
     format!(
@@ -1265,20 +1371,38 @@ pub struct Round {
     /// Whether its syncs met their bound with the daemon's newest cut
     /// still behind ([`crate::engine::Stuck::Bound`]).
     pub bound: bool,
+    /// How long before its tick it began, in milliseconds, where it began
+    /// early: on news of a lost volume, or as a quick retry of a step
+    /// ([`QUICK_RETRY`]). `None` for a round on its tick or after it.
+    pub early_ms: Option<u64>,
+    /// Whether the cap on reopens ([`REOPEN_CAP`]) held the round's
+    /// reopen back (`step=held` on its `lost` line).
+    pub reopen_held: bool,
 }
 
 /// The line of standard output for a round of `run` (M2.T4 reads it):
 ///
 /// ```text
 /// round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<ticks> begun=<t|-> under_way=<count>
-///   synced=<k> bound=0|1
+///   synced=<k> bound=0|1 [early_ms=<ms>] [reopen=held]
 /// ```
 ///
-/// on one line.
+/// on one line. `early_ms` only on a round begun before its tick
+/// ([`Round::early_ms`]), and `reopen=held` only on one whose reopen the
+/// cap held back ([`Round::reopen_held`]): a round on its tick, of a
+/// volume not lost, has the line it had before them.
 pub fn round_line(round: &Round) -> String {
+    let early = round
+        .early_ms
+        .map_or(String::new(), |ms| format!(" early_ms={ms}"));
+    let held = if round.reopen_held {
+        " reopen=held"
+    } else {
+        ""
+    };
     format!(
         "round {} {} took_ms={} late_ms={} skipped={} begun={} under_way={} synced={} \
-         bound={}\n",
+         bound={}{early}{held}\n",
         round.n,
         if round.failed { "failed" } else { "ok" },
         round.took_ms,
@@ -1332,20 +1456,33 @@ pub fn round_line(round: &Round) -> String {
 ///   asked of `go` within the engine, and every [`WAKE`] while it waits,
 ///   at most once a second. News ends the round there and begins the
 ///   next at once.
+/// - **Retention** keeps what `kept` says ([`Kept`]; G16 of the review
+///   of #179: the settings are taken here, not left to the caller).
 /// - **What it keeps** of the publishes that left the record is
 ///   forgotten after each round ([`Agent::forget`]), once their lines
 ///   are out.
 pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
     agent: &mut Agent<Z, D, K, C>,
     every: Duration,
+    kept: Kept,
     go: &mut dyn FnMut() -> bool,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    agent.set_keep(kept.keep);
+    agent.set_abandoned_keep(kept.abandoned_keep);
     let every_ms = ms(every).max(1);
     let start = agent.clock().mono_ms();
     let mut tick = 0u64;
     let mut restart = false;
+    // The lost note the last steps were on, and what they did with it:
+    // the reopens that left the pool unsuspended, the rounds since those
+    // met the cap, and the quick retries in a row (the lead's rulings on
+    // the review of #173). A new note starts them again.
+    let mut noted: Option<Note> = None;
+    let mut reopens = 0u64;
+    let mut since_cap = 0u64;
+    let mut quick = 0u32;
     for n in 1u64.. {
         if !go() {
             break;
@@ -1367,6 +1504,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         // (F2 and F4 of the review of #173): its `lost` line, then its
         // round line.
         let mut lost = None;
+        let mut reopen_held = false;
         let read = agent.failure();
         match &read {
             Ok(Failed::No) => {}
@@ -1380,7 +1518,26 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                 );
             }
             Ok(Failed::Lost(note)) => {
-                let step = match agent.lose() {
+                if noted != Some(*note) {
+                    noted = Some(*note);
+                    reopens = 0;
+                    since_cap = 0;
+                    quick = 0;
+                }
+                // Past the cap, the pool is reopened only at every
+                // REOPEN_CAPth round, and looked at in between.
+                let reopen = if reopens >= REOPEN_CAP {
+                    since_cap = since_cap.saturating_add(1);
+                    since_cap.is_multiple_of(REOPEN_CAP)
+                } else {
+                    true
+                };
+                let taken = if reopen {
+                    agent.lose()
+                } else {
+                    agent.look_lost()
+                };
+                let step = match taken {
                     Ok(step) => Some(step),
                     Err(e) => {
                         failed.push(e);
@@ -1388,6 +1545,19 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                     }
                 };
                 let verdict = Step::verdict(step.as_ref());
+                reopen_held = matches!(step, Some(Step::Held { .. }));
+                if verdict == Verdict::Retry && matches!(step, Some(Step::Reopened { .. })) {
+                    reopens = reopens.saturating_add(1);
+                    if reopens == REOPEN_CAP {
+                        let _ = writeln!(
+                            err,
+                            "skyzfs-agent: round {n}: {REOPEN_CAP} reopens of this note left \
+                             the pool unsuspended: it is reopened only every {REOPEN_CAP}th \
+                             round from now on, and its state read at the others (is --pool \
+                             the pool on this volume?)"
+                        );
+                    }
+                }
                 lost_said(n, note, step.as_ref(), verdict, err);
                 lost = Some((
                     lost_line(agent.pool(), &agent.volume(), note, step.as_ref()),
@@ -1497,6 +1667,17 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                     }
                 }
             }
+            // Retention (M2.7b-2): the names published past `--keep`, and
+            // those given up past `--abandoned-keep-s`, retired, a few at a
+            // round. It asks `go` and the note before each step and each
+            // call to ZFS, and yields once an end was asked or the note
+            // had news: the next round reads it first.
+            if !restart {
+                if let Err(e) = agent.retain_while(go) {
+                    restart = restarts(&e);
+                    failed.push(e);
+                }
+            }
             if !restart {
                 let next = due.saturating_add(every_ms);
                 let left = next.saturating_sub(agent.clock().mono_ms());
@@ -1528,6 +1709,8 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             under_way: agent.record().under_way.len(),
             synced,
             bound,
+            early_ms: (began < due).then(|| due - began),
+            reopen_held,
         };
         if let Some((line, _)) = &lost {
             let _ = out.write_all(line.as_bytes());
@@ -1549,15 +1732,30 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             return exit::MOVED;
         }
         agent.forget();
-        tick = tick.saturating_add(passed.max(1));
+        // A round begun early does not use up its tick: the round of that
+        // tick still comes on it (D1 of the review of #173).
+        let early = began < due;
+        tick = tick.saturating_add(if early { passed } else { passed.max(1) });
         let due = start.saturating_add(tick.saturating_mul(every_ms));
+        // A step whose verdict is retry is taken again within seconds, a
+        // few times in a row ([`QUICK_RETRY`], [`QUICK_RETRIES`]); then at
+        // the ticks. Not past the cap on reopens.
+        let mut until = due;
+        if lost_verdict == Some(Verdict::Retry) {
+            if quick < QUICK_RETRIES && reopens < REOPEN_CAP {
+                quick += 1;
+                until = until.min(now.saturating_add(ms(QUICK_RETRY)));
+            }
+        } else {
+            quick = 0;
+        }
         // News on the note begins the next round at once, early for its
-        // tick: the tick after it is the next one due.
-        while agent.clock().mono_ms() < due && !agent.note_came() {
+        // tick.
+        while agent.clock().mono_ms() < until && !agent.note_came() {
             if !go() {
                 return exit::PUBLISHED;
             }
-            let left = due.saturating_sub(agent.clock().mono_ms());
+            let left = until.saturating_sub(agent.clock().mono_ms());
             agent.clock().sleep(Duration::from_millis(left).min(WAKE));
         }
     }
@@ -1627,12 +1825,19 @@ fn ulid(text: &str) -> Result<u128, String> {
 /// ```text
 /// volume <32 hex digits>
 /// enrolled <pool> pool_guid=<n> leaf_guid=<n>      or: enrolled -
-/// publish <t> phase=<intent|taken|held|asked|done> count=<C> group=<G>
+/// publish <t> phase=<intent|taken|held|asked|done|abandoning> count=<C> group=<G>
 ///   stalls=<n> attempts=<n> held=<yes|no> asked_ms=<ms> held_until_ms=<ms>
 ///   manifest=<64 hex digits> commit=<64 hex digits> person=<-|stopped|give-up>
 ///   begun_ms=<ms>                                   (one line)
-/// abandoned <t> why=<word> at_ms=<ms>
+/// abandoned <t> why=<word> at_ms=<ms> left=<nothing|unknown|members:<n>>
+/// published <t> commit=<64 hex digits> group=<G> members=<n> at_ms=<ms>
+///   retire=<-|ref|members|other>                    (one line)
+/// stuck <t> members=<n> at_ms=<ms>
 /// ```
+///
+/// `left` and the lines `published` and `stuck` are version 3's
+/// (M2.7b-2): what a name given up left on the pool, the names published
+/// that retention keeps, and the names whose destroy failed.
 ///
 /// With no record, the one line `absent`.
 pub fn dump(loaded: &Loaded) -> Result<String, String> {
@@ -1667,6 +1872,7 @@ pub fn dump(loaded: &Loaded) -> Result<String, String> {
                 None,
             ),
             Phase::Done { taken, commit } => ("done", Some(taken), None, None, Some(commit)),
+            Phase::Abandoning { .. } => ("abandoning", None, None, None, None),
         };
         let person = match p.person {
             None => "-",
@@ -1690,11 +1896,40 @@ pub fn dump(loaded: &Loaded) -> Result<String, String> {
         ));
     }
     for a in &record.abandoned {
+        let left = match &a.left {
+            Left::Nothing => "nothing".to_string(),
+            Left::Unknown => "unknown".to_string(),
+            Left::Members(members) => format!("members:{}", members.len()),
+        };
         out.push_str(&format!(
-            "abandoned {} why={} at_ms={}\n",
+            "abandoned {} why={} at_ms={} left={left}\n",
             a.name,
             why_word(a.why),
             a.at_ms
+        ));
+    }
+    for p in &record.published {
+        let retire = match p.retire {
+            None => "-",
+            Some(Retire::Ref) => "ref",
+            Some(Retire::Members) => "members",
+            Some(Retire::Other) => "other",
+        };
+        out.push_str(&format!(
+            "published {} commit={} group={} members={} at_ms={} retire={retire}\n",
+            p.name,
+            hex(&p.commit),
+            p.group,
+            p.members.len(),
+            p.at_ms
+        ));
+    }
+    for s in &record.stuck {
+        out.push_str(&format!(
+            "stuck {} members={} at_ms={}\n",
+            s.name,
+            s.members.len(),
+            s.at_ms
         ));
     }
     Ok(out)

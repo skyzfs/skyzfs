@@ -299,7 +299,8 @@ pub enum Progress {
     Expired,
     /// Withdrawn by the agent ([`Publishing::withdraw`]), and dropped.
     Withdrawn,
-    /// Not asked of this uploader, or its outcome has left the view.
+    /// Not asked of this uploader, or its outcome has left the view, or
+    /// a retire of the name since ended it ([`Publishing::retired`]).
     Unknown,
 }
 
@@ -441,6 +442,12 @@ pub struct PublishFigures {
     pub expired: u64,
     /// The publishes withdrawn.
     pub withdrawn: u64,
+    /// The retires answered `retired`, `gone` and `other` (M2.7b-2).
+    pub retired: u64,
+    /// See [`PublishFigures::retired`].
+    pub retire_gone: u64,
+    /// See [`PublishFigures::retired`].
+    pub retire_other: u64,
     /// The last snapshot published or found: its name, its cut and its
     /// commit.
     pub last: Option<(String, CommittedCut, CommitHash)>,
@@ -608,6 +615,16 @@ impl Publishing {
         for pending in ended {
             self.figures.refused += 1;
             self.end(&pending.request.name, Outcome::Refused(why.clone()));
+        }
+    }
+
+    /// Count a retire's answer in the figures (M2.7b-2).
+    pub fn count_retire(&mut self, retired: crate::remote::Retired) {
+        use crate::remote::Retired;
+        match retired {
+            Retired::Retired => self.figures.retired += 1,
+            Retired::Gone => self.figures.retire_gone += 1,
+            Retired::Other(_) => self.figures.retire_other += 1,
         }
     }
 

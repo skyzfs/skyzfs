@@ -89,8 +89,8 @@ use skynbd_refs::{ActingRefStore, ObjectRefStore, RefStore};
 use skynbd_store::{ObjectStore, Precondition, S3Store, StoreError};
 use skyzfs_ublk::lifecycle::{LockError, OpenError, Volume};
 use skyzfs_ublk::status::{
-    CheckedShown, LeaseShown, PublishShown, RuleShown, Text, UploadFigures, UploadShown,
-    UploadStateShown,
+    CheckedShown, LeaseShown, PublishShown, RetiresShown, RuleShown, Text, UploadFigures,
+    UploadShown, UploadStateShown,
 };
 use skyzfs_upload::{
     Checked, Control, Desk, Doing, EngineRemote, Figures, Keeper, LeaseState, Mismatch, Progress,
@@ -1081,6 +1081,11 @@ fn publish_shown(p: &skyzfs_upload::PublishesShown) -> PublishShown {
         last_group,
         oldest: Text::new(oldest),
         last: Text::new(last),
+        retires: Some(RetiresShown {
+            retired: f.retired,
+            gone: f.retire_gone,
+            other: f.retire_other,
+        }),
     }
 }
 

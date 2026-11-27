@@ -770,15 +770,18 @@ fn a_publish_has_its_lines_as_asked_and_as_it_ended() {
         Some(format!("{p}\tpublish\t-\tasked\t79\t7\tsnap-e accepted").as_str())
     );
 
-    // A retire has its line too, with its answer (M2.7b-1).
+    // A retire has its line too, with its answer (M2.7b-1), the
+    // request's commit, and after `refused other` the commit that snap/T
+    // names, as the channel words it (M2.7b-2).
     let mut retires = VecDeque::from([
         Reply::Retired,
         Reply::Gone,
-        Reply::Refused(Code::Other, "snap/T names commit ...".into()),
+        crate::control::retired_reply(&Ok(skyzfs_upload::Retired::Other([0xef; 32]))),
+        Reply::Refused(Code::Stopped, "the uploader steps no more".into()),
     ]);
     let asked = Box::new(move |_: &Request, _: Vec<u8>| retires.pop_front().expect("an answer"));
     let mut channel = super::channel(asked, Lines::another(&file));
-    for name in ["snap-f", "snap-g", "snap-h"] {
+    for name in ["snap-f", "snap-g", "snap-h", "snap-i"] {
         let retire = Request::Retire(crate::control::Retire {
             name: name.into(),
             commit: [0xcd; 32],
@@ -786,12 +789,14 @@ fn a_publish_has_its_lines_as_asked_and_as_it_ended() {
         channel(&retire, Vec::new());
     }
     let all = lines(&path);
+    let (h, h2) = ("cd".repeat(32), "ef".repeat(32));
     assert_eq!(
-        all[all.len() - 3..],
+        all[all.len() - 4..],
         [
-            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-f retired"),
-            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-g gone"),
-            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-h refused other"),
+            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-f retired commit={h}"),
+            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-g gone commit={h}"),
+            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-h refused other commit={h} found={h2}"),
+            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-i refused stopped commit={h}"),
         ]
     );
 }

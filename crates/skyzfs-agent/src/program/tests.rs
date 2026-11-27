@@ -12,7 +12,7 @@ use crate::engine::fake::{
     Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, User, World, POOL, VOLUME,
 };
 use crate::engine::Noted;
-use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Record, Taken};
+use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Published, Record, Stuck, Taken};
 
 fn args(line: &str) -> Vec<String> {
     line.split_whitespace().map(String::from).collect()
@@ -119,7 +119,8 @@ fn run_is_parsed_with_its_options() {
         parse(&args(&format!("run {COMMON}")), false),
         Ok(Command::Run {
             run: run(),
-            every: every(60)
+            every: every(60),
+            kept: Kept::default(),
         })
     );
     assert_eq!(EVERY_DEFAULT, every(60));
@@ -133,9 +134,26 @@ fn run_is_parsed_with_its_options() {
                 expiry: Some(every(120)),
                 ..run()
             },
-            every: every(5)
+            every: every(5),
+            kept: Kept::default(),
         })
     );
+    assert_eq!(
+        parse(
+            &args(&format!("run {COMMON} --keep 1000 --abandoned-keep-s 7")),
+            false
+        ),
+        Ok(Command::Run {
+            run: run(),
+            every: every(60),
+            kept: Kept {
+                keep: 1000,
+                abandoned_keep: every(7),
+            },
+        })
+    );
+    assert_eq!(Kept::default().keep, 60);
+    assert_eq!(Kept::default().abandoned_keep, every(24 * 60 * 60));
     let rows = [
         ("--limit-s 30", "run takes no option --limit-s"),
         ("--every-s 0", "at least 1"),
@@ -143,6 +161,13 @@ fn run_is_parsed_with_its_options() {
         ("--expiry-s 999999", "--expiry-s: at most"),
         ("--name t", "run takes no option --name"),
         ("--give-up", "run takes no option --give-up"),
+        (
+            "--keep 0",
+            "--keep: \"0\" is not a whole number from 1 to 1000",
+        ),
+        ("--keep 1001", "from 1 to 1000"),
+        ("--keep x", "from 1 to 1000"),
+        ("--abandoned-keep-s 0", "at least 1"),
     ];
     for (extra, why) in rows {
         let got = refused(&format!("run {COMMON} {extra}"), false);
@@ -636,14 +661,52 @@ fn the_record_is_dumped_one_line_a_fact() {
                 None,
             ),
         ],
-        abandoned: vec![Abandoned {
-            name: "skz-z".into(),
-            why: Why::NameTaken,
-            at_ms: 500,
+        abandoned: vec![
+            Abandoned {
+                name: "skz-z".into(),
+                why: Why::NameTaken,
+                at_ms: 500,
+                left: Left::Nothing,
+            },
+            Abandoned {
+                name: "skz-y".into(),
+                why: Why::Person,
+                at_ms: 501,
+                left: Left::Unknown,
+            },
+            Abandoned {
+                name: "skz-x".into(),
+                why: Why::TooOld,
+                at_ms: 502,
+                left: Left::Members(vec![member("tank", 1), member("tank/a", 2)]),
+            },
+        ],
+        published: [
+            None,
+            Some(Retire::Ref),
+            Some(Retire::Members),
+            Some(Retire::Other),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, retire)| Published {
+            name: format!("skz-p{i}"),
+            commit: [0xc1; 32],
+            group: 60 + i as u64,
+            members: vec![member("tank", 3); i],
+            at_ms: 600 + i as u64,
+            retire,
+        })
+        .collect(),
+        stuck: vec![Stuck {
+            name: "skz-s".into(),
+            members: vec![member("tank", 4), member("tank/a", 5)],
+            at_ms: 700,
         }],
     };
     let h = "4d".repeat(32);
     let c = "c0".repeat(32);
+    let p = "c1".repeat(32);
     let want = format!(
         "volume {}\n\
          enrolled tank pool_guid=11 leaf_guid=12\n\
@@ -651,7 +714,14 @@ fn the_record_is_dumped_one_line_a_fact() {
          publish skz-b phase=held count=5 group=40 stalls=1 attempts=2 held=yes asked_ms=- held_until_ms=- manifest={h} commit=- person=give-up begun_ms=1000\n\
          publish skz-c phase=asked count=5 group=41 stalls=1 attempts=2 held=yes asked_ms=2000 held_until_ms=3000 manifest={h} commit=- person=stopped begun_ms=1000\n\
          publish skz-d phase=done count=5 group=42 stalls=1 attempts=2 held=yes asked_ms=- held_until_ms=- manifest={h} commit={c} person=- begun_ms=1000\n\
-         abandoned skz-z why=name-taken at_ms=500\n",
+         abandoned skz-z why=name-taken at_ms=500 left=nothing\n\
+         abandoned skz-y why=person at_ms=501 left=unknown\n\
+         abandoned skz-x why=too-old at_ms=502 left=members:2\n\
+         published skz-p0 commit={p} group=60 members=0 at_ms=600 retire=-\n\
+         published skz-p1 commit={p} group=61 members=1 at_ms=601 retire=ref\n\
+         published skz-p2 commit={p} group=62 members=2 at_ms=602 retire=members\n\
+         published skz-p3 commit={p} group=63 members=3 at_ms=603 retire=other\n\
+         stuck skz-s members=2 at_ms=700\n",
         "ab".repeat(16)
     );
     assert_eq!(dump(&Loaded::Present(record)), Ok(want));
@@ -663,6 +733,14 @@ fn the_record_is_dumped_one_line_a_fact() {
     assert_eq!(dump(&Loaded::Absent), Ok("absent\n".into()));
     assert!(dump(&Loaded::Corrupt(crate::record::Corrupt::Hash))
         .is_err_and(|why| why.contains("corrupt")));
+}
+
+/// A member `name` whose snapshot's GUID is `guid`.
+fn member(name: &str, guid: u64) -> Member {
+    Member {
+        name: name.into(),
+        snapshot_guid: guid,
+    }
 }
 
 /// The fake daemon with `look` blind: a `done` is never confirmed.
@@ -992,12 +1070,22 @@ fn scheduled<D: Daemon, K: Keep>(
     every: Duration,
     go: &mut dyn FnMut() -> bool,
 ) -> (i32, String, String) {
+    scheduled_kept(agent, every, Kept::default(), go)
+}
+
+/// [`scheduled`], with retention keeping what `kept` says.
+fn scheduled_kept<D: Daemon, K: Keep>(
+    agent: &mut Agent<FakeZfs, D, K, FakeClock>,
+    every: Duration,
+    kept: Kept,
+    go: &mut dyn FnMut() -> bool,
+) -> (i32, String, String) {
     let (mut out, mut err) = (Shared::default(), Shared::default());
     let mut told = out.clone();
     agent.set_outcome_sink(Box::new(move |name, outcome| {
         let _ = told.write_all(outcome_line(name, outcome).as_bytes());
     }));
-    let code = schedule(agent, every, go, &mut out, &mut err);
+    let code = schedule(agent, every, kept, go, &mut out, &mut err);
     (code, out.text(), err.text())
 }
 
@@ -1033,6 +1121,8 @@ fn a_round_line_says_what_the_round_did() {
         under_way: 1,
         synced: 4,
         bound: false,
+        early_ms: None,
+        reopen_held: false,
     };
     assert_eq!(
         round_line(&round),
@@ -1048,6 +1138,19 @@ fn a_round_line_says_what_the_round_did() {
     assert_eq!(
         round_line(&failed),
         "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1 synced=4 bound=1\n"
+    );
+    // A round begun early, and one whose reopen the cap held back: the
+    // two fields come last, only where they apply.
+    let early = Round {
+        late_ms: 0,
+        early_ms: Some(55_000),
+        reopen_held: true,
+        ..failed
+    };
+    assert_eq!(
+        round_line(&early),
+        "round 3 failed took_ms=3456 late_ms=0 skipped=2 begun=- under_way=1 synced=4 bound=1 \
+         early_ms=55000 reopen=held\n"
     );
 }
 
@@ -1345,6 +1448,14 @@ impl crate::zfs::Zfs for SlowCount {
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), crate::zfs::ZfsError> {
         self.zfs.destroy(pool, t)
     }
+    fn destroy_one(
+        &mut self,
+        pool: &str,
+        dataset: &str,
+        t: &str,
+    ) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.destroy_one(pool, dataset, t)
+    }
     fn members(
         &mut self,
         pool: &str,
@@ -1416,6 +1527,7 @@ fn a_round_settles_once_however_long_the_count_took() {
     let code = schedule(
         &mut agent,
         Duration::from_secs(1),
+        Kept::default(),
         &mut until(&world, start + 120_000),
         &mut out,
         &mut err,
@@ -1786,7 +1898,7 @@ fn a_begin_refused_for_eight_under_way_still_settles() {
     assert_eq!(field(rounds[8], "begun"), "-", "{out}");
     assert_eq!(field(rounds[8], "under_way"), "8", "{out}");
     assert!(
-        err.contains("skyzfs-agent: round 9: 8 publishes are under way"),
+        err.contains("skyzfs-agent: round 9: no room in the record: 8 publishes under way"),
         "{err}"
     );
     // A refused begin changed nothing: the round after it does not start
@@ -2006,14 +2118,16 @@ fn an_outcome_is_out_before_the_record_forgets_it() {
             "{effect:?} {after}: {again}"
         );
     }
-    // A give-up is told once its record is saved, before its manifest
-    // goes. A stop between the two (`Abandon:after`) has not told it,
-    // and no later run tells it: the record keeps it among the
-    // abandoned, which `record` prints (the window the module's docs
-    // name in "`run`").
+    // A give-up is recorded at `Abandoning`, then told, then moved to the
+    // names given up, then its manifest goes (M2.7b-2). A stop before it
+    // is told leaves it under way at `Abandoning`, and the next run tells
+    // it; a stop after it is told and before the move tells it again:
+    // at least once, never lost.
     for (effect, after, told) in [
-        (Effect::Abandon, false, false),
-        (Effect::Abandon, true, false),
+        (Effect::Abandoning, false, false),
+        (Effect::Abandoning, true, false),
+        (Effect::Abandon, false, true),
+        (Effect::Abandon, true, true),
         (Effect::Unlink, false, true),
     ] {
         let world = World::new(Mode::Busy);
@@ -2036,10 +2150,16 @@ fn an_outcome_is_out_before_the_record_forgets_it() {
             "{effect:?} {after}: {out}{err}"
         );
         let kept = agent.record().abandoned.iter().any(|a| a.name == t);
+        let moved = effect == Effect::Unlink || (effect == Effect::Abandon && after);
+        assert_eq!(kept, moved, "{effect:?} {after}");
+        // The next run tells it where the record still holds it under
+        // way, and not where it has moved.
+        let mut next = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let (_, again, _) = executed(&mut next, &Task::Settle, LIMIT);
         assert_eq!(
-            kept,
-            after || effect == Effect::Unlink,
-            "{effect:?} {after}"
+            again.contains(&format!("abandoned {t} ")),
+            !moved,
+            "{effect:?} {after}: {again}"
         );
     }
 }
@@ -2299,7 +2419,7 @@ mod restarts {
         agent.set_outcome_sink(Box::new(move |name, outcome| {
             let _ = told.write_all(outcome_line(name, outcome).as_bytes());
         }));
-        let code = schedule(agent, every, go, &mut out, &mut err);
+        let code = schedule(agent, every, Kept::default(), go, &mut out, &mut err);
         (code, out.text(), err.text())
     }
 
@@ -2603,6 +2723,9 @@ mod failed_volume {
         assert_eq!(field(lines[1], "under_way"), "0");
         assert_eq!(world.borrow().reopens, 1);
         assert!(world.borrow().programs.is_empty(), "nothing begun");
+        // The round's only call is the reopen: no sync, count, snapshot
+        // or settle (P17 of the review of #173).
+        assert_eq!(world.borrow().calls, ["reopen"], "{out}");
         assert_eq!(err, "");
     }
 
@@ -2681,12 +2804,18 @@ mod failed_volume {
     }
 
     /// A pool that does not read SUSPENDED within the look is not shown
-    /// lost: the round fails, and the next round takes the step again,
-    /// until the pool suspends; then `run` ends with 11 (the lead's
-    /// ruling on F2 of the review of #173). Mutants: an end with 11 on a
-    /// pool that reads ONLINE; the round not failed; no second step.
+    /// lost: the round fails, and the step is taken again, until the pool
+    /// suspends; then `run` ends with 11 (the lead's ruling on F2 of the
+    /// review of #173). The step is taken again [`QUICK_RETRY`] after a
+    /// round that failed so, [`QUICK_RETRIES`] times in a row, each such
+    /// round marked early and the round of the tick still on its tick;
+    /// then at the ticks (the lead's ruling on D1 of the review of #173).
+    /// Mutants: an end with 11 on a pool that reads ONLINE; the round not
+    /// failed; no second step; no quick retry; more quick retries than
+    /// the bound; a quick retry that uses up its tick (round 5 late, or
+    /// none at 60 s); `early_ms` left out.
     #[test]
-    fn a_pool_not_shown_suspended_is_tried_again_at_the_next_round() {
+    fn a_pool_not_shown_suspended_is_tried_again_within_seconds_then_at_the_ticks() {
         let world = lost_world(noted(Held::Yes));
         // The reopen does nothing at first: the pool stays ONLINE.
         world.borrow_mut().suspends_after_ms = None;
@@ -2696,7 +2825,7 @@ mod failed_volume {
         let watched = world.clone();
         let mut go = until(&world, start + 600_000);
         let mut asked = move || {
-            // From the third round, a reopen makes the pool suspend.
+            // From 120 s on, a reopen makes the pool suspend.
             if mono(&watched) >= start + 120_000 {
                 watched.borrow_mut().suspends_after_ms = Some(1_050);
             }
@@ -2705,24 +2834,35 @@ mod failed_volume {
         let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut asked);
         assert_eq!(code, exit::LOST, "{out}{err}");
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 6, "{out}");
-        for i in [0, 2] {
+        assert_eq!(lines.len(), 12, "{out}");
+        // Each look lasts LOOK_MAX (10 s): round 1 at 0 s, the quick
+        // retries 5 s after each round ends (15, 30 and 45 s), the round
+        // of the tick at 60 s, then 120 s, where the pool suspends.
+        let early = [None, Some(45_000), Some(30_000), Some(15_000), None];
+        for (i, early) in early.iter().enumerate() {
             assert!(
-                lines[i].ends_with(
+                lines[2 * i].ends_with(
                     " step=reopened reopen=ok state=ONLINE looked_ms=10000 verdict=retry"
                 ),
                 "{out}"
             );
+            let round = lines[2 * i + 1];
             assert!(
-                lines[i + 1].starts_with(&format!("round {} failed ", i / 2 + 1)),
+                round.starts_with(&format!("round {} failed ", i + 1)),
                 "{out}"
             );
+            assert_eq!(field(round, "late_ms"), "0", "{out}");
+            match early {
+                Some(ms) => assert!(round.ends_with(&format!(" early_ms={ms}")), "{out}"),
+                None => assert!(!round.contains("early_ms"), "{out}"),
+            }
         }
         assert!(
-            lines[4].ends_with(" state=SUSPENDED looked_ms=1250 verdict=lost"),
+            lines[10].ends_with(" state=SUSPENDED looked_ms=1250 verdict=lost"),
             "{out}"
         );
-        assert!(lines[5].starts_with("round 3 ok "), "{out}");
+        assert!(lines[11].starts_with("round 6 ok "), "{out}");
+        assert!(!lines[11].contains("early_ms"), "{out}");
         assert!(
             err.contains(
                 "round 1: the volume is lost for this boot (note=whole reason=image-failed \
@@ -2730,8 +2870,211 @@ mod failed_volume {
             ),
             "{err}"
         );
-        assert_eq!(world.borrow().reopens, 3);
+        assert_eq!(world.borrow().reopens, 6);
         assert!(world.borrow().programs.is_empty(), "nothing begun");
+    }
+
+    /// After [`REOPEN_CAP`] reopens of one note that leave the pool
+    /// unsuspended, the pool is reopened only at every [`REOPEN_CAP`]th
+    /// round, and the rounds in between read its state only (`step=held`,
+    /// `reopen=held`), with no quick retry; it is said once on standard
+    /// error. A pool zed suspends meanwhile is found lost at the next
+    /// round, held or not (the lead's ruling on the review of #173).
+    /// Mutants: no cap; a cap that never reopens again; a held round that
+    /// reads nothing; quick retries past the cap; the cap said each round.
+    #[test]
+    fn reopens_that_leave_the_pool_online_are_capped() {
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().suspends_after_ms = None;
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let (code, out, err) = scheduled(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(&world, start + 990_000),
+        );
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        let steps: Vec<&str> = lines.iter().step_by(2).copied().collect();
+        let rounds: Vec<&str> = lines.iter().skip(1).step_by(2).copied().collect();
+        // 4 rounds by 45 s (one and its three quick retries), then one a
+        // tick: the 10th reopen at 360 s, held rounds from 420 s to 900 s,
+        // the 10th round after the cap (960 s) reopens.
+        assert_eq!(rounds.len(), 20, "{out}");
+        for (i, (step, round)) in steps.iter().zip(&rounds).enumerate() {
+            assert!(
+                round.starts_with(&format!("round {} failed ", i + 1)),
+                "{out}"
+            );
+            if (10..19).contains(&i) {
+                assert!(
+                    step.ends_with(" step=held reopen=- state=ONLINE looked_ms=- verdict=retry"),
+                    "{out}"
+                );
+                assert!(round.ends_with(" bound=0 reopen=held"), "{out}");
+            } else {
+                assert!(
+                    step.contains(" step=reopened reopen=ok state=ONLINE "),
+                    "{out}"
+                );
+                assert!(!round.contains("reopen=held"), "{out}");
+            }
+            if i >= 4 {
+                assert!(!round.contains("early_ms"), "round {} early: {out}", i + 1);
+            }
+        }
+        assert_eq!(world.borrow().reopens, 11);
+        assert_eq!(
+            err.matches("10 reopens of this note left the pool unsuspended")
+                .count(),
+            1,
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "round 10: 10 reopens of this note left the pool unsuspended: it is reopened \
+                 only every 10th round from now on"
+            ),
+            "{err}"
+        );
+
+        // zed suspends the pool at 500 s, during the held rounds: the next
+        // round (13, at 540 s) finds it SUSPENDED with no reopen, and `run`
+        // ends with 11.
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().suspends_after_ms = None;
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let mut go = until(&world, start + 990_000);
+        let mut asked = move || {
+            if mono(&watched) >= start + 500_000 && watched.borrow().suspended_at.is_none() {
+                let at = watched.borrow().now_ms;
+                watched.borrow_mut().suspended_at = Some(at);
+            }
+            go()
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut asked);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let last: Vec<&str> = out.lines().rev().take(2).collect();
+        assert!(
+            last[1].contains(" step=suspended reopen=- state=SUSPENDED "),
+            "{out}"
+        );
+        assert!(last[0].starts_with("round 13 ok "), "{out}");
+        assert_eq!(world.borrow().reopens, 10);
+
+        // Past the cap, a round that finds the pool not imported (from 400
+        // to 430 s) ends the quick retries' run, and the held rounds after
+        // it still come at the ticks: past the cap there is no quick retry.
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().suspends_after_ms = None;
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let pool = world.borrow().pool.clone();
+        let mut go = until(&world, start + 700_000);
+        let mut asked = move || {
+            let now = mono(&watched);
+            let gone = (start + 400_000..start + 430_000).contains(&now);
+            watched.borrow_mut().pool = if gone { None } else { pool.clone() };
+            go()
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut asked);
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        // Rounds 1 to 10 reopen (the last at 360 s), 11 (420 s) finds no
+        // pool, then held rounds at 480, 540, 600 and 660 s.
+        assert_eq!(lines.len(), 30, "{out}");
+        assert!(lines[20].contains(" step=not-imported "), "{out}");
+        for i in [22, 24, 26, 28] {
+            assert!(lines[i].contains(" step=held "), "{out}");
+            assert!(!lines[i + 1].contains("early_ms"), "{out}");
+        }
+        assert_eq!(world.borrow().reopens, 10);
+    }
+
+    /// A volume lost while `run` waits, whose pool does not suspend: the
+    /// rounds after the first step are the quick retries and then the
+    /// ticks, never back to back: the watch takes each round's own note
+    /// as no news (W12 of the review of #173). Mutants: the watch set
+    /// only at the first round; no quick retry.
+    #[test]
+    fn rounds_on_a_lost_note_are_not_back_to_back() {
+        let world = World::new(Mode::Idle);
+        let failed_at = world.borrow().now_ms + 30_000;
+        {
+            let mut w = world.borrow_mut();
+            w.noted = Some(noted(Held::Unknown));
+            w.noted_from_ms = Some(failed_at);
+            w.gone_from = Some(failed_at);
+            w.suspends_after_ms = None;
+        }
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let (code, out, err) = scheduled(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(&world, start + 300_000),
+        );
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        // Round 1 at 0 s; the note at 30 s and its step at once (round 2,
+        // early); three quick retries; the ticks at 120, 180 and 240 s.
+        let rounds = rounds(&out);
+        assert_eq!(rounds.len(), 8, "{out}");
+        assert_eq!(world.borrow().reopens, 7, "{out}");
+    }
+
+    /// A volume lost while the syncs after a rewind import have not yet
+    /// made the newest cut open as itself: the syncs stop on the news
+    /// (`Stuck::Noted`), the round says why it began nothing, its line
+    /// counts the syncs that returned and is not `bound`, and the next
+    /// round takes the step (P19 and P20 of the review of #173).
+    /// Mutants: the syncs not stopped by the note; `bound=1` on a stop by
+    /// news; `synced=` not the syncs that returned.
+    #[test]
+    fn a_volume_lost_before_the_cut_opens_stops_the_syncs() {
+        let world = rewound_t(5);
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let mut failed = false;
+        let mut go = move || {
+            let mut w = watched.borrow_mut();
+            // After the first sync, while the newest cut is still behind.
+            if w.synced_at.len() == 1 && !failed {
+                failed = true;
+                w.advance(Duration::from_secs(2));
+                let now = w.now_ms;
+                w.noted = Some(noted(Held::Yes));
+                w.noted_from_ms = Some(now);
+                w.gone_from = Some(now);
+                w.suspends_after_ms = Some(1_050);
+            }
+            w.now_ms - crate::engine::fake::EPOCH_MS < start + 600_000
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "{out}");
+        assert!(lines[0].starts_with("round 1 ok "), "{out}");
+        assert_eq!(field(lines[0], "synced"), "1", "{out}");
+        assert_eq!(field(lines[0], "bound"), "0", "{out}");
+        assert_eq!(field(lines[0], "begun"), "-", "{out}");
+        assert!(lines[1].starts_with("lost tank "), "{out}");
+        assert!(lines[2].starts_with("round 2 ok "), "{out}");
+        assert!(
+            err.contains("round 1: no publish begun: the newest cut, of group ")
+                && err.contains("the volume's failure note came"),
+            "{err}"
+        );
+        assert_eq!(world.borrow().synced_at.len(), 1, "{out}");
+        assert!(world.borrow().programs.is_empty(), "{out}");
     }
 
     /// A reopen refused because zed suspended the pool first is a lost
@@ -2946,7 +3289,7 @@ mod failed_volume {
     /// standard error at each round, no pool touched (no ZFS call at all:
     /// no sync, begin or settle), each round `ok` with nothing begun, and
     /// `run` goes on (the lead's answer to Q2; Codex's P2 on #173).
-    /// Mutants: a reopen; an end with 9; the round going on to the sync,
+    /// Mutants: a reopen; an end with 11; the round going on to the sync,
     /// the begin and the settle.
     #[test]
     fn a_volume_failed_with_no_client_touches_no_pool() {
@@ -3100,6 +3443,307 @@ mod failed_volume {
                  looked_ms=- verdict=retry\n",
                 "00".repeat(16)
             )
+        );
+    }
+}
+
+/// Retention's asks within `run`'s rounds (M2 and L2 of the review of
+/// #179; review's T1 and T2, adapted as said on each).
+mod retention_in_rounds {
+    use std::cell::Cell;
+
+    use skyzfs_control::failure::{Failure, Held, Reason};
+
+    use super::*;
+
+    /// The fake daemon, whose `retire` is not answered: each costs
+    /// `cost` of the fake clock (the daemon's answer limit while the
+    /// uploader is in a long step) and is refused `no-answer`. At the
+    /// first retire it may also leave a failure note, as of a volume
+    /// lost then.
+    struct Unanswered {
+        daemon: FakeDaemon,
+        cost: Duration,
+        asked: Rc<Cell<usize>>,
+        note_at_first: bool,
+    }
+
+    impl Daemon for Unanswered {
+        fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+            if let Request::Retire(_) = request {
+                let mut w = self.daemon.0.borrow_mut();
+                if self.asked.get() == 0 && self.note_at_first {
+                    w.noted = Some(Noted::Failed(Failure {
+                        held: Held::Yes,
+                        reason: Reason::ImageFailed,
+                        identity: [7; 16],
+                    }));
+                    w.noted_from_ms = Some(w.now_ms);
+                    w.suspends_after_ms = Some(1_050);
+                }
+                self.asked.set(self.asked.get() + 1);
+                w.advance(self.cost);
+                return Ok(Reply::Refused(
+                    Code::NoAnswer,
+                    "the uploader did not answer within 30 s".into(),
+                ));
+            }
+            self.daemon.ask(request, manifest)
+        }
+        fn device(&mut self) -> io::Result<u64> {
+            self.daemon.device()
+        }
+        fn failure(&mut self) -> io::Result<Option<Noted>> {
+            self.daemon.failure()
+        }
+    }
+
+    /// `--keep 1`.
+    fn keep_one() -> Kept {
+        Kept {
+            keep: 1,
+            ..Kept::default()
+        }
+    }
+
+    /// Twelve names published on an idle world, by an agent of its own.
+    fn twelve() -> (Rc<RefCell<World>>, MemKeep) {
+        let world = World::new(Mode::Idle);
+        let keep = MemKeep::default();
+        let mut a = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        for _ in 0..12 {
+            a.begin().expect("begun");
+            a.settle(LIMIT).expect("settled");
+            world.borrow_mut().advance(Duration::from_secs(3));
+        }
+        assert_eq!(a.record().published.len(), 12);
+        (world, keep)
+    }
+
+    fn unanswered(
+        world: &Rc<RefCell<World>>,
+        note_at_first: bool,
+    ) -> (Unanswered, Rc<Cell<usize>>) {
+        let asked = Rc::new(Cell::new(0));
+        let daemon = Unanswered {
+            daemon: FakeDaemon(world.clone()),
+            cost: Duration::from_secs(30),
+            asked: asked.clone(),
+            note_at_first,
+        };
+        (daemon, asked)
+    }
+
+    /// `run` retires the names past `--keep` at its rounds, at most
+    /// [`crate::engine::STEPS_MAX`] a round, each told on a `retired`
+    /// line before the round line (G11 of the review of #179). Mutant:
+    /// `run` never retains.
+    #[test]
+    fn run_retires_the_names_past_keep_a_few_a_round() {
+        let (world, keep) = twelve();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let oldest: Vec<String> = agent
+            .record()
+            .published
+            .iter()
+            .map(|p| p.name.clone())
+            .take(11)
+            .collect();
+        let start = mono(&world);
+        let (_, out, err) = scheduled_kept(
+            &mut agent,
+            Duration::from_secs(60),
+            keep_one(),
+            &mut until(&world, start + 1_000),
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        let steps = crate::engine::STEPS_MAX;
+        let told: Vec<String> = oldest[..steps]
+            .iter()
+            .map(|t| format!("retired {t}"))
+            .collect();
+        let retired: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| l.starts_with("retired "))
+            .collect();
+        assert_eq!(retired, told, "{out}{err}");
+        let round = lines
+            .iter()
+            .position(|l| l.starts_with("round 1 "))
+            .expect("round 1");
+        let last = lines
+            .iter()
+            .rposition(|l| l.starts_with("retired "))
+            .expect("retired");
+        assert!(last < round, "{out}");
+        for t in &oldest[..steps] {
+            assert!(!agent.record().names(t), "{t}");
+        }
+    }
+
+    /// `run` gives up for good the names given up past
+    /// `--abandoned-keep-s`, and keeps them before (G16 of the review of
+    /// #179). Mutant: the setting not taken.
+    #[test]
+    fn run_takes_its_abandoned_keep() {
+        for (abandoned_keep, gone) in [(Duration::ZERO, true), (Duration::from_secs(3600), false)] {
+            let (world, keep) = twelve();
+            let now = world.borrow().now_ms;
+            let given_up = {
+                let bytes = keep.0.borrow().record.clone().expect("a record");
+                let mut record = Record::decode(&bytes).expect("decoded");
+                let p = record.published.remove(0);
+                record.abandoned.push(Abandoned {
+                    name: p.name.clone(),
+                    why: crate::record::Why::ManifestLost,
+                    at_ms: now,
+                    left: crate::record::Left::Members(p.members),
+                });
+                keep.0.borrow_mut().record = Some(record.encode().expect("encoded"));
+                p.name
+            };
+            let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+            let start = mono(&world);
+            let kept = Kept {
+                abandoned_keep,
+                ..Kept::default()
+            };
+            let (_, out, err) = scheduled_kept(
+                &mut agent,
+                Duration::from_secs(60),
+                kept,
+                &mut until(&world, start + 1_000),
+            );
+            let told = out.lines().any(|l| l == format!("retired {given_up}"));
+            assert_eq!(told, gone, "{abandoned_keep:?}: {out}{err}");
+            assert_eq!(agent.record().names(&given_up), !gone, "{out}");
+        }
+    }
+
+    /// A round asks `retire` of no more names once one was not answered
+    /// (L2 of the review of #179; its T1): eleven names past `--keep`,
+    /// whose retires the daemon answers only at its limit (30 s), cost a
+    /// round one ask, and the round ends within its tick. Each round
+    /// asks again, once. Mutant: the round goes on asking after a
+    /// `no-answer` (STEPS_MAX asks, 240 s a round).
+    #[test]
+    fn a_retire_not_answered_ends_the_round_s_retires() {
+        let (world, keep) = twelve();
+        let (daemon, asked) = unanswered(&world, false);
+        let mut agent = agent_on(&world, daemon, &keep);
+        let names: Vec<String> = agent
+            .record()
+            .published
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let start = mono(&world);
+        let (_, out, err) = scheduled_kept(
+            &mut agent,
+            Duration::from_secs(60),
+            keep_one(),
+            &mut until(&world, start + 150_000),
+        );
+        let rounds = rounds(&out);
+        assert_eq!(rounds.len(), 3, "{out}{err}");
+        for round in &rounds {
+            let took = field(round, "took_ms").parse::<u64>().expect("ms");
+            assert!(took < 60_000, "{round}");
+        }
+        assert_eq!(asked.get(), 3, "one retire a round: {out}{err}");
+        // Nothing retired.
+        for t in &names {
+            assert!(agent.record().names(t), "{t} left: {out}");
+        }
+    }
+
+    /// A volume lost while retention waits on a retire not answered is
+    /// stepped on as soon as that ask ends: retention asks nothing more
+    /// once the note has news, and the next round reads it (M2 of the
+    /// review of #179, Codex's P1 on retain.rs:176; review's T2). Review
+    /// asked for the reopen within 5 s of the failure; one ask already in
+    /// flight is not cut (as in the settle, whose asks the watch also
+    /// waits for), so the bound is that ask's 30 s and the note's read
+    /// (at most [`crate::engine::NOTE_EVERY`] apart) and the reopen's 1 s:
+    /// 35 s. Mutants: no halt on the note before the given-up names, the
+    /// settle, or the next retire.
+    #[test]
+    fn a_volume_lost_during_retention_is_stepped_on_after_the_ask_in_flight() {
+        let (world, keep) = twelve();
+        let (daemon, asked) = unanswered(&world, true);
+        let mut agent = agent_on(&world, daemon, &keep);
+        let start = mono(&world);
+        let (code, out, err) = scheduled_kept(
+            &mut agent,
+            Duration::from_secs(60),
+            keep_one(),
+            &mut until(&world, start + 900_000),
+        );
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let failed_at = world.borrow().noted_from_ms.expect("noted");
+        let reopened = world.borrow().suspended_at.expect("reopened") - 1_050;
+        let after = reopened - failed_at;
+        assert!(
+            after <= 35_000,
+            "the reopen {after} ms after the failure: {out}{err}"
+        );
+        assert_eq!(asked.get(), 1, "{out}{err}");
+    }
+
+    /// A few hours of give-ups do not stop the publishes (M1 of the
+    /// review of #179, its T5; the lead's ruling): the uploader stops for
+    /// 5 h, every publish is refused `stopped` and given up, a round
+    /// each, past ABANDONED_MAX (256). The oldest give-up leaves early
+    /// whenever it alone stands between the next begin and its room,
+    /// `snap/T` looked up first, so every round begins, and the first
+    /// round after the uploader is back publishes. Before the ruling,
+    /// nothing began from about round 257 until the oldest aged out,
+    /// a day after them.
+    #[test]
+    fn hours_of_give_ups_leave_room_and_the_publishes_resume_at_once() {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().refuse_every_publish = Some(Code::Stopped);
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let every = Duration::from_secs(60);
+        let (_, out, err) = scheduled(
+            &mut agent,
+            every,
+            &mut until(&world, start + 5 * 3600 * 1000),
+        );
+        let lines = rounds(&out);
+        assert!(lines.len() >= 290, "{} rounds in 5 h", lines.len());
+        let idle: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| field(l, "begun") == "-")
+            .collect();
+        assert!(
+            idle.is_empty(),
+            "rounds that began nothing: {idle:?}\n{err}"
+        );
+        let record = agent.record();
+        assert_eq!(
+            record.abandoned.len(),
+            crate::record::ABANDONED_MAX - 1,
+            "{err}"
+        );
+        assert!(
+            out.lines().filter(|l| l.starts_with("retired ")).count() >= 30,
+            "{out}"
+        );
+        // The uploader is back.
+        world.borrow_mut().refuse_every_publish = None;
+        let back = mono(&world);
+        let (_, out2, err2) = scheduled(&mut agent, every, &mut until(&world, back + 60_000));
+        let first = rounds(&out2);
+        assert!(!first.is_empty(), "{out2}{err2}");
+        assert_ne!(field(first[0], "begun"), "-", "{out2}{err2}");
+        assert!(
+            out2.lines().any(|l| l.starts_with("snap/")),
+            "nothing published in the first round after the uploader is back: {out2}{err2}"
         );
     }
 }

@@ -143,6 +143,11 @@ fn sample_publish() -> PublishShown {
         last_group: 77,
         oldest: Text::new("snap-old"),
         last: Text::new("snap-last"),
+        retires: Some(RetiresShown {
+            retired: 79,
+            gone: 80,
+            other: 81,
+        }),
     }
 }
 
@@ -151,8 +156,8 @@ fn sample_publish() -> PublishShown {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 1416);
-    assert_eq!(&bytes[..8], b"SKYZST19");
+    assert_eq!(bytes.len(), 1440);
+    assert_eq!(&bytes[..8], b"SKYZST20");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -234,6 +239,9 @@ fn the_file_has_the_documented_layout() {
         (1392, 71),
         (1400, 72),
         (1408, 78),
+        (1416, 79),
+        (1424, 80),
+        (1432, 81),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
@@ -427,7 +435,8 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
 fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let versions: [(&[u8; 8], usize); 12] = [
+    let versions: [(&[u8; 8], usize); 13] = [
+        (b"SKYZST20", 1440),
         (b"SKYZST19", 1416),
         (b"SKYZST18", 1408),
         (b"SKYZST17", 1032),
@@ -618,12 +627,71 @@ fn a_file_of_the_fourteenth_version_is_read_without_the_uploader() {
         .any(|(key, _)| key.starts_with("upload") || key.starts_with("lease")));
 }
 
+/// What a file before the twentieth version does not say: the retires
+/// (M2.7b-2).
+fn without_retires(status: &mut Status) {
+    if let Some(publish) = status
+        .shown
+        .upload
+        .as_mut()
+        .and_then(|u| u.publish.as_mut())
+    {
+        publish.retires = None;
+    }
+}
+
 /// What a file before the nineteenth version does not say: the whole
-/// cuts lost (M2.4f).
+/// cuts lost (M2.4f), and what a file before the twentieth does not say.
 fn without_whole_lost(status: &mut Status) {
+    without_retires(status);
     if let Some(upload) = &mut status.shown.upload {
         upload.figures.lost_whole = None;
     }
+}
+
+/// A file of the nineteenth version (1416 bytes, `SKYZST19`): this
+/// version's fields up to the retires, at the same places.
+fn nineteenth_file() -> Vec<u8> {
+    let mut bytes = encode(&sample())[..1416].to_vec();
+    bytes[..8].copy_from_slice(b"SKYZST19");
+    bytes
+}
+
+/// A file of the nineteenth version is still read, with the whole cuts
+/// lost and without the retires (M2.7b-2), whose keys `status` does not
+/// print for it; a twentieth prints them, after the last publish's.
+#[test]
+fn a_file_of_the_nineteenth_version_is_read_without_the_retires() {
+    let read = decode(&nineteenth_file()).expect("a status");
+    let mut expected = sample();
+    expected.version = 19;
+    without_retires(&mut expected);
+    assert_eq!(read, expected);
+    let lines_of = |read: &Status| {
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(&read);
+    assert_eq!(value(&lines, "upload_cuts_lost_whole"), Some("78"));
+    for key in [
+        "publish_retired",
+        "publish_retire_gone",
+        "publish_retire_other",
+    ] {
+        assert_eq!(value(&lines, key), None, "{key}");
+    }
+    let twentieth = decode(&encode(&sample())).expect("a status");
+    let lines = lines_of(&twentieth);
+    assert_eq!(value(&lines, "publish_retired"), Some("79"));
+    assert_eq!(value(&lines, "publish_retire_gone"), Some("80"));
+    assert_eq!(value(&lines, "publish_retire_other"), Some("81"));
+    let at = |key: &str| lines.iter().position(|(k, _)| *k == key).expect(key);
+    assert_eq!(at("publish_retired"), at("publish_last_group") + 1);
 }
 
 /// What a file before the eighteenth version does not say: the cuts not
@@ -1868,6 +1936,9 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "publish_last",
             "publish_last_cut",
             "publish_last_group",
+            "publish_retired",
+            "publish_retire_gone",
+            "publish_retire_other",
             "control",
             "control_answered",
             "control_peer",
@@ -2282,7 +2353,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut nineteenth = encode(&sample()).to_vec();
+    let mut twentieth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -2296,6 +2367,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         ("17", b"SKYZST17"),
         ("18", b"SKYZST18"),
         ("19", b"SKYZST19"),
+        ("20", b"SKYZST20"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
@@ -2309,7 +2381,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "16" => sixteenth_file(),
             "17" => seventeenth_file(),
             "18" => eighteenth_file(),
-            _ => std::mem::take(&mut nineteenth),
+            "19" => nineteenth_file(),
+            _ => std::mem::take(&mut twentieth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
@@ -2324,7 +2397,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 19);
+    assert_eq!(VERSION, 20);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

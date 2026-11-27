@@ -26,8 +26,8 @@
 //! agent then publishes nothing and reports, and [`Store::save`] does
 //! not write over it: what it held (which snapshots are held, and by
 //! whom) is for a person to judge. A record of another version is
-//! corrupt to this agent, as the plan says (no reader of other versions
-//! yet). Version 2 (M2.6b2) added a publish's stalls and the time it
+//! corrupt to this agent, except version 2, which it reads (below).
+//! Version 2 (M2.6b2) added a publish's stalls and the time it
 //! was begun, and [`Why::NoProgress`] and [`Why::TooOld`]; M2.6c-1
 //! appended [`Why::Stopped`] to it, before any agent ran it (S11 of
 //! #146's review), M2.6c-3 a person's part in a publish ([`Person`])
@@ -40,6 +40,17 @@
 //! either; from the first run of the program (M2.6c), any change to the
 //! record takes a new version and a test that decodes the version
 //! before it (the lead's decision on #144).
+//!
+//! Version 3 (M2.7b-2, retention) adds the names published
+//! ([`Record::published`]), the names whose destroy failed
+//! ([`Record::stuck`], the lead's ruling on #179), and what each
+//! give-up left on the pool
+//! ([`Abandoned::left`]), and a publish being given up
+//! ([`Phase::Abandoning`]). A record of version 2 reads as version 3
+//! with no name published and each name given up leaving
+//! [`Left::Unknown`]: version 2 kept no member's GUID of a name given
+//! up, so its snapshot is left for a person ([`Left`]). The next save
+//! writes version 3.
 //!
 //! # The marker
 //!
@@ -73,14 +84,43 @@ use serde::{Deserialize, Serialize};
 pub const MAGIC: [u8; 4] = *b"SZAG";
 
 /// The record's version.
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
+
+/// The version before, which [`Record::decode`] reads too.
+pub const VERSION_2: u16 = 2;
 
 /// The publishes that may be under way at once (the lead's Q11).
 pub const UNDER_WAY_MAX: usize = 8;
 
-/// The names given up that the record keeps: the newest 64. They are
-/// for M2.7's retention, which decides what becomes of their snapshots.
-pub const ABANDONED_KEPT: usize = 64;
+/// The names given up that a record of version 2 kept: the newest 64.
+pub const ABANDONED_KEPT_V2: usize = 64;
+
+/// The most names given up that the record holds (version 3). A name
+/// leaves once retention has done with what its give-up left, a day
+/// after by default; it is not dropped to make room. A publish is not
+/// begun where its give-up could find no room ([`Record::room`]).
+pub const ABANDONED_MAX: usize = 256;
+
+/// The most names published that the record keeps unretired: the bound
+/// of `--keep` (the lead's ruling on M2.7b-2).
+pub const KEEP_MAX: usize = 1000;
+
+/// The most names published that are being retired at once, or that
+/// retention stopped for a person ([`Retire`]).
+pub const RETIRING_MAX: usize = 64;
+
+/// The room the record keeps for names published above the newest
+/// `--keep` and the [`RETIRING_MAX`] being retired: the names that finish
+/// before a round marks them (the lead's ruling on decision 5 of #179's
+/// review: a slack of at least 64 above `--keep`, at its bound too).
+pub const PUBLISHED_SLACK: usize = 64;
+
+/// The most names published that the record holds.
+pub const PUBLISHED_MAX: usize = KEEP_MAX + RETIRING_MAX + PUBLISHED_SLACK;
+
+/// The most names whose destroy failed that the record holds
+/// ([`Record::stuck`]); past it the oldest is forgotten.
+pub const STUCK_MAX: usize = 64;
 
 /// The agent's marker in its directory of a volume ([module docs](self)).
 pub const MARKER: &str = "agent";
@@ -125,6 +165,64 @@ pub struct Record {
     pub under_way: Vec<Publish>,
     /// The names given up, oldest first.
     pub abandoned: Vec<Abandoned>,
+    /// The names published, oldest first (version 3).
+    pub published: Vec<Published>,
+    /// The names whose ref is retired, or that were given up, and whose
+    /// members' destroy failed, oldest first (version 3; the lead's
+    /// ruling on #179). They count for no room ([`Record::room`]).
+    pub stuck: Vec<Stuck>,
+}
+
+/// A name whose members' destroy failed after nothing else of it was
+/// left to retire: its ref retired (or never made, for a name given
+/// up) and its hold released. Retention tries the destroy again at each
+/// round; at most [`STUCK_MAX`] are kept, and past that the oldest is
+/// forgotten, its `@t` left for a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stuck {
+    /// The snapshot's name, `t`.
+    pub name: String,
+    /// Each member's `@<name>` and its GUID: what is destroyed.
+    pub members: Vec<Member>,
+    /// When its destroy first failed (the wall clock, in ms since 1970).
+    pub at_ms: u64,
+}
+
+/// A name published: `snap/<name>` named `commit` when the publish
+/// left those under way, and the members' `@<name>` it was taken as.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Published {
+    /// The snapshot's name, `t`.
+    pub name: String,
+    /// The commit `snap/<name>` names.
+    pub commit: [u8; 32],
+    /// `createtxg` of `pool@<name>`.
+    pub group: u64,
+    /// Each member's `@<name>` and its GUID: what retention destroys.
+    pub members: Vec<Member>,
+    /// When it was published (the wall clock, in ms since 1970).
+    pub at_ms: u64,
+    /// Where its retirement has come; `None` while it is kept.
+    pub retire: Option<Retire>,
+}
+
+/// How far the retirement of a name published has come. Recorded at
+/// each step before the next, so that a restart takes it up where it
+/// was; each step may be made again (a `retire` asked again answers
+/// `gone`, a member's `@<name>` destroyed already is not there).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Retire {
+    /// Past `--keep`: `snap/<name>` is to be retired, then the members'
+    /// `@<name>` destroyed.
+    Ref,
+    /// The daemon answered `retired` or `gone`: the members' `@<name>`
+    /// are to be destroyed, after which the name leaves the record.
+    Members,
+    /// The daemon answered `refused other`: `snap/<name>` names another
+    /// commit than this publish's. Stopped for a person: the local
+    /// snapshot is kept and no ref is touched (the lead's ruling ?2 on
+    /// M2.7b-2).
+    Other,
 }
 
 /// What the agent enrolled at its first publish: the pool on the volume
@@ -233,6 +331,16 @@ pub enum Phase {
         /// The commit `snap/<name>` names.
         commit: [u8; 32],
     },
+    /// Being given up (version 3): recorded before the give-up is told,
+    /// so that a kill between the two tells it again at the next run and
+    /// none is lost (D3 of #167's review), with what the give-up leaves
+    /// on the pool. The hold is released before.
+    Abandoning {
+        /// Why.
+        why: Why,
+        /// What it leaves on the pool.
+        left: Left,
+    },
 }
 
 /// What the snapshot is: what its manifest says of it.
@@ -266,6 +374,65 @@ pub struct Abandoned {
     pub why: Why,
     /// When (the wall clock, in ms since 1970).
     pub at_ms: u64,
+    /// What the give-up left on the pool (version 3).
+    pub left: Left,
+}
+
+/// What a give-up left on the pool: what retention destroys once the
+/// name is older than its bound (`--abandoned-keep-s`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Left {
+    /// No `pool@<name>` was there when it was given up, and the agent
+    /// takes none after: nothing to destroy.
+    Nothing,
+    /// The members' `@<name>` as the record took them, each with its
+    /// GUID: each is destroyed where its GUID still matches.
+    Members(Vec<Member>),
+    /// A `pool@<name>` may be there, and the record holds no member's
+    /// GUID (a take it could not adopt, or a record of version 2). The
+    /// agent destroys nothing of it, says so once, and at the bound
+    /// drops the name with a line for a person (the lead's ruling ?4 on
+    /// M2.7b-2).
+    Unknown,
+}
+
+/// A record of version 2 ([`VERSION_2`]), read and made version 3.
+#[derive(Deserialize)]
+struct RecordV2 {
+    volume: [u8; 16],
+    enrolled: Option<Enrolled>,
+    under_way: Vec<Publish>,
+    abandoned: Vec<AbandonedV2>,
+}
+
+/// A name given up, in version 2.
+#[derive(Deserialize)]
+struct AbandonedV2 {
+    name: String,
+    why: Why,
+    at_ms: u64,
+}
+
+impl From<RecordV2> for Record {
+    fn from(v2: RecordV2) -> Self {
+        Record {
+            volume: v2.volume,
+            enrolled: v2.enrolled,
+            under_way: v2.under_way,
+            abandoned: v2
+                .abandoned
+                .into_iter()
+                .map(|a| Abandoned {
+                    name: a.name,
+                    why: a.why,
+                    at_ms: a.at_ms,
+                    left: Left::Unknown,
+                })
+                .collect(),
+            published: Vec::new(),
+            stuck: Vec::new(),
+        }
+    }
 }
 
 /// Why a publish was given up (the plan, §3).
@@ -324,8 +491,8 @@ pub enum Corrupt {
     /// Another magic.
     #[error("the magic {0:?} is not SZAG")]
     Magic([u8; 4]),
-    /// Another version than [`VERSION`].
-    #[error("version {0}: this agent reads version {VERSION}")]
+    /// Another version than [`VERSION`] and [`VERSION_2`].
+    #[error("version {0}: this agent reads versions {VERSION_2} and {VERSION}")]
     Version(u16),
     /// Flags that are not zero.
     #[error("flags {0:#x}: none are defined")]
@@ -357,6 +524,8 @@ impl Record {
             enrolled: None,
             under_way: Vec::new(),
             abandoned: Vec::new(),
+            published: Vec::new(),
+            stuck: Vec::new(),
         }
     }
 
@@ -366,23 +535,83 @@ impl Record {
     }
 
     /// Give up the publish of `name`: it leaves those under way, and the
-    /// name is kept with `why` among the newest [`ABANDONED_KEPT`].
-    pub fn abandon(&mut self, name: &str, why: Why, at_ms: u64) {
+    /// name is kept with `why` and what it `left` until retention has
+    /// done with it. A record with no room for it ([`ABANDONED_MAX`])
+    /// breaks its rules and is not saved: [`Record::room`] keeps a
+    /// publish from being begun where that could come.
+    pub fn abandon(&mut self, name: &str, why: Why, at_ms: u64, left: Left) {
         self.under_way.retain(|p| p.name != name);
         self.abandoned.push(Abandoned {
             name: name.to_string(),
             why,
             at_ms,
+            left,
         });
-        let over = self.abandoned.len().saturating_sub(ABANDONED_KEPT);
-        self.abandoned.drain(..over);
+    }
+
+    /// The publish of `name`, done, leaves those under way and is kept
+    /// among the names published, at `at_ms`. Nothing where it is not
+    /// at [`Phase::Done`].
+    pub fn leave_published(&mut self, name: &str, at_ms: u64) {
+        let Some(at) = self.under_way.iter().position(|p| p.name == name) else {
+            return;
+        };
+        let Phase::Done { taken, commit } = &self.under_way[at].phase else {
+            return;
+        };
+        let published = Published {
+            name: name.to_string(),
+            commit: *commit,
+            group: taken.group,
+            members: taken.members.clone(),
+            at_ms,
+            retire: None,
+        };
+        self.under_way.remove(at);
+        self.published.push(published);
+    }
+
+    /// Whether a publish may be begun: each publish under way, and one
+    /// more, would find room among the names given up and among those
+    /// published, whichever way it ends. The names [`Record::stuck`]
+    /// count for none: a destroy that keeps failing (a clone of the
+    /// snapshot, a hold of another's) does not stop the publishes.
+    pub fn room(&self) -> bool {
+        let ending = self.under_way.len() + 1;
+        self.under_way.len() < UNDER_WAY_MAX
+            && self.abandoned.len() + ending <= ABANDONED_MAX
+            && self.published.len() + ending <= PUBLISHED_MAX
+    }
+
+    /// How many names given up stand between the record and its
+    /// [`Record::room`] where nothing else does: none where there is
+    /// room, or where the publishes under way or the names published
+    /// are short of it too. Retention retires so many of the oldest
+    /// early (the lead's ruling on M1 of #179's review).
+    pub fn abandoned_over(&self) -> usize {
+        let ending = self.under_way.len() + 1;
+        if self.under_way.len() >= UNDER_WAY_MAX || self.published.len() + ending > PUBLISHED_MAX {
+            return 0;
+        }
+        (self.abandoned.len() + ending).saturating_sub(ABANDONED_MAX)
+    }
+
+    /// Whether `name` is in the record: under way, given up, published
+    /// or stuck.
+    pub fn names(&self, name: &str) -> bool {
+        self.publish(name).is_some()
+            || self.abandoned.iter().any(|a| a.name == name)
+            || self.published.iter().any(|p| p.name == name)
+            || self.stuck.iter().any(|s| s.name == name)
     }
 
     /// Whether the record keeps its rules: at most [`UNDER_WAY_MAX`]
     /// under way, each with a name the protocol takes and given once, a
     /// snapshot with members and a manifest within the protocol's limit,
     /// no hold believed placed before the snapshot was taken, and at
-    /// most [`ABANDONED_KEPT`] names given up.
+    /// most [`ABANDONED_MAX`] names given up and [`PUBLISHED_MAX`]
+    /// published ([`RETIRING_MAX`] of them being retired), each published
+    /// once, with members, and not under way.
     pub fn check(&self) -> Result<(), Corrupt> {
         let rule = |why: String| Err(Corrupt::Rule(why));
         if self.under_way.len() > UNDER_WAY_MAX {
@@ -391,11 +620,70 @@ impl Record {
                 self.under_way.len()
             ));
         }
-        if self.abandoned.len() > ABANDONED_KEPT {
+        if self.abandoned.len() > ABANDONED_MAX {
             return rule(format!(
-                "{} names given up kept; at most {ABANDONED_KEPT}",
+                "{} names given up kept; at most {ABANDONED_MAX}",
                 self.abandoned.len()
             ));
+        }
+        if self.published.len() > PUBLISHED_MAX {
+            return rule(format!(
+                "{} names published kept; at most {PUBLISHED_MAX}",
+                self.published.len()
+            ));
+        }
+        let retiring = self.published.iter().filter(|p| p.retire.is_some()).count();
+        if retiring > RETIRING_MAX {
+            return rule(format!(
+                "{retiring} names published being retired; at most {RETIRING_MAX}"
+            ));
+        }
+        for (i, published) in self.published.iter().enumerate() {
+            let name = &published.name;
+            if !file_name(name) {
+                return rule(format!("`{name}` is not a name the agent gives"));
+            }
+            if self.published[..i].iter().any(|p| p.name == *name) {
+                return rule(format!("`{name}` is published twice"));
+            }
+            if self.publish(name).is_some() {
+                return rule(format!("`{name}` is published and under way"));
+            }
+            if published.members.is_empty() {
+                return rule(format!("`{name}` is published with no members"));
+            }
+        }
+        if self.stuck.len() > STUCK_MAX {
+            return rule(format!(
+                "{} names stuck kept; at most {STUCK_MAX}",
+                self.stuck.len()
+            ));
+        }
+        for (i, stuck) in self.stuck.iter().enumerate() {
+            let name = &stuck.name;
+            if !file_name(name) {
+                return rule(format!("`{name}` is not a name the agent gives"));
+            }
+            if self.stuck[..i].iter().any(|s| s.name == *name) {
+                return rule(format!("`{name}` is stuck twice"));
+            }
+            if self.publish(name).is_some()
+                || self.abandoned.iter().any(|a| a.name == *name)
+                || self.published.iter().any(|p| p.name == *name)
+            {
+                return rule(format!("`{name}` is stuck and kept otherwise too"));
+            }
+            if stuck.members.is_empty() {
+                return rule(format!("`{name}` is stuck with no members"));
+            }
+        }
+        for abandoned in &self.abandoned {
+            if matches!(&abandoned.left, Left::Members(m) if m.is_empty()) {
+                return rule(format!(
+                    "`{}` is given up leaving no members; it leaves nothing",
+                    abandoned.name
+                ));
+            }
         }
         for (i, publish) in self.under_way.iter().enumerate() {
             let name = &publish.name;
@@ -406,6 +694,9 @@ impl Record {
                 return rule(format!("`{name}` is under way twice"));
             }
             match publish.phase.taken() {
+                None if publish.held && matches!(publish.phase, Phase::Abandoning { .. }) => {
+                    return rule(format!("`{name}` is held while it is given up"));
+                }
                 None if publish.held => {
                     return rule(format!("`{name}` is held before it was taken"));
                 }
@@ -443,8 +734,9 @@ impl Record {
         if magic != MAGIC {
             return Err(Corrupt::Magic(magic));
         }
-        if field(4) != VERSION {
-            return Err(Corrupt::Version(field(4)));
+        let version = field(4);
+        if version != VERSION && version != VERSION_2 {
+            return Err(Corrupt::Version(version));
         }
         if field(6) != 0 {
             return Err(Corrupt::Flags(field(6)));
@@ -461,13 +753,31 @@ impl Record {
         if blake3::hash(&bytes[..HEAD + is]).as_bytes() != sum {
             return Err(Corrupt::Hash);
         }
-        let (record, left): (Record, &[u8]) =
-            postcard::take_from_bytes(body).map_err(|e| Corrupt::Body(e.to_string()))?;
+        let body_error = |e: postcard::Error| Corrupt::Body(e.to_string());
+        let (record, left): (Record, &[u8]) = if version == VERSION_2 {
+            let (v2, left): (RecordV2, &[u8]) =
+                postcard::take_from_bytes(body).map_err(body_error)?;
+            (v2.into(), left)
+        } else {
+            postcard::take_from_bytes(body).map_err(body_error)?
+        };
         if !left.is_empty() {
             return Err(Corrupt::Body(format!(
                 "{} bytes after the body",
                 left.len()
             )));
+        }
+        // Version 2 knew no phase of a give-up: one in its bytes is not a
+        // record that a version-2 agent wrote.
+        if version == VERSION_2
+            && record
+                .under_way
+                .iter()
+                .any(|p| matches!(p.phase, Phase::Abandoning { .. }))
+        {
+            return Err(Corrupt::Body(
+                "a phase of version 3 in a record of version 2".into(),
+            ));
         }
         record.check()?;
         Ok(record)
@@ -478,7 +788,7 @@ impl Phase {
     /// What was taken, from [`Phase::Taken`] on.
     pub fn taken(&self) -> Option<&Taken> {
         match self {
-            Phase::Intent => None,
+            Phase::Intent | Phase::Abandoning { .. } => None,
             Phase::Taken(taken) | Phase::Held(taken) => Some(taken),
             Phase::Asked { taken, .. } | Phase::Done { taken, .. } => Some(taken),
         }

@@ -404,7 +404,9 @@ fn check(ran: &Ran) -> Result<(), String> {
             | Report::Refused(_)
             | Report::HeldAway
             | Report::NotWhole(_)
-            | Report::Unreadable(_) => return Err(format!("{t} reported: {report:?}")),
+            | Report::Unreadable(_)
+            | Report::NotRetired(_)
+            | Report::NoGuids => return Err(format!("{t} reported: {report:?}")),
         }
     }
     // The other way: a publish recorded done with its snapshot gone is
@@ -488,6 +490,85 @@ fn a_publish_with_no_loss_is_published_in_each_mode() {
             "{mode:?}: {took} s, not {least} to {most} s"
         );
     }
+}
+
+/// The fake daemon retires as skyzfsd does: a retire that lands, or
+/// finds no `snap/T`, ends what it kept of the publish, so that its
+/// progress answers `unknown`; one refused `other` keeps it; a retire is
+/// refused `stopped` once the uploader has stopped (D5 and L3 of the
+/// next look at #175).
+///
+/// Mutants: the outcome kept after `retired`; `stopped` not refused.
+#[test]
+fn the_fake_daemon_retires_as_skyzfsd_does() {
+    let ran = run(Mode::Busy, Fault::None);
+    let world = ran.world.clone();
+    let (t, commit) = {
+        let w = world.borrow();
+        let (t, r) = w.refs.iter().next().expect("snap/t");
+        (t.clone(), r.commit)
+    };
+    let mut daemon = FakeDaemon(world.clone());
+    let mut ask = |request: Request| daemon.ask(&request, &[]).expect("an answer");
+    assert_eq!(ask(Request::Progress(t.clone())), Reply::Done(commit));
+    let other = ask(Request::Retire(skyzfs_control::Retire {
+        name: t.clone(),
+        commit: [0xee; 32],
+    }));
+    assert!(matches!(other, Reply::Refused(Code::Other, _)), "{other:?}");
+    assert_eq!(ask(Request::Progress(t.clone())), Reply::Done(commit));
+    let retire = Request::Retire(skyzfs_control::Retire {
+        name: t.clone(),
+        commit,
+    });
+    assert_eq!(ask(retire.clone()), Reply::Retired);
+    assert_eq!(ask(Request::Progress(t.clone())), Reply::Unknown);
+    assert_eq!(ask(retire.clone()), Reply::Gone);
+    world.borrow_mut().stop_uploader();
+    let mut daemon = FakeDaemon(world.clone());
+    let stopped = daemon.ask(&retire, &[]).expect("an answer");
+    assert!(
+        matches!(stopped, Reply::Refused(Code::Stopped, _)),
+        "{stopped:?}"
+    );
+}
+
+/// A retire of a name whose publish pends at the fake daemon is refused
+/// `asked`, as skyzfsd refuses it, and leaves the publish pending.
+#[test]
+fn the_fake_daemon_refuses_a_retire_while_the_publish_pends() {
+    let world = World::new(Mode::Idle);
+    let keep = MemKeep::default();
+    let replies = Rc::new(RefCell::new(Vec::new()));
+    let hook = {
+        let (world, replies) = (world.clone(), replies.clone());
+        move |point: Point, _: &str| {
+            if point == ASKED && replies.borrow().is_empty() {
+                let pending = world.borrow().daemon.pending();
+                for name in pending {
+                    let retire = Request::Retire(skyzfs_control::Retire {
+                        name: name.clone(),
+                        commit: [0xee; 32],
+                    });
+                    let reply = FakeDaemon(world.clone()).ask(&retire, &[]);
+                    let still = world.borrow().daemon.pending().contains(&name);
+                    replies.borrow_mut().push((reply, still));
+                }
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    let replies = replies.borrow();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    let (reply, still) = &replies[0];
+    assert!(
+        matches!(reply, Ok(Reply::Refused(Code::Asked, _))),
+        "{reply:?}"
+    );
+    assert!(still, "the publish no longer pends");
 }
 
 /// The agent's run with the daemon rebooted just after each of its first
@@ -1186,12 +1267,13 @@ fn a_refused_report_is_made_however_the_agent_stops_after_the_end() {
                 reports.contains(&(t.clone(), Report::Refused(skyzfs_control::Code::Rewound))),
                 "{back:?}, stopped at {stop}: {reports:?}"
             );
-            // Given up once, by one process or the other (a stop after
-            // the save leaves the outcome to the record alone).
+            // Given up and told at least once, by one process or the
+            // other, and twice only where the first stopped between the
+            // save at `Abandoning` and the one at `Abandon` (M2.7b-2).
             let mut outcomes = first.outcomes().to_vec();
             outcomes.extend(second.outcomes().iter().cloned());
             assert!(
-                outcomes.len() <= 1
+                (1..=2).contains(&outcomes.len())
                     && outcomes
                         .iter()
                         .all(|o| *o == (t.clone(), Outcome::Abandoned(why))),
@@ -2305,6 +2387,8 @@ struct NeverWhole {
     told: Vec<(String, Report)>,
     takes_ms: Vec<u64>,
     processes: usize,
+    /// The names given up, as the record holds them at the end.
+    abandoned: Vec<crate::record::Abandoned>,
 }
 
 /// The processes [`never_whole`] runs at most.
@@ -2372,6 +2456,7 @@ fn never_whole_in(
     }
     let takes_ms = takes_ms.borrow().clone();
     let told = told.borrow().clone();
+    let abandoned = agent(&world, &keep).record().abandoned.clone();
     NeverWhole {
         world,
         outcomes,
@@ -2379,6 +2464,7 @@ fn never_whole_in(
         told,
         takes_ms,
         processes,
+        abandoned,
     }
 }
 
@@ -2390,7 +2476,7 @@ fn never_whole_in(
 /// Mutants: no bound (the loop the review found), the bound off by one
 /// either way, no pause or a shorter one, the last take kept, no report
 /// or another dataset named, the failed checks not counted in the
-/// record.
+/// record, the give-up recorded as leaving a take unknown.
 #[test]
 fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
     let run = never_whole(|_, _, _| false);
@@ -2430,12 +2516,20 @@ fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
     let pool = world.pool.as_ref().expect("the pool");
     assert!(pool.snaps.is_empty(), "{:?}", pool.snaps.keys());
     assert!(world.refs.is_empty() && holds(&world).is_empty());
+    // The take destroyed, the give-up leaves nothing (L5 of the review
+    // of #179): retention drops it with no `forgotten` line.
+    let [given_up] = run.abandoned.as_slice() else {
+        panic!("{:?}", run.abandoned);
+    };
+    assert_eq!(given_up.left, crate::record::Left::Nothing);
 }
 
 /// The give-up's report reaches the sink at least once, whatever the
 /// stops about the give-up: after the third failed check is recorded,
 /// about the destroy of its take, about the give-up's record and about
-/// the manifest's file removed (T12 of #153's review). Both kinds of
+/// the manifest's file removed (T12 of #153's review), and its outcome
+/// line once, or twice where the stop fell between the give-up's two
+/// saves (M2.7b-2), never lost. Both kinds of
 /// failed check: a take that is not whole is judged again by the next
 /// process, and one that is not as read before is destroyed by it
 /// unjudged, so that the give-up is made with no take
@@ -2448,6 +2542,8 @@ fn a_give_up_is_told_at_least_once_whatever_the_stop() {
     let about = [
         at(Effect::Destroy, false),
         at(Effect::Destroy, true),
+        at(Effect::Abandoning, false),
+        at(Effect::Abandoning, true),
         at(Effect::Abandon, false),
         at(Effect::Abandon, true),
         at(Effect::Unlink, false),
@@ -2495,16 +2591,19 @@ fn a_give_up_is_told_at_least_once_whatever_the_stop() {
             world.log.join("\n")
         );
         assert_eq!(run.processes, stops.len() + 1, "{case}");
-        // A stop after the give-up's record leaves no outcome to print:
-        // the next process finds the publish gone.
-        let recorded = stops
-            .last()
-            .is_some_and(|&p| p >= at(Effect::Abandon, true));
-        match run.outcomes.as_slice() {
-            [(_, outcome)] => assert_eq!(*outcome, Outcome::Abandoned(Why::NotWhole), "{case}"),
-            [] => assert!(recorded, "{case}"),
-            _ => panic!("{case}"),
-        }
+        // The give-up is told after it is recorded at `Abandoning` and
+        // before it moves to the names given up (M2.7b-2): told once,
+        // and twice only where a process stopped between the two, whose
+        // successor tells it again from the record. Never lost.
+        let twice = stops.last() == Some(&at(Effect::Abandon, false));
+        let want = if twice { 2 } else { 1 };
+        assert_eq!(run.outcomes.len(), want, "{case}");
+        assert!(
+            run.outcomes
+                .iter()
+                .all(|(_, o)| *o == Outcome::Abandoned(Why::NotWhole)),
+            "{case}"
+        );
         let [(_, Report::NotWhole(_)), ..] = run.told.as_slice() else {
             panic!("{case}");
         };
@@ -3350,10 +3449,17 @@ fn every_effect_is_in_the_list_of_all() {
             Effect::Done => 21,
             Effect::Sweep => 22,
             Effect::Forget => 23,
-            Effect::Abandon => 24,
-            Effect::Unlink => 25,
-            Effect::Stop => 26,
-            Effect::Recover => 27,
+            Effect::Abandoning => 24,
+            Effect::Abandon => 25,
+            Effect::Unlink => 26,
+            Effect::Retiring => 27,
+            Effect::Retire => 28,
+            Effect::Retired => 29,
+            Effect::LookGivenUp => 30,
+            Effect::DestroyMember => 31,
+            Effect::Retain => 32,
+            Effect::Stop => 33,
+            Effect::Recover => 34,
         }
     }
     for (at, effect) in Effect::ALL.into_iter().enumerate() {
@@ -4447,6 +4553,9 @@ impl Zfs for ThroughCli {
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         self.0.destroy(pool, t)
     }
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        self.0.destroy_one(pool, dataset, t)
+    }
     fn members(
         &mut self,
         pool: &str,
@@ -4588,6 +4697,9 @@ impl Zfs for DestroyedBetween {
     }
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         self.zfs.destroy(pool, t)
+    }
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        self.zfs.destroy_one(pool, dataset, t)
     }
     fn members(
         &mut self,
@@ -4812,6 +4924,53 @@ mod past {
         assert_eq!(syncs(&world), 3);
         // Nothing was written in the record's directory.
         assert!(keep.0.borrow().record.is_none());
+    }
+
+    /// A cut that opens as itself while still under the abandoned top
+    /// (4 KiB ring slots) is not clear: the agent syncs on until the
+    /// newest cut is above the daemon's rewind mark, so that no later cut
+    /// moves the mark (the lead's ruling in M2.7b-2). Mutant: "opens as
+    /// itself" alone (the syncs stop at the first such cut, at the mark).
+    #[test]
+    fn a_cut_that_opens_as_itself_at_the_mark_is_not_clear() {
+        let world = rewound(9);
+        {
+            let mut w = world.borrow_mut();
+            let pool = w.pool.as_mut().expect("the pool");
+            pool.itself_under_top = 4;
+            let top = pool.abandoned_top;
+            // The daemon has seen the abandoned groups (the volume's
+            // rings show them).
+            w.highest_written = w.highest_written.max(top);
+        }
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true).expect("synced");
+        let reply = cuts(&world);
+        let (_, itself) = reply.newest.expect("a cut");
+        assert!(itself, "{past:?}");
+        assert!(reply.count > reply.rewound, "{reply:?}");
+        // Two groups a sync, from the import's group G: the first cut
+        // that opens as itself (G + 6, over G + 9 - 4) comes with the
+        // third sync and is at the mark, as is G + 8; G + 10, of the
+        // fifth, is the first above the abandoned top G + 9.
+        assert_eq!(past, Past::Clear { synced: 5 });
+        // A publish asked now is not refused `rewound`: the next cut is
+        // above every group seen, and the mark stays.
+        world.borrow_mut().sync("after");
+        assert_eq!(cuts(&world).rewound, reply.rewound);
+    }
+
+    /// The daemon's answer to `cuts`.
+    fn cuts(world: &Rc<RefCell<World>>) -> skyzfs_control::CutsReply {
+        let w = world.borrow();
+        skyzfs_control::CutsReply {
+            attachment: w.daemon.attachment,
+            state: Some(w.daemon.state),
+            count: w.daemon.cuts.last().map_or(0, |c| c.number),
+            newest: w.daemon.cuts.last().map(|c| (c.group, c.itself)),
+            rewound: w.daemon.rewound,
+        }
     }
 
     /// With no cut, or a newest cut that opens as itself, or a daemon
@@ -5200,4 +5359,81 @@ fn an_end_before_a_pass_names_what_is_under_way() {
         other => panic!("{other:?}"),
     }
     assert_eq!(world.borrow().calls.len(), before);
+}
+
+/// What a person's give-up at [`Phase::Intent`] leaves, by whether
+/// `pool@<t>` was seen (the lead's ruling ?4 on M2.7b-2; E3 and E4b of
+/// the review of #179): a stop before the take leaves nothing, and one
+/// after the take landed, before its record, leaves a take whose
+/// members' GUIDs the record does not hold.
+///
+/// Mutants: a take seen recorded as nothing (its `@t`s never told to a
+/// person); no take recorded as unknown (a `forgotten` line for nothing).
+#[test]
+fn a_give_up_at_intent_leaves_what_was_seen() {
+    for (after, left) in [
+        (false, crate::record::Left::Nothing),
+        (true, crate::record::Left::Unknown),
+    ] {
+        let world = World::new(Mode::Busy);
+        let keep = MemKeep::default();
+        let stop = at(Effect::Take, after);
+        let mut first =
+            agent(&world, &keep).with_points(Box::new(move |p: Point, _: &str| p == stop));
+        let begun = first.begin();
+        let t = match begun {
+            Ok(t) => {
+                assert!(matches!(first.settle(LIMIT), Err(Error::Stopped)));
+                t
+            }
+            Err(Error::Stopped) => first.record().under_way[0].name.clone(),
+            Err(e) => panic!("{e:?}"),
+        };
+        drop(first);
+        let seen = world
+            .borrow()
+            .pool
+            .as_ref()
+            .is_some_and(|p| p.snaps.contains_key(&format!("{POOL}@{t}")));
+        assert_eq!(seen, after, "the take landed");
+        let mut again = agent(&world, &keep);
+        assert!(
+            matches!(again.record().under_way[0].phase, Phase::Intent),
+            "{:?}",
+            again.record().under_way[0].phase
+        );
+        again.recover(&t, Choice::GiveUp).expect("recovered");
+        again.settle(LIMIT).expect("settled");
+        let given_up = again.record().abandoned.iter().find(|a| a.name == t);
+        assert_eq!(given_up.map(|a| &a.left), Some(&left), "after={after}");
+    }
+}
+
+/// [`Record::room`] bounds a begin by the names given up and published
+/// as well as by those under way: with [`ABANDONED_MAX`] - 1 given up,
+/// one publish under way leaves no room for another (E8 of the review of
+/// #179). Mutant: the begin bounded by the publishes under way alone.
+#[test]
+fn a_begin_is_refused_when_the_give_ups_leave_no_room() {
+    use crate::record::{Abandoned, Left, ABANDONED_MAX};
+
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let mut a = agent(&world, &keep);
+    a.begin().expect("begun");
+    drop(a);
+    let bytes = keep.0.borrow().record.clone().expect("a record");
+    let mut record = Record::decode(&bytes).expect("decoded");
+    for i in 0..ABANDONED_MAX - 1 {
+        record.abandoned.push(Abandoned {
+            name: format!("skz-20261001T{i:06}Z"),
+            why: Why::ManifestLost,
+            at_ms: 1,
+            left: Left::Nothing,
+        });
+    }
+    keep.0.borrow_mut().record = Some(record.encode().expect("encoded"));
+    let mut a = agent(&world, &keep);
+    assert_eq!(a.record().under_way.len(), 1);
+    assert!(matches!(a.begin(), Err(Error::Full)));
 }

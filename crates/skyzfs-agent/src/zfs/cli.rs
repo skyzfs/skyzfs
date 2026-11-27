@@ -69,7 +69,8 @@
 //! pool that does not exist: they give [`ZfsError::NoSnapshot`], not
 //! [`ZfsError::NoPool`] (recorded on both images).
 //! A command past its limit is killed and not waited for ([`Host`]), and
-//! gives [`ZfsError::Other`].
+//! gives [`ZfsError::NotRun`], as does one the host does not start: it
+//! is not ZFS's answer, and what the command did is not known.
 //!
 //! [`Zfs::reopen`] runs `zpool reopen POOL` within [`Limits::reopen`];
 //! a status other than 0 is [`ZfsError::Other`] with its message, and no
@@ -743,6 +744,10 @@ impl<H: Host> ZfsCli<H> {
                 "{why} (on a limit that did not grow with the snapshots, since \
                  their count failed: {count})"
             )),
+            (ZfsError::NotRun(why), Some(count)) => ZfsError::NotRun(format!(
+                "{why} (on a limit that did not grow with the snapshots, since \
+                 their count failed: {count})"
+            )),
             (e, _) => e,
         }
     }
@@ -886,7 +891,7 @@ impl<H: Host> ZfsCli<H> {
     ) -> Result<Output, ZfsError> {
         self.host
             .run(program, args, stdin, limit)
-            .map_err(|e| ZfsError::Other(format!("{}: {e}", command(program, args))))
+            .map_err(|e| ZfsError::NotRun(format!("{}: {e}", command(program, args))))
     }
 
     /// Run `program` with `args`, which act on `pool`, within `limit`;
@@ -1073,8 +1078,8 @@ impl<H: Host> ZfsCli<H> {
         let output = self
             .exec("zfs", &args, &[], self.change_limit())
             .map_err(|e| match e {
-                ZfsError::Other(why) => {
-                    ZfsError::Other(format!("{snapshot} may not have been destroyed: {why}"))
+                ZfsError::NotRun(why) => {
+                    ZfsError::NotRun(format!("{snapshot} may not have been destroyed: {why}"))
                 }
                 e => e,
             })?;
@@ -1515,6 +1520,37 @@ impl<H: Host> Zfs for ZfsCli<H> {
         self.destroy_r(pool, t)
     }
 
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        let snapshot = format!("{dataset}@{t}");
+        let under = dataset == pool
+            || dataset
+                .strip_prefix(pool)
+                .is_some_and(|rest| rest.starts_with('/'));
+        if !skyzfs_control::valid_name(t) || !under || dataset.contains('@') {
+            return Err(ZfsError::Other(format!(
+                "{snapshot} was not destroyed: not a snapshot of pool {pool} that the agent names"
+            )));
+        }
+        let args = ["destroy", snapshot.as_str()];
+        // As `destroy -r`: killed at its limit, the ioctl may finish in
+        // its own time.
+        let output = self
+            .exec("zfs", &args, &[], self.change_limit())
+            .map_err(|e| match e {
+                ZfsError::NotRun(why) => {
+                    ZfsError::NotRun(format!("{snapshot} may not have been destroyed: {why}"))
+                }
+                e => e,
+            })?;
+        if output.code == Some(0) {
+            return Ok(());
+        }
+        match self.failed("zfs", &args, &output, true, pool) {
+            ZfsError::NoSnapshot => Ok(()),
+            e => Err(e),
+        }
+    }
+
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<Member>>, ZfsError> {
         let returned = self.again(|zfs| {
             let limit = zfs.read_limit();
@@ -1637,7 +1673,13 @@ impl<H: Host> Zfs for ZfsCli<H> {
 
     fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
         let args = ["reopen", pool];
-        let output = self.exec("zpool", &args, &[], self.limits.reopen)?;
+        // As the step's own: commands of retention or a publish held in
+        // the kernel do not keep it from running (the lead's ruling on M2
+        // of #179's review; [`Host::run_step`]).
+        let output = self
+            .host
+            .run_step("zpool", &args, &[], self.limits.reopen)
+            .map_err(|e| ZfsError::NotRun(format!("{}: {e}", command("zpool", &args))))?;
         if output.code == Some(0) {
             return Ok(());
         }
