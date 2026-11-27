@@ -1,0 +1,29 @@
+tree 895b18dd3b4d5c93839f3ea73b4158ffb3383535
+rustfmt rc=1
+clippy upload rc=0
+clippy skyzfsd test-hooks rc=0
+test upload review_ rc=0
+test uploader::tests::review_s5_a_retire_that_gave_up_is_worded_as_a_retire ... ok
+test publish::tests::review_s6_a_name_published_again_after_its_retire_stays_in_view ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 0.00s
+test review_s7_a_retire_that_failed_leaves_the_publish_done ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 68 filtered out; finished in 0.02s
+test skyzfsd review_ rc=0
+test control::tests::uploader::review_s4_a_request_the_uploader_dropped_reads_ended_with_advice ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.01s
+# the plants they are meant for, with S4-S6 in:
+conflict-text-generic	KILLED	rc=101	46s	uploader::tests::review_s5_a_retire_that_gave_up_is_worded_as_a_retire
+conflict-text-noprefix	BAD	crates/skyzfs-upload/src/uploader.rs: matches=2	
+retired-no-order	KILLED	rc=101	47s	publish::tests::review_s6_a_name_published_again_after_its_retire_stays_in_view
+cleared-on-error	KILLED	rc=101	51s	review_s7_a_retire_that_failed_leaves_the_publish_done
+ended-text	KILLED	rc=101	42s	control::tests::uploader::review_s4_a_request_the_uploader_dropped_reads_ended_with_advice
+ bins/skyzfsd/src/control/tests.rs         | 24 ++++++++++++++++++++++
+ crates/skyzfs-upload/src/publish/tests.rs | 25 +++++++++++++++++++++++
+ crates/skyzfs-upload/src/uploader.rs      | 21 ++++++++++++++++++++
+ crates/skyzfs-upload/tests/uploader.rs    | 33 +++++++++++++++++++++++++++++++
+ 4 files changed, 103 insertions(+)
+scratch-done
+# second pass, S4 as formatted:
+rustfmt rc=0
+conflict-text-noprefix-src	KILLED	rc=101	25s	uploader::tests::review_s5_a_retire_that_gave_up_is_worded_as_a_retire
+scratch2-done

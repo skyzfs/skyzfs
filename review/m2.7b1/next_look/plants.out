@@ -1,0 +1,22 @@
+tree 895b18dd3b4d5c93839f3ea73b4158ffb3383535
+base-up rc=0
+base-d rc=0
+d4-kept	KILLED	rc=101	27s	a_retire_ends_what_was_kept_of_the_publish
+d4-at-other	KILLED	rc=101	32s	a_retire_ends_what_was_kept_of_the_publish
+split-txn	KILLED	rc=101	52s	a_retire_that_lands_unheard_deleted_the_ref_and_its_row_together
+store-as-stopped	KILLED	rc=101	46s	a_retire_that_object_storage_fails_is_refused_store_and_can_be_asked_again
+doubled-prefix-channel	KILLED	rc=101	31s	control::tests::uploader::each_request_goes_to_the_uploader_and_its_answer_back
+doubled-prefix-uploader	KILLED	rc=101	37s	a_retire_that_object_storage_fails_is_refused_store_and_can_be_asked_again
+drop-at-make	KILLED	rc=101	50s	a_retire_asked_before_the_lease_is_held_is_answered_once_it_is
+conflict-text-generic	SURVIVED	rc=0	52s	
+conflict-text-noprefix	SURVIVED	rc=0	29s	
+retired-noop	KILLED	rc=101	43s	a_retire_ends_what_was_kept_of_the_publish
+retired-no-order	SURVIVED	rc=0	49s	
+retired-pending-too	SURVIVED	rc=0	47s	
+retired-only	KILLED	rc=101	42s	a_retire_ends_what_was_kept_of_the_publish
+gone-only	KILLED	rc=101	49s	a_retire_ends_what_was_kept_of_the_publish
+cleared-on-error	SURVIVED	rc=0	51s	
+ended-text	SURVIVED	rc=0	42s	
+retire-publish-advice	SURVIVED	rc=0	40s	
+store-reply-bare	KILLED	rc=101	40s	control::tests::uploader::each_request_goes_to_the_uploader_and_its_answer_back
+plants-done

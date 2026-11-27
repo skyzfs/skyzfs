@@ -1,0 +1,328 @@
+[
+ {
+  "id": "d4-kept",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "                self.publishing.retired(name);\n",
+    "                let _ = name;\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "d4-at-other",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "Ok(crate::remote::Retired::Other(_)) => {}",
+    "Ok(crate::remote::Retired::Other(_)) => self.publishing.retired(name),"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "split-txn",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/remote.rs",
+    "                RefOp::MetaDelete {\n                    key: snap_row_key(name),\n                },\n            ];\n            match self.refs.transact(self.vol, ops).await? {",
+    "            ];\n            let row = vec![RefOp::MetaDelete { key: snap_row_key(name) }];\n            let first = self.refs.transact(self.vol, ops).await?;\n            if first == TxnOutcome::Committed {\n                self.refs.transact(self.vol, row).await?;\n            }\n            match first {"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "store-as-stopped",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/uploader.rs",
+    "let _ = ask.reply.send(Err(RetireRefused::Store(retire_failed(&e))));",
+    "let _ = (ask.reply.send(Err(RetireRefused::Stopped)), e);"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "doubled-prefix-channel",
+  "edits": [
+   [
+    "bins/skyzfsd/src/control.rs",
+    "format!(\"{e}; the retire may have landed: ask again\")",
+    "format!(\"object storage: {e}; the retire may have landed: ask again\")"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ]
+ },
+ {
+  "id": "doubled-prefix-uploader",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/uploader.rs",
+    "        other => other.to_string(),\n",
+    "        other => format!(\"object storage: {other}\"),\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "drop-at-make",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/uploader.rs",
+    "                        .with_publishing(publishing),\n                );\n",
+    "                        .with_publishing(publishing),\n                );\n                self.retires.clear();\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "conflict-text-generic",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/uploader.rs",
+    "        RemoteError::Conflict => format!(",
+    "        RemoteError::Conflict if false => format!("
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "conflict-text-noprefix",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/uploader.rs",
+    "\"object storage: snap/T moved under each of {} tries\"",
+    "\"snap/T moved under each of {} tries\""
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "retired-noop",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/publish.rs",
+    "        if self.outcomes.remove(name).is_some() {\n            self.order.retain(|kept| kept != name);\n        }\n    }\n\n    /// End each publish whose time is up",
+    "        let _ = name;\n    }\n\n    /// End each publish whose time is up"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "retired-no-order",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/publish.rs",
+    "        if self.outcomes.remove(name).is_some() {\n            self.order.retain(|kept| kept != name);\n        }\n    }\n\n    /// End each publish whose time is up",
+    "        self.outcomes.remove(name);\n    }\n\n    /// End each publish whose time is up"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "retired-pending-too",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/publish.rs",
+    "        if self.outcomes.remove(name).is_some() {\n            self.order.retain(|kept| kept != name);\n        }\n    }\n\n    /// End each publish whose time is up",
+    "        self.pending.retain(|p| p.request.name != name);\n        if self.outcomes.remove(name).is_some() {\n            self.order.retain(|kept| kept != name);\n        }\n    }\n\n    /// End each publish whose time is up"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "retired-only",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "Ok(crate::remote::Retired::Retired | crate::remote::Retired::Gone) => {",
+    "Ok(crate::remote::Retired::Retired) => {"
+   ],
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "Ok(crate::remote::Retired::Other(_)) => {}",
+    "Ok(_) => {}"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "gone-only",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "Ok(crate::remote::Retired::Retired | crate::remote::Retired::Gone) => {",
+    "Ok(crate::remote::Retired::Gone) => {"
+   ],
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "Ok(crate::remote::Retired::Other(_)) => {}",
+    "Ok(_) => {}"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "cleared-on-error",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/driver.rs",
+    "            Err(e) => {\n                self.figures.errors += 1;",
+    "            Err(e) => {\n                self.publishing.retired(name);\n                self.figures.errors += 1;"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ },
+ {
+  "id": "ended-text",
+  "edits": [
+   [
+    "bins/skyzfsd/src/control/handler.rs",
+    "        Some(Err(_)) => Err(Reply::Refused(\n            Code::Ended,\n            format!(\"the uploader has ended; {again}\"),\n        )),",
+    "        Some(Err(_)) => Err(ended()),"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ]
+ },
+ {
+  "id": "retire-publish-advice",
+  "edits": [
+   [
+    "bins/skyzfsd/src/control/handler.rs",
+    "retired_reply(&wait(waiter, rx, RETIRE_AGAIN)?)",
+    "retired_reply(&wait(waiter, rx, PUBLISH_AGAIN)?)"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ]
+ },
+ {
+  "id": "store-reply-bare",
+  "edits": [
+   [
+    "bins/skyzfsd/src/control.rs",
+    "format!(\"{e}; the retire may have landed: ask again\")",
+    "e.clone()"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib"
+  ]
+ },
+ {
+  "id": "conflict-text-noprefix-src",
+  "edits": [
+   [
+    "crates/skyzfs-upload/src/uploader.rs",
+    "        RemoteError::Conflict => format!(\n            \"object storage: snap/T moved under each of {} tries\"",
+    "        RemoteError::Conflict => format!(\n            \"snap/T moved under each of {} tries\""
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload"
+  ]
+ }
+]
