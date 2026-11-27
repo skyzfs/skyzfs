@@ -6,7 +6,7 @@
 # loses the agent, the daemon or both at each step of a publish; arun
 # drives `skyzfs-agent run`. Sourced by cut-record.sh, which calls the
 # courses by name (rec_aplain, rec_adaemon, rec_arare, rec_arun,
-# rec_afail);
+# rec_afail, rec_aretain);
 # agent_check.py (their CUT_CHECK) judges what
 # each case left, and node B verifies every snapshot published.
 #
@@ -157,6 +157,9 @@
 #   R-corrupt and R-volume (runbad), R-rewind (runrewind).
 # - afail (jobs f and fz): a volume that fails while `run` serves
 #   it (M2.7c), cases U and W; below, at rec_afail.
+# - aretain (job rt): retention (M2.7b-2), cases K, S, X-retire,
+#   X-retain, X-destroy, B, A-old, A-nothing and A-members; below, at
+#   rec_aretain.
 #
 # A stall (eight asks with no cut counted, then given up) is left to the
 # agent's fakes: on a real daemon a stall needs a cut that is not
@@ -1338,4 +1341,214 @@ rec_afail() {
     fcase U unknown
     fcase W wait
     afail_end
+}
+
+# The retention course (aretain, part rt; M2.7b-2, #179): `skyzfs-agent
+# run` keeps the newest --keep names published and retires the older
+# ones (`retire` asked of the daemon, then each member's @t of the GUID
+# recorded destroyed, children first), and a name given up is kept for
+# --abandoned-keep-s and then destroyed (left=members), dropped
+# (left=nothing) or forgotten. The pool has three children under its
+# root (c1, c1/g, c2, rt_datasets), so that a name has four members.
+# Each case has its own agent directory and runs at --every-s 10; its
+# files are in DIR/cases/ID, as the other courses', and besides:
+#
+# - publish.{out,err,rc} and, where the case starts a second run,
+#   run2.{out,err,rc} (or run.* after a give-up), with LABEL.rounds.tsv,
+#   LABEL.term-at and LABEL.ended-at (run_rounds_then_term);
+# - status-before.txt, status-after.txt: the daemon's status around the
+#   case (its retires counted: publish_retired, publish_retire_gone,
+#   publish_retire_other);
+# - snaps-after.txt: `name guid` of every snapshot of the pool after the
+#   case; record-after.{txt,err,rc}: the record's dump after it;
+# - row-NAME.txt: node B's snap-row of each name the case's runs named
+#   (printed.txt);
+# - holds.txt, holds-released.txt: as asettle's.
+#
+# The cases:
+# - K (keep): `run --keep 2`, seven rounds or more, then SIGTERM. Between
+#   rounds 1 and 2 the rig makes two snapshots under the first name t1
+#   that are not the agent's (others.tsv: what, snapshot, the GUID before
+#   and after): POOL/late@t1 on a dataset created after t1 was taken, and
+#   POOL/c2@t1 destroyed and taken again by the rig (a person's snapshot
+#   under the name); others.rounds is the round lines printed by then.
+# - S (stuck): `run --keep 1`; after round 1 the rig holds POOL/c1@t1
+#   (tag skz-rig; held.rounds), so that t1's destroy fails at c1 once its
+#   ref is retired (round 3: a round retires before it settles, so t2
+#   counts from round 3 on); after round 4, in which t2 is retired while
+#   t1 is still stuck, the record is dumped (stuck-dump.*), the
+#   snapshots listed (stuck-snaps.txt) and node B asked (stuck-row.txt);
+#   then the hold is released (released.rounds) and the run goes on to
+#   round 7.
+# - X-retire, X-retain, X-destroy (retkill): `run --keep 1` killed at
+#   retire:after:1, retain:before:1 or destroy-member:after:1 (round 3's
+#   retire of t1); killed-snaps.txt after the kill; then run2, two
+#   rounds, then SIGTERM.
+# - B (backlog): `run --keep 60`, ten rounds, SIGTERM; then run2 `--keep
+#   1`, three rounds: nine names or more to retire at once, at most
+#   eight a round.
+# - A-old (aold): the store frozen; `run --age-max-s 8
+#   --abandoned-keep-s 5`: the store thaws after round 1, round 1's
+#   publish is given up as too old in the round after (given-up.* dumped
+#   once its `abandoned` line is out), four rounds.
+# - A-nothing, A-members (aperson): `publish` killed at intent:after:1
+#   or taken:after:1, then `recover --name T --give-up` (giveup.*,
+#   given-up.*), then `run --abandoned-keep-s 5` (run.*), three rounds.
+#
+# agent_retain_check.py judges the course.
+RIG_TAG=skz-rig
+RIG_HOLD=""
+rt_datasets() {
+    if ! { zfs create "$POOL/c1" && zfs create "$POOL/c1/g" && zfs create "$POOL/c2"; }; then
+        rig_error "zfs create of $POOL's children failed"
+    fi
+}
+# LABEL: every snapshot of the pool, `name guid`, in CDIR/LABEL.txt.
+rt_snaps() {
+    zfs list -H -p -t snapshot -o name,guid -r "$POOL" > "$CDIR/$1.txt" 2> "$CDIR/$1.err" \
+        || rig_error "zfs list of $POOL's snapshots failed: $(tail -n 2 "$CDIR/$1.err")"
+}
+# LABEL: the daemon's status in CDIR/LABEL.txt.
+rt_status() {
+    timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$RUN" > "$CDIR/$1.txt" 2>&1 \
+        || rig_error "skyzfsd status failed: $(tail -n 2 "$CDIR/$1.txt")"
+}
+# LABEL: the first name CDIR/LABEL.out says published.
+rt_first() { awk '$1 ~ /^snap\// { sub(/^snap\//, "", $1); print $1; exit }' "$CDIR/$1.out" 2>/dev/null; }
+rt_rounds() { grep -c '^round ' "$CDIR/$1.out" 2>/dev/null || true; }
+# ID SCENARIO [KILL]: one case of the retention course.
+rcase() {
+    local hooks=(--trace-points "$RDIR/cases/$1/trace.tsv")
+    CDIR=$RDIR/cases/$1; ADIR=$CDIR/agent; SCEN=$2; KILL=${3:-}
+    rm -rf "${CDIR:?}"; mkdir -p "$ADIR"
+    [ -z "$KILL" ] || hooks+=(--kill-at "$KILL")
+    rt_status status-before
+    "ret_$SCEN" "${hooks[@]}"
+    recover
+    rt_after
+    CDIR=""
+}
+# After a case: the rig's own hold let go, then what the check reads.
+rt_after() {
+    local n rc
+    if [ -n "$RIG_HOLD" ]; then
+        zfs release "$RIG_TAG" "$RIG_HOLD" || rig_error "zfs release $RIG_TAG $RIG_HOLD failed"
+        echo "the rig's hold on $RIG_HOLD released" >> "$CDIR/recovered.txt"
+        RIG_HOLD=""
+    fi
+    adump record-after
+    rt_snaps snaps-after
+    rt_status status-after
+    { cat "$CDIR"/*.out 2>/dev/null | awk '$1 ~ /^snap\// { sub(/^snap\//, "", $1); print $1 } $1 == "abandoned" { print $2 }'
+      [ ! -s "$CDIR/names.txt" ] || grep -vx -- - "$CDIR/names.txt"; } | sort -u > "$CDIR/printed.txt"
+    while read -r n; do snaprow "$n" "row-$n.txt" || true; done < "$CDIR/printed.txt"
+    zfs list -H -t snapshot -o name -r "$POOL" | xargs -r zfs holds -H > "$CDIR/holds.txt" 2> "$CDIR/holds.err" \
+        || rig_error "zfs holds failed: $(tail -n 2 "$CDIR/holds.err")"
+    : > "$CDIR/holds-released.txt"
+    awk -F '\t' -v tag="$HOLD_TAG" '$2 == tag { print $1 }' "$CDIR/holds.txt" | while read -r n; do
+        zfs release "$HOLD_TAG" "$n" && echo "$n" >> "$CDIR/holds-released.txt"
+    done
+    rc=$(cat "$CDIR/publish.rc" 2>/dev/null || echo -)
+    printf '%s\t%s\t%s\t%s\t-\n' "$(basename "$CDIR")" "$SCEN" "${KILL:--}" "$rc" >> "$RDIR/cases.tsv"
+    log "$NAME: case $(basename "$CDIR") ($SCEN${KILL:+, killed at $KILL}): first run $rc"
+}
+# K: --keep 2, and two snapshots under t1 that are not the agent's.
+ret_keep() {
+    local t1 g0
+    abg publish run --every-s "$RUN_EVERY" --keep 2 "$@"
+    if ! await_rounds publish 1 120 || ! t1=$(rt_first publish) || [ -z "$t1" ]; then
+        case_error "round 1 published no name: $(tail -n 2 "$CDIR/publish.err")"
+        return 0
+    fi
+    g0=$(zfs get -Hp -o value guid "$POOL/c2@$t1")
+    if ! { zfs create "$POOL/late" && zfs snapshot "$POOL/late@$t1" \
+        && zfs destroy "$POOL/c2@$t1" && zfs snapshot "$POOL/c2@$t1"; }; then
+        rig_error "the snapshots under $t1 that are not the agent's were not made"
+    fi
+    printf 'late\t%s\t-\t%s\n' "$POOL/late@$t1" "$(zfs get -Hp -o value guid "$POOL/late@$t1")" > "$CDIR/others.tsv"
+    printf 'remade\t%s\t%s\t%s\n' "$POOL/c2@$t1" "$g0" "$(zfs get -Hp -o value guid "$POOL/c2@$t1")" >> "$CDIR/others.tsv"
+    rt_rounds publish > "$CDIR/others.rounds"
+    run_rounds_then_term publish 7
+}
+# S: t1's destroy fails at c1, held by the rig, until round 4 is over.
+ret_stuck() {
+    local t1
+    abg publish run --every-s "$RUN_EVERY" --keep 1 "$@"
+    if ! await_rounds publish 1 120 || ! t1=$(rt_first publish) || [ -z "$t1" ]; then
+        case_error "round 1 published no name: $(tail -n 2 "$CDIR/publish.err")"
+        return 0
+    fi
+    zfs hold "$RIG_TAG" "$POOL/c1@$t1" || rig_error "zfs hold $RIG_TAG $POOL/c1@$t1 failed"
+    RIG_HOLD=$POOL/c1@$t1
+    rt_rounds publish > "$CDIR/held.rounds"
+    if ! await_rounds publish 4 240; then
+        verdict rounds "the run printed $(rt_rounds publish) round lines, not 4: $(tail -n 2 "$CDIR/publish.err")"
+        return 0
+    fi
+    adump stuck-dump
+    rt_snaps stuck-snaps
+    snaprow "$t1" stuck-row.txt || true
+    zfs release "$RIG_TAG" "$RIG_HOLD" || rig_error "zfs release $RIG_TAG $RIG_HOLD failed"
+    RIG_HOLD=""
+    rt_rounds publish > "$CDIR/released.rounds"
+    run_rounds_then_term publish 7
+}
+# X-*: the run killed at the case's point in round 3's retire of t1,
+# then the next run.
+ret_retkill() {
+    abg publish run --every-s "$RUN_EVERY" --keep 1 "$@"
+    await_agent publish 120
+    rt_snaps killed-snaps
+    abg run2 run --every-s "$RUN_EVERY" --keep 1
+    run_rounds_then_term run2 2
+}
+# B: ten names kept, then --keep 1.
+ret_backlog() {
+    abg publish run --every-s "$RUN_EVERY" --keep 60 "$@"
+    run_rounds_then_term publish 10
+    abg run2 run --every-s "$RUN_EVERY" --keep 1
+    run_rounds_then_term run2 3
+}
+# A-old: round 1's publish given up as too old, the store frozen.
+ret_aold() {
+    freeze
+    abg publish run --every-s "$RUN_EVERY" --age-max-s 8 --abandoned-keep-s 5 "$@"
+    if await_rounds publish 1 120; then
+        thaw
+        # The give-up comes in the round after the one whose settle
+        # outlived the age (round 1's settle waits for its tick): the
+        # record is read once its line is out.
+        astamp publish 60 '^abandoned ' || true
+        adump given-up
+    fi
+    run_rounds_then_term publish 4
+}
+# A-nothing, A-members: a person's give-up after the kill.
+ret_aperson() {
+    local t
+    acmd publish publish --limit-s 600 "$@"
+    t=$(case_name)
+    echo "${t:--}" > "$CDIR/names.txt"
+    if [ -z "$t" ]; then
+        case_error "no name in the trace before the kill"
+        return 0
+    fi
+    acmd giveup recover --name "$t" --give-up --limit-s 120
+    adump given-up
+    abg run run --every-s "$RUN_EVERY" --abandoned-keep-s 5
+    run_rounds_then_term run 3
+}
+rec_aretain() {
+    agent_begin
+    rt_datasets
+    rcase K keep
+    rcase S stuck
+    rcase X-retire retkill retire:after:1
+    rcase X-retain retkill retain:before:1
+    rcase X-destroy retkill destroy-member:after:1
+    rcase B backlog
+    rcase A-old aold
+    rcase A-nothing aperson intent:after:1
+    rcase A-members aperson taken:after:1
+    agent_end
 }

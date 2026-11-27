@@ -33,7 +33,13 @@ name: skyzfs-agent-rig
 # that fails while it is served: lost with no pool imported, then failed
 # with no client, a new attachment (12), and lost while a publish waits
 # for its cut (11, and 11 again); f with no zed, fz with zed running;
-# tests/kernel/agent_fail_check.py judges it). A Stalled point has no daemon
+# tests/kernel/agent_fail_check.py judges it), rt (aretain, M2.7b-2:
+# `run --keep` retires the names published past it, `retire` asked of the
+# daemon and each member's @t of the GUID recorded destroyed; a destroy
+# that fails leaves the name stuck until it succeeds; a kill at each step
+# of a retire; a backlog worked off at most eight a round; names given
+# up destroyed or dropped after --abandoned-keep-s;
+# tests/kernel/agent_retain_check.py judges it). A Stalled point has no daemon
 # hook to make it: the engine's fakes cover it (crates/skyzfs-agent),
 # and the power cut under the record is #144's model's.
 #
@@ -52,8 +58,8 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04"]'
       parts:
-        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare), r (arun), f and fz (afail without and with zed)"
-        default: '["a1","a2","d","k","r","f","fz"]'
+        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare), r (arun), f and fz (afail without and with zed), rt (aretain)"
+        default: '["a1","a2","d","k","r","f","fz","rt"]'
       points:
         description: "aplain only: the points to kill at (EFFECT:before|after:N, separated by spaces) in place of those the trace reaches; empty: the trace's"
         default: ""
@@ -122,6 +128,7 @@ jobs:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_agent_check.py -v
       - run: python3 tests/kernel/test_agent_fail_check.py -v
+      - run: python3 tests/kernel/test_agent_retain_check.py -v
       - run: bash tests/kernel/test_agent_record.sh
       - run: bash tests/kernel/test_cut_record.sh
 
@@ -138,13 +145,13 @@ jobs:
           PARTS: ${{ inputs.parts || '' }}
         run: |
           i=${IMAGES:-'["ubuntu-26.04"]'}
-          p=${PARTS:-'["a1","a2","d","k","r","f","fz"]'}
+          p=${PARTS:-'["a1","a2","d","k","r","f","fz","rt"]'}
           python3 -c 'import json, sys
           v = json.loads(sys.argv[1])
           ok = {"ubuntu-26.04", "ubuntu-24.04", "ubuntu-26.04-arm", "ubuntu-24.04-arm"}
           assert isinstance(v, list) and v and all(x in ok for x in v), v
           w = json.loads(sys.argv[2])
-          assert isinstance(w, list) and w and len(set(w)) == len(w) and all(x in ("a1", "a2", "d", "k", "r", "f", "fz") for x in w), w' "$i" "$p"
+          assert isinstance(w, list) and w and len(set(w)) == len(w) and all(x in ("a1", "a2", "d", "k", "r", "f", "fz", "rt") for x in w), w' "$i" "$p"
           echo "images=$i" >> "$GITHUB_OUTPUT"
           echo "parts=$p" >> "$GITHUB_OUTPUT"
 
@@ -251,6 +258,7 @@ jobs:
             r) rec=arun shard=1/1 ;;
             f) rec=afail shard=1/1 zed=off ;;
             fz) rec=afail shard=1/1 zed=on ;;
+            rt) rec=aretain shard=1/1 ;;
             *) echo "::error::not a part: $PART"; exit 64 ;;
           esac
           sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD=0 CUT_UPLOAD=1 \
