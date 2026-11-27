@@ -111,8 +111,8 @@ pub enum Step {
     /// The pool was reopened, and looked at until it read SUSPENDED or
     /// [`LOOK_MAX`] passed.
     Reopened {
-        /// The reopen's error, in words: not the signal ([module
-        /// docs](self)).
+        /// The reopen's error, in words: not the signal ([`run`'s
+        /// docs](crate::program)).
         error: Option<String>,
         /// The state at the last look; `None` where the pool was no
         /// longer imported.
@@ -145,8 +145,8 @@ impl Step {
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
-    /// What the volume's failure note of this boot says ([module
-    /// docs](self)). It touches no pool. An error is one of reading the
+    /// What the volume's failure note of this boot says ([`run`'s
+    /// docs](crate::program)). It touches no pool. An error is one of reading the
     /// note or the boot's id.
     pub fn failure(&mut self) -> Result<Failed, Error> {
         let noted = self
@@ -161,8 +161,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         })
     }
 
-    /// Make the agent's pool read, so that it suspends ([module
-    /// docs](self)): for a volume [`Failed::Lost`]. At most the reopen's
+    /// Make the agent's pool read, so that it suspends ([`run`'s
+    /// docs](crate::program)): for a volume [`Failed::Lost`]. At most the reopen's
     /// limit and [`LOOK_MAX`], and the reads of the state in between;
     /// an end asked for meanwhile does not cut it. An error is one of
     /// reading the pool's state before the reopen; one of a look after
