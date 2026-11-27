@@ -155,7 +155,7 @@
 # - arun (job R): R-run (run), R-kill (runkill at intent:after:2, the
 #   second round's intent), R-twice (runtwice), R-held (runheld),
 #   R-corrupt and R-volume (runbad), R-rewind (runrewind).
-# - afail (jobs f, by dispatch): a volume that fails while `run` serves
+# - afail (jobs f and fz): a volume that fails while `run` serves
 #   it (M2.7c), cases U and W; below, at rec_afail.
 #
 # A stall (eight asks with no cut counted, then given up) is left to the
