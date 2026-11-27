@@ -443,6 +443,43 @@ pub trait Zfs {
     /// a new value, so a new value at each call is not needed on 2.4.1;
     /// it is kept, as it costs nothing.
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError>;
+    /// `zpool reopen pool`, within its own limit: the step that makes a
+    /// pool whose device is gone read, so that it suspends (M2.7c). A
+    /// pool that only writes does not suspend: ZFS retries its failed
+    /// writes without end. The daemon rig's check f saw the reopen
+    /// return with status 0 in about a second and the pool suspend
+    /// about 1.0 to 1.1 s later; where zed has suspended the pool
+    /// already (Ubuntu 26.04), the reopen is refused with "pool I/O is
+    /// currently suspended" (design notes, §10). So what this returns is
+    /// not the signal: [`Zfs::pool_state`] is. Its error is not read
+    /// further either, and no `zpool list` is asked after it, as the
+    /// other commands' errors are: a command on a suspended pool may
+    /// not return.
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError>;
+    /// The pool's state as the kernel keeps it
+    /// (`/proc/spl/kstat/zfs/POOL/state`), with no command: a file
+    /// that answers while a command on the pool would wait. `None`
+    /// where the pool is not imported (no such file).
+    fn pool_state(&mut self, pool: &str) -> Result<Option<PoolState>, ZfsError>;
+}
+
+/// A pool's state as the kernel's kstat says it ([`Zfs::pool_state`]):
+/// one word, such as `ONLINE`, `DEGRADED` or `SUSPENDED`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolState(pub String);
+
+impl PoolState {
+    /// Whether the pool is suspended: lost for this boot where its
+    /// device is gone (M2.7c).
+    pub fn suspended(&self) -> bool {
+        self.0 == "SUSPENDED"
+    }
+}
+
+impl fmt::Display for PoolState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// The user property of the agent's sync task ([`Zfs::assist`]).

@@ -3,6 +3,7 @@
 //! `zfs program -j`, `zfs list -H` and `zfs get -H`. The parsers on output recorded from ZFS are
 //! in `recordings.rs`.
 
+use std::io;
 use std::path::PathBuf;
 
 use super::*;
@@ -410,6 +411,87 @@ fn nocacheflush_is_read_from_the_module() {
         .insert(PathBuf::from(NOCACHEFLUSH), b"x\n".to_vec());
     assert!(cli(fake).nocacheflush().is_err());
     assert!(cli(Fake::default()).nocacheflush().is_err());
+}
+
+const REOPEN: &str = "zpool reopen tank";
+
+/// The reopen is `zpool reopen POOL` within its own limit, whatever the
+/// pool holds; exit 0 is `Ok`, and any other end an error with its
+/// message, after which no `zpool list` is asked: a command on a
+/// suspended pool may not return (M2.7c). Mutants: the read's or a
+/// change's limit; the error confirmed with `zpool list`; a failure
+/// read as done; one past its limit read as done.
+#[test]
+fn the_reopen_is_zpool_reopen_within_its_limit() {
+    let mut fake = Fake::default();
+    fake.ok(COUNT, &listed(10_000));
+    fake.ok(REOPEN, "");
+    let mut zfs = cli(fake);
+    assert_eq!(zfs.count("tank"), Ok(10_000));
+    assert_eq!(zfs.reopen("tank"), Ok(()));
+    let ran = zfs.host().ran.last().expect("ran").clone();
+    assert_eq!(ran.words, REOPEN);
+    assert_eq!(ran.limit, Limits::default().reopen);
+    assert_eq!(Limits::default().reopen, Duration::from_secs(10));
+
+    let said = "cannot reopen 'tank': pool I/O is currently suspended";
+    let mut fake = Fake::default();
+    fake.fails(REOPEN, 1, said);
+    let mut zfs = cli(fake);
+    let e = zfs.reopen("tank").expect_err("refused");
+    assert_eq!(e, ZfsError::Other(format!("{REOPEN}: exit 1: {said}")));
+    assert_eq!(zfs.host().words(), [REOPEN], "no zpool list after it");
+
+    // A reopen that says the pool is not there is no more than an
+    // error either: the pool's state says what became of it.
+    let mut fake = Fake::default();
+    fake.fails(REOPEN, 1, "cannot open 'tank': no such pool");
+    let mut zfs = cli(fake);
+    assert!(matches!(zfs.reopen("tank"), Err(ZfsError::Other(_))));
+    assert_eq!(zfs.host().words(), [REOPEN]);
+
+    let mut fake = Fake::default();
+    fake.give(REOPEN, Err(io::ErrorKind::TimedOut));
+    let mut zfs = cli(fake);
+    assert!(matches!(zfs.reopen("tank"), Err(ZfsError::Other(_))));
+}
+
+const STATE: &str = "/proc/spl/kstat/zfs/tank/state";
+
+/// The pool's state is the kstat file's one word, read with no
+/// command; no file is no pool imported. Mutants: the wrong path; no
+/// file read as an error, or an error as no file; the word not trimmed;
+/// a name that leaves the directory read.
+#[test]
+fn the_pool_state_is_the_kstat_word() {
+    for (text, word, suspended) in [
+        ("ONLINE\n", "ONLINE", false),
+        ("SUSPENDED\n", "SUSPENDED", true),
+        ("DEGRADED", "DEGRADED", false),
+    ] {
+        let mut fake = Fake::default();
+        fake.files.insert(PathBuf::from(STATE), text.into());
+        let mut zfs = cli(fake);
+        let state = zfs.pool_state("tank").expect("read").expect("imported");
+        assert_eq!((state.0.as_str(), state.suspended()), (word, suspended));
+        assert!(zfs.host().ran.is_empty(), "no command");
+    }
+    assert_eq!(cli(Fake::default()).pool_state("tank"), Ok(None));
+    for text in ["", "\n", "ONLINE SUSPENDED\n"] {
+        let mut fake = Fake::default();
+        fake.files.insert(PathBuf::from(STATE), text.into());
+        assert!(cli(fake).pool_state("tank").is_err(), "{text:?}");
+    }
+    for name in ["", ".", "..", "a/b", "../tank", "a\0b"] {
+        let mut fake = Fake::default();
+        fake.files
+            .insert(PathBuf::from(STATE), b"ONLINE\n".to_vec());
+        fake.files.insert(
+            PathBuf::from("/proc/spl/kstat/zfs/state"),
+            b"ONLINE\n".to_vec(),
+        );
+        assert!(cli(fake).pool_state(name).is_err(), "{name:?}");
+    }
 }
 
 const TAKE: &str = "zfs snapshot -r tank@skz-1";

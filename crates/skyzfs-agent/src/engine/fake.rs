@@ -41,8 +41,8 @@ use super::{Clock, Daemon, Noted};
 use crate::manifest::{self, Kind, Manifest};
 use crate::record::{self, Keep, Loaded, Record, SaveError};
 use crate::zfs::{
-    Dataset, Held, Layout, Program, Props, Snap as SnapRead, Vdev, VdevKind, Zfs, ZfsError,
-    HOLD_TAG,
+    Dataset, Held, Layout, PoolState, Program, Props, Snap as SnapRead, Vdev, VdevKind, Zfs,
+    ZfsError, HOLD_TAG,
 };
 
 /// The pool's name.
@@ -495,6 +495,18 @@ pub struct World {
     pub assist_fails_after: u32,
     /// The daemon's failure note of this boot ([`Daemon::failure`]).
     pub noted: Option<Noted>,
+    /// From when the pool reads `SUSPENDED` ([`Zfs::pool_state`]);
+    /// `None` while it reads `ONLINE`.
+    pub suspended_at: Option<u64>,
+    /// Where the pool's device is gone: how long after a reopen
+    /// ([`Zfs::reopen`]) the pool suspends (about 1.0 to 1.1 s in the
+    /// daemon rig's check f). `None`: a reopen leaves the pool as it is.
+    pub suspends_after_ms: Option<u64>,
+    /// `zpool reopen` exits 1 and says "pool I/O is currently
+    /// suspended", as where zed suspended the pool first (Ubuntu 26.04).
+    pub reopen_refused: bool,
+    /// How many times the pool was reopened.
+    pub reopens: u32,
     abandon_next: bool,
     err_low_next: bool,
     erred_low: bool,
@@ -546,6 +558,10 @@ impl World {
             assist_fails: 0,
             assist_fails_after: 0,
             noted: None,
+            suspended_at: None,
+            suspends_after_ms: None,
+            reopen_refused: false,
+            reopens: 0,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
             erred_low: false,
@@ -1645,6 +1661,34 @@ impl Zfs for FakeZfs {
                 .filter(|t| t.starts_with(crate::names::PREFIX))
                 .collect()
         })
+    }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
+        self.pool(pool, |_| ())?;
+        let mut world = self.0.borrow_mut();
+        world.reopens += 1;
+        world.calls.push("reopen");
+        world.log.push(format!("zpool reopen {pool}"));
+        if world.reopen_refused {
+            return Err(ZfsError::Other(
+                "zpool reopen: exit 1: cannot reopen 'tank': pool I/O is currently suspended"
+                    .into(),
+            ));
+        }
+        if let (Some(after), None) = (world.suspends_after_ms, world.suspended_at) {
+            world.suspended_at = Some(world.now_ms + after);
+        }
+        Ok(())
+    }
+
+    fn pool_state(&mut self, pool: &str) -> Result<Option<PoolState>, ZfsError> {
+        let world = self.0.borrow();
+        if world.pool.is_none() || pool != POOL {
+            return Ok(None);
+        }
+        let suspended = world.suspended_at.is_some_and(|at| at <= world.now_ms);
+        let word = if suspended { "SUSPENDED" } else { "ONLINE" };
+        Ok(Some(PoolState(word.to_string())))
     }
 
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {

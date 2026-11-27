@@ -1377,6 +1377,17 @@ impl crate::zfs::Zfs for SlowCount {
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), crate::zfs::ZfsError> {
         self.zfs.assist(pool, value)
     }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.reopen(pool)
+    }
+
+    fn pool_state(
+        &mut self,
+        pool: &str,
+    ) -> Result<Option<crate::zfs::PoolState>, crate::zfs::ZfsError> {
+        self.zfs.pool_state(pool)
+    }
 }
 
 /// A round settles at least one round of the engine however long the

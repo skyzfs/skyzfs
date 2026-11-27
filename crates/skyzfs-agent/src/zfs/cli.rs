@@ -71,6 +71,14 @@
 //! A command past its limit is killed and not waited for ([`Host`]), and
 //! gives [`ZfsError::Other`].
 //!
+//! [`Zfs::reopen`] runs `zpool reopen POOL` within [`Limits::reopen`];
+//! a status other than 0 is [`ZfsError::Other`] with its message, and no
+//! `zpool list` is asked after it. [`Zfs::pool_state`] reads
+//! [`POOL_STATE_DIR`]`/POOL/state`, a file of one word; no such file is
+//! no such pool imported. A pool's name that cannot be one directory's
+//! name there (empty, `.`, `..`, or with a `/` or a NUL) is an error,
+//! not a read.
+//!
 //! # The holds' check
 //!
 //! `zfs holds -H` prints each hold as a line `SNAPSHOT\tTAG\tWHEN`, and
@@ -346,13 +354,19 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Dataset, Held, Layout, Props, Snap, Vdev, VdevKind, Zfs, ZfsError, ASSIST_PROPERTY};
+use super::{
+    Dataset, Held, Layout, PoolState, Props, Snap, Vdev, VdevKind, Zfs, ZfsError, ASSIST_PROPERTY,
+};
 use crate::host::{Host, Node, Output};
 use crate::manifest::Kind;
 use crate::record::Member;
 
 /// The module parameter that says whether ZFS sends cache flushes.
 pub const NOCACHEFLUSH: &str = "/sys/module/zfs/parameters/zfs_nocacheflush";
+
+/// The directory of the kernel's statistics of each imported pool, one
+/// directory a pool ([`Zfs::pool_state`] reads `POOL/state` there).
+pub const POOL_STATE_DIR: &str = "/proc/spl/kstat/zfs";
 
 /// The channel program that reads each member's `@t` ([module
 /// docs](self)).
@@ -644,6 +658,11 @@ pub struct Limits {
     /// #162's review). Before this ruling, a snapshot counted as a
     /// dataset: [`Limits::full_per_dataset`], 200 ms.
     pub list_per_snapshot: Duration,
+    /// `zpool reopen` ([`Zfs::reopen`]), whatever the pool holds. The
+    /// daemon rig's check f saw it return in about a second, where it
+    /// returned; 10 s is the limit proposed for M2.7c, provisional
+    /// until the lead rules on it.
+    pub reopen: Duration,
 }
 
 impl Default for Limits {
@@ -658,6 +677,7 @@ impl Default for Limits {
             count: Duration::from_secs(60),
             holds_per_snapshot: Duration::from_millis(10),
             list_per_snapshot: Duration::from_millis(10),
+            reopen: Duration::from_secs(10),
         }
     }
 }
@@ -1613,6 +1633,46 @@ impl<H: Host> Zfs for ZfsCli<H> {
         self.zfs(&["set", &set, pool], self.change_limit(), false, pool)?;
         self.zpool(&["sync", pool], self.change_limit(), pool)?;
         Ok(())
+    }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
+        let args = ["reopen", pool];
+        let output = self.exec("zpool", &args, &[], self.limits.reopen)?;
+        if output.code == Some(0) {
+            return Ok(());
+        }
+        let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let how = match output.code {
+            Some(code) => format!("exit {code}"),
+            None => "ended by a signal".to_string(),
+        };
+        Err(ZfsError::Other(format!(
+            "{}: {how}: {said}",
+            command("zpool", &args)
+        )))
+    }
+
+    fn pool_state(&mut self, pool: &str) -> Result<Option<PoolState>, ZfsError> {
+        if pool.is_empty() || pool == "." || pool == ".." || pool.contains(['/', '\0']) {
+            return Err(ZfsError::Other(format!(
+                "`{pool}` cannot be a pool's directory under {POOL_STATE_DIR}"
+            )));
+        }
+        let path = Path::new(POOL_STATE_DIR).join(pool).join("state");
+        let bytes = match self.host.read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(ZfsError::Other(format!("{}: {e}", path.display()))),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let word = text.trim();
+        if word.is_empty() || word.contains(char::is_whitespace) {
+            return Err(ZfsError::Other(format!(
+                "{}: `{word}` is not one word",
+                path.display()
+            )));
+        }
+        Ok(Some(PoolState(word.to_string())))
     }
 }
 

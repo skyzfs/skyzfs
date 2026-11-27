@@ -4475,6 +4475,14 @@ impl Zfs for ThroughCli {
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.0.assist(pool, value)
     }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
+        self.0.reopen(pool)
+    }
+
+    fn pool_state(&mut self, pool: &str) -> Result<Option<crate::zfs::PoolState>, ZfsError> {
+        self.0.pool_state(pool)
+    }
 }
 
 /// A publish on a pool with a snapshot limit, read through the CLI, with
@@ -4638,6 +4646,14 @@ impl Zfs for DestroyedBetween {
     }
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.zfs.assist(pool, value)
+    }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
+        self.zfs.reopen(pool)
+    }
+
+    fn pool_state(&mut self, pool: &str) -> Result<Option<crate::zfs::PoolState>, ZfsError> {
+        self.zfs.pool_state(pool)
     }
 }
 
