@@ -163,9 +163,10 @@ class Tables(unittest.TestCase):
         # A retire's line is written after the uploader's answer: none
         # in the instance killed after the transaction landed.
         self.assertEqual(pc.RETIRES, {
-            'pretire': [[('e1', 'refused other'), ('e1', 'retired'), ('e1', 'gone'), ('e9', 'gone'),
-                         ('e3', 'refused asked')]],
-            'pkillret': [[], [('k1', 'gone')]]})
+            'pretire': [[('e1', 'refused other', 'e2', 'e1'), ('e1', 'retired', 'e1', None),
+                         ('e1', 'gone', 'e1', None), ('e9', 'gone', 'e1', None),
+                         ('e3', 'refused asked', 'e1', None)]],
+            'pkillret': [[], [('k1', 'gone', 'k1', None)]]})
 
     def test_killed_by_is_in_the_hook_s_own_words(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

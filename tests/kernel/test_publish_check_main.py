@@ -858,6 +858,47 @@ class Retire(unittest.TestCase):
             rc, lines = run_course(name, change)
             self.assertEqual((rc, lines['pin_retire_lines'][0]), (1, 'FAILED'), name)
 
+    def test_retire_lines_that_name_commits(self):
+        # M2.7b-2 (#179): `T answer commit=H`, and ` found=H2` after
+        # `refused other`. The other publish lines are as before.
+        e1, e2, k1 = commit_of('e1'), commit_of('e2'), commit_of('k1')
+
+        def log(*instances):
+            return write('requests.tsv', log_text(list(instances)))
+
+        def pretire(lines):
+            return log((PID, [(8, 50, True), (9, 51, True)] + [('publish', 'retire', ln) for ln in lines]
+                        + [('publish', 'withdraw', 'e3 withdrawn')]))
+        right = [f'e1 refused other commit={e2} found={e1}', f'e1 retired commit={e1}', f'e1 gone commit={e1}',
+                 f'e9 gone commit={e1}', f'e3 refused asked commit={e1}']
+        rc, lines = run_course('pretire', pretire(right))
+        self.assertEqual((rc, lines['pin_retire_lines'][0]), (0, 'ok'))
+        self.assertIn('each names the commit asked', lines['pin_retire_lines'][1])
+        rc, lines = run_course('pkillret', log((PID, [(8, 50, True)]),
+                                               (PID2, [('publish', 'retire', f'k1 gone commit={k1}')])))
+        self.assertEqual((rc, lines['pin_retire_lines'][0]), (0, 'ok'))
+        rc, lines = run_course('pretire')
+        self.assertIn('name no commit', lines['pin_retire_lines'][1])
+        for k, wrong in ((0, f'e1 refused other commit={e2}'),                    # found= missing
+                         (0, f'e1 refused other commit={e1} found={e1}'),         # the commit asked was e2's
+                         (0, f'e1 refused other commit={e2} found={e2}'),         # snap/e1 named e1's
+                         (0, f'e1 refused other commit={e2} found={e1} found={e1}'),
+                         (0, f'e1 refused other commit={e2} found={e1} x'),
+                         (1, f'e1 retired commit={e1} found={e1}'),               # found= only after other
+                         (1, f'e1 retired commit={e2}'),
+                         (1, f'e1 retired commit={e1[:-1]}'),
+                         (1, 'e1 retired'),                                       # one form in one log
+                         (3, f'e9 gone commit={e2}'),
+                         (4, f'e3 refused asked commit={e2}'),
+                         (4, f'e3 refused asked found={e1} commit={e1}')):
+            got = list(right)
+            got[k] = wrong
+            rc, lines = run_course('pretire', pretire(got))
+            self.assertEqual((rc, lines['pin_retire_lines'][0]), (1, 'FAILED'), wrong)
+        rc, lines = run_course('pkillret', log((PID, [(8, 50, True)]),
+                                               (PID2, [('publish', 'retire', f'k1 gone commit={e1}')])))
+        self.assertEqual((rc, lines['pin_retire_lines'][0]), (1, 'FAILED'))
+
     def test_k1_torn_or_there_after_the_kill_ends_1(self):
         # The hook printed its line once the transaction landed: whatever
         # is left of snap/k1 is the server's (#178's B1 and D2).

@@ -101,8 +101,11 @@ its commit before the retire (pin_k1_there_before_the_retire) and
 neither its ref nor its row between the kill and the take-over
 (pin_k1_retired_whole): the hook's line is printed only once the
 transaction landed, and one transaction deletes both, so either left,
-torn or whole, is a verdict and not the rig's error. The request log's `retire` lines,
-by instance, must be RETIRES: the killed instance wrote none for k1.
+torn or whole, is a verdict and not the rig's error. The request log's
+`retire` lines, by instance, must be RETIRES: the killed instance wrote
+none for k1. Where the lines name commits (M2.7b-2), each must name the
+commit asked and, after `refused other`, the one snap/T named; a daemon
+from before writes neither, and both forms are read.
 
 A publish waiting for its cut across a rewind import (prewindf: the
 newest group's root block zeroed, then `zpool import -F`, which on this
@@ -425,36 +428,75 @@ KILLED_BY = {'pkillman': 'after the framed manifest PUT 1 landed',
              'pkillpub': 'after the transaction of publish 1 (p1) landed',
              'pkillret': 'after the transaction of retire 1 (k1) landed'}
 # The request log's `retire` lines, by instance in order: (T, the answer
-# as record.rs words it). A retire's line is written once the uploader
-# has answered, so the instance killed after its transaction landed has
-# none (pkillret).
-RETIRES = {'pretire': [[('e1', 'refused other'), ('e1', 'retired'), ('e1', 'gone'), ('e9', 'gone'),
-                         ('e3', 'refused asked')]],
-           'pkillret': [[], [('k1', 'gone')]]}
+# as record.rs words it, the label whose done names the commit asked,
+# the label whose done names the commit a `refused other` found, or
+# None). A retire's line is written once the uploader has answered, so
+# the instance killed after its transaction landed has none (pkillret).
+# Since M2.7b-2 (#179) the line ends ` commit=H`, and ` found=H2` after
+# `refused other`; a daemon from before writes neither. Both forms are
+# read, the commits pinned where they are written (judge_retire_lines).
+RETIRES = {'pretire': [[('e1', 'refused other', 'e2', 'e1'), ('e1', 'retired', 'e1', None),
+                         ('e1', 'gone', 'e1', None), ('e9', 'gone', 'e1', None),
+                         ('e3', 'refused asked', 'e1', None)]],
+           'pkillret': [[], [('k1', 'gone', 'k1', None)]]}
 
 
 def flat(text):
     return ' '.join(str(text).split())
 
 
+def retire_line(result):
+    """A `retire` line's result column -> (T, the answer, {key: value}
+    of its trailing `key=value` words): `T retired|gone|refused CODE`
+    (record.rs, M2.7b-1), and since M2.7b-2 with ` commit=H`, and
+    ` found=H2` after `refused other`. The answer is the words before
+    the first `commit=`; every word after it must be one `key=value`,
+    else the fields are {'?': the line}, which no want matches."""
+    t, _, rest = result.partition(' ')
+    words = rest.split(' ') if rest else []
+    k = next((i for i, w in enumerate(words) if w.startswith('commit=')), len(words))
+    fields = {}
+    for w in words[k:]:
+        key, eq, value = w.partition('=')
+        if not eq or key in fields:
+            return t, ' '.join(words[:k]), {'?': result}
+        fields[key] = value
+    return t, ' '.join(words[:k]), fields
+
+
 def retire_lines(instances):
     """The request log's `retire` lines -> per instance in order, [(T,
-    the answer)]: the result column is `T retired|gone|refused CODE`
-    (record.rs)."""
-    out = []
-    for inst in instances:
-        out.append([tuple(ln['result'].split(' ', 1)) if ' ' in ln['result'] else (ln['result'], '')
-                    for ln in inst['lines'] if ln['event'] == 'publish' and ln['op'] == 'retire'])
-    return out
+    the answer, fields)] (retire_line)."""
+    return [[retire_line(ln['result']) for ln in inst['lines'] if ln['event'] == 'publish' and ln['op'] == 'retire']
+            for inst in instances]
 
 
-def judge_retire_lines(seen, want):
+def judge_retire_lines(seen, want, ends):
     """-> what differs between the retire lines seen and WANT, both per
-    instance."""
+    instance: T and the answer, in order; and, where the lines name
+    commits (M2.7b-2), exactly `commit=` the commit asked and, only
+    after `refused other`, `found=` the commit snap/T named. One log is
+    all of one form: a line with commits beside one without is wrong."""
     if len(seen) != len(want):
         return [f'{len(seen)} instances in the request log, not {len(want)}']
-    return [f'instance {k + 1}: {s or "none"}, not {w or "none"}' for k, (s, w) in enumerate(zip(seen, want))
-            if s != w]
+    bad = [f'instance {k + 1}: {", ".join(f"{t} {a}" for t, a, _ in s) or "none"}, not '
+           f'{", ".join(f"{t} {a}" for t, a, _, _ in w) or "none"}'
+           for k, (s, w) in enumerate(zip(seen, want)) if [x[:2] for x in s] != [x[:2] for x in w]]
+    if bad:
+        return bad
+    if len({bool(f) for inst in seen for _, _, f in inst}) > 1:
+        return ['some retire lines name commits and some do not']
+    for inst, wants in zip(seen, want):
+        for (t, a, f), (_, _, asked, found) in zip(inst, wants):
+            if not f:
+                continue
+            need = {'commit': done_commit(ends.get(asked, ''))}
+            if found is not None:
+                need['found'] = done_commit(ends.get(found, ''))
+            if None in need.values() or f != need:
+                bad.append(f'{t} {a}: {" ".join(f"{k}={v[:12]}" for k, v in f.items())}, not '
+                           f'{" ".join(f"{k}={str(v)[:12]}" for k, v in need.items())}')
+    return bad
 
 
 def judge_progress(ends, want):
@@ -1340,9 +1382,12 @@ def main():
                   'no snap/k1 and no row after the kill: the ref and its row went together')
         if name in RETIRES:
             seen = retire_lines(instances)
-            holds('pin_retire_lines', judge_retire_lines(seen, RETIRES[name]), 'server',
+            named = any(f for inst in seen for _, _, f in inst)
+            holds('pin_retire_lines', judge_retire_lines(seen, RETIRES[name], ends), 'server',
                   'the request log\'s retire lines by instance: '
-                  + ' | '.join(', '.join(f'{t} {r}' for t, r in inst) or 'none' for inst in seen))
+                  + ' | '.join(', '.join(f'{t} {a}' for t, a, _ in inst) or 'none' for inst in seen)
+                  + ('; each names the commit asked, and a refusal `other` the one snap/T named' if named else
+                     '; the lines name no commit (a daemon from before M2.7b-2)'))
         if name == 'pretire':
             commit = done_commit(ends.get('e1', ''))
             other = re.findall(r'\b[0-9a-f]{64}\b', ends.get('e1-other', ''))
