@@ -1,0 +1,25 @@
+# S1-S3 appended at 5fc637b: rustfmt --check, cargo clippy -p skyzfs-upload --tests -- -D warnings, cargo test -p skyzfs-upload --test retire --test uploader
+fmt-ok
+    Finished `dev` profile [optimized] target(s) in 12.84s
+test review_s1_a_landed_retire_whose_answer_was_lost_took_the_row_with_the_ref ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test review_s3_a_retire_asked_before_the_first_take_is_made_after_it ... ok
+test review_s2_a_retire_that_object_storage_fails_is_store_and_the_uploader_goes_on ... ok
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+# The plants they are meant for, with S1-S3 appended (plant.py):
+split-txn	KILLED	rc=101	19s	review_s1_a_landed_retire_whose_answer_was_lost_took_the_row_with_the_ref
+store-as-stopped	KILLED	rc=101	18s	review_s2_a_retire_that_object_storage_fails_is_store_and_the_uploader_goes_on
+drop-at-make	KILLED	rc=101	11s	review_s3_a_retire_asked_before_the_first_take_is_made_after_it
+# split-txn:
+thread 'review_s1_a_landed_retire_whose_answer_was_lost_took_the_row_with_the_ref' (25368) panicked at crates/skyzfs-upload/tests/retire.rs:380:5:
+assertion `left == right` failed: the ref and its row, together
+  left: (None, Some([1, 0, 203, 214, 57, 14, 184, 93, 2, 247, 182, 222, 33, 221, 141, 71, 118, 37, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 170, 8, 167, 151, 203, 138, 118, 164, 148, 94, 102, 1
+ right: (None, None)
+# store-as-stopped:
+thread 'review_s2_a_retire_that_object_storage_fails_is_store_and_the_uploader_goes_on' (28327) panicked at crates/skyzfs-upload/tests/uploader.rs:4272:5:
+Err(Stopped)
+   0: __rustc::rust_begin_unwind
+# drop-at-make:
+thread 'review_s3_a_retire_asked_before_the_first_take_is_made_after_it' (1021) panicked at crates/skyzfs-upload/tests/uploader.rs:4317:17:
+the retire asked before the first take was dropped unanswered
+   0: __rustc::rust_begin_unwind

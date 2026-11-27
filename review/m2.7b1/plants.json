@@ -1,0 +1,494 @@
+[
+ {
+  "id": "cas-commit",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "if value.commit != commit {",
+  "new": "if false {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "cas-stale",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "TxnOutcome::Conflict { actual, .. } => current = actual,",
+  "new": "TxnOutcome::Conflict { .. } => {}",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "cas-conflict-done",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "TxnOutcome::Conflict { actual, .. } => current = actual,",
+  "new": "TxnOutcome::Conflict { .. } => return Ok(Retired::Retired),",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "cas-gen0",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "expected: Some(value),\n                    new_commit: None,",
+  "new": "expected: Some(skynbd_refs::RefValue { commit: value.commit, generation: 0 }),\n                    new_commit: None,",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "split-txn",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "                RefOp::MetaDelete {\n                    key: snap_row_key(name),\n                },\n            ];\n            match self.refs.transact(self.vol, ops).await? {",
+  "new": "            ];\n            let row = vec![RefOp::MetaDelete { key: snap_row_key(name) }];\n            let first = self.refs.transact(self.vol, ops).await?;\n            if first == TxnOutcome::Committed {\n                self.refs.transact(self.vol, row).await?;\n            }\n            match first {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "no-row-delete",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "                RefOp::MetaDelete {\n                    key: snap_row_key(name),\n                },\n            ];",
+  "new": "            ];",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "tries-1",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "for _ in 0..RETIRE_TRIES {",
+  "new": "for _ in 0..1 {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "tries+1",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "for _ in 0..RETIRE_TRIES {",
+  "new": "for _ in 0..=RETIRE_TRIES {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "tries-const2",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "pub const RETIRE_TRIES: usize = 3;",
+  "new": "pub const RETIRE_TRIES: usize = 2;",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "gone-as-retired",
+  "file": "crates/skyzfs-upload/src/remote.rs",
+  "old": "return Ok(Retired::Gone);",
+  "new": "return Ok(Retired::Retired);",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "stop-no-refuse",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "        if self.publishing().stopped() {\n            self.refuse_retires();\n        }",
+  "new": "",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "stop-only-lease",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "        if self.publishing().stopped() {\n            self.refuse_retires();\n        }",
+  "new": "        if matches!(self.lease.state(), LeaseState::Lost { .. }) {\n            self.refuse_retires();\n        }",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "asker-pop",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "            if ask.reply.is_closed() {\n                // The agent stopped waiting: asked again, it is taken then.\n                continue;\n            }",
+  "new": "",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "asker-ctl",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "            } => {\n                if reply.is_closed() {\n                    return false;\n                }\n                if self.publishing().stopped() {\n                    let _ = reply.send(Err(RetireRefused::Stopped));",
+  "new": "            } => {\n                if self.publishing().stopped() {\n                    let _ = reply.send(Err(RetireRefused::Stopped));",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "ctl-stopped",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "                if self.publishing().stopped() {\n                    let _ = reply.send(Err(RetireRefused::Stopped));\n                    return false;\n                }\n                if self.publishing().progress(&name) == Progress::Pending {",
+  "new": "                if self.publishing().progress(&name) == Progress::Pending {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "ctl-asked",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "                if self.publishing().progress(&name) == Progress::Pending {\n                    let _ = reply.send(Err(RetireRefused::Asked));\n                    return false;\n                }",
+  "new": "",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "fence-store",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "                Err(RemoteError::Fenced { holder, epoch }) => {\n                    let _ = ask.reply.send(Err(RetireRefused::Stopped));\n                    self.fenced(holder, epoch)\n                }",
+  "new": "",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "store-as-stopped",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "let _ = ask.reply.send(Err(RetireRefused::Store(e.to_string())));",
+  "new": "let _ = (ask.reply.send(Err(RetireRefused::Stopped)), e);",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "no-keeping",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "            let (retired, _) = Self::keeping(\n                driver.retire(&ask.name, ask.commit),\n                &mut self.lease,\n                &mut self.lease_backoff,\n                &mut self.lease_at,\n            )\n            .await;",
+  "new": "            let retired = driver.retire(&ask.name, ask.commit).await;",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "nolease-refuse",
+  "file": "crates/skyzfs-upload/src/uploader.rs",
+  "old": "                if self.publishing().stopped() {\n                    let _ = reply.send(Err(RetireRefused::Stopped));\n                    return false;\n                }\n                if self.publishing().progress(&name) == Progress::Pending {",
+  "new": "                if self.publishing().stopped() || self.driver.is_none() {\n                    let _ = reply.send(Err(RetireRefused::Stopped));\n                    return false;\n                }\n                if self.publishing().progress(&name) == Progress::Pending {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-upload",
+   "--test",
+   "retire",
+   "--test",
+   "uploader"
+  ]
+ },
+ {
+  "id": "daemon-v2",
+  "file": "bins/skyzfsd/src/control.rs",
+  "old": "    if hello != HELLO {\n        return Ok(Err(Reply::Refused(",
+  "new": "    if hello != HELLO && hello != \"skyzfs-control 2\" {\n        return Ok(Err(Reply::Refused(",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "control::"
+  ]
+ },
+ {
+  "id": "client-v2",
+  "file": "crates/skyzfs-control/src/client.rs",
+  "old": "    if hello != HELLO {",
+  "new": "    if hello != HELLO && hello != \"skyzfs-control 2\" {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-control"
+  ]
+ },
+ {
+  "id": "rewound-optional",
+  "file": "crates/skyzfs-control/src/lib.rs",
+  "old": "                    rewound: number(&p, \"rewound\")?,",
+  "new": "                    rewound: number(&p, \"rewound\").unwrap_or(0),",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-control"
+  ]
+ },
+ {
+  "id": "rewound-unwritten",
+  "file": "crates/skyzfs-control/src/lib.rs",
+  "old": "opens={opens} \\\n                     rewound={}\",",
+  "new": "opens={opens}{}\",",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-control"
+  ]
+ },
+ {
+  "id": "kill-count-all",
+  "file": "bins/skyzfsd/src/kill.rs",
+  "old": "        if retired == Retired::Retired {\n            self.retires += 1;",
+  "new": "        {\n            self.retires += 1;",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "kill::"
+  ]
+ },
+ {
+  "id": "kill-before",
+  "file": "bins/skyzfsd/src/kill.rs",
+  "old": "        let retired = self.inner.retire(name, commit).await?;\n        if retired == Retired::Retired {",
+  "new": "        if self.retire_at == Some(self.retires + 1) {\n            (self.die)(&format!(\"after the transaction of retire {} ({name}) landed, before the uploader knew it\", self.retires + 1));\n        }\n        let retired = self.inner.retire(name, commit).await?;\n        if retired == Retired::Retired {",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "kill::"
+  ]
+ },
+ {
+  "id": "record-none",
+  "file": "bins/skyzfsd/src/record.rs",
+  "old": "            Request::Retire(r) => lines.publish(PublishLine::Retire, &r.name, &reply),\n            Request::Cuts",
+  "new": "            Request::Retire(_) |\n            Request::Cuts",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "record::"
+  ]
+ },
+ {
+  "id": "record-op",
+  "file": "bins/skyzfsd/src/record.rs",
+  "old": "PublishLine::Retire => (\"retire\", \"-\".into(), \"-\".into()),",
+  "new": "PublishLine::Retire => (\"withdraw\", \"-\".into(), \"-\".into()),",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "record::"
+  ]
+ },
+ {
+  "id": "handler-commit",
+  "file": "bins/skyzfsd/src/control/handler.rs",
+  "old": "                    commit: r.commit,",
+  "new": "                    commit: [0; 32],",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "control::"
+  ]
+ },
+ {
+  "id": "reply-gone",
+  "file": "bins/skyzfsd/src/control.rs",
+  "old": "Ok(Retired::Gone) => Reply::Gone,",
+  "new": "Ok(Retired::Gone) => Reply::Retired,",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "control::"
+  ]
+ },
+ {
+  "id": "retire-name",
+  "file": "bins/skyzfsd/src/control.rs",
+  "old": "        Request::Retire(r) => Some(&r.name),",
+  "new": "        Request::Retire(_) => None,",
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfsd",
+   "--features",
+   "test-hooks",
+   "--lib",
+   "--",
+   "control::"
+  ]
+ }
+]

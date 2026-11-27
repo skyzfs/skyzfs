@@ -1,0 +1,46 @@
+# Plants at 5fc637b: one textual mutant at a time (plants.json), the command each names, the file restored after.
+# Columns: id, outcome, exit status, time, the tests that failed.
+# Baselines (unplanted):
+base skyzfs-upload --test retire --test uploader rc=0 (8 + 65 tests)
+base skyzfs-control rc=0
+base skyzfsd --features test-hooks --lib rc=0 (202 tests; a first run of the skyzfsd plants named --bin, which has no tests, and was run again with --lib: the lines below)
+# The pull request's tests:
+cas-commit	KILLED	rc=101	13s	a_ref_moved_to_another_commit_under_the_retire_is_other,a_retire_deletes_the_ref_and_its_row_only_where_they_name_its_commit
+cas-stale	KILLED	rc=101	11s	a_ref_deleted_under_the_retire_is_gone,a_ref_moved_to_another_commit_under_the_retire_is_other,a_ref_rewritten_on_its_commit_under_the_retire_is_retired,a_ref_that_moves_at_each_try_is_a_conflict_after_the_tries
+cas-conflict-done	KILLED	rc=101	10s	a_ref_deleted_under_the_retire_is_gone,a_ref_moved_to_another_commit_under_the_retire_is_other,a_ref_rewritten_on_its_commit_under_the_retire_is_retired,a_ref_that_moves_at_each_try_is_a_conflict_after_the_tries
+cas-gen0	KILLED	rc=101	14s	a_ref_rewritten_on_its_commit_under_the_retire_is_retired,a_ref_that_moves_at_each_try_is_a_conflict_after_the_tries
+split-txn	SURVIVED	rc=0	14s
+no-row-delete	KILLED	rc=101	15s	a_ref_rewritten_on_its_commit_under_the_retire_is_retired,a_ref_that_moves_at_each_try_is_a_conflict_after_the_tries,a_retire_deletes_the_ref_and_its_row_only_where_they_name_its_commit
+tries-1	KILLED	rc=101	16s	a_ref_deleted_under_the_retire_is_gone,a_ref_moved_to_another_commit_under_the_retire_is_other,a_ref_rewritten_on_its_commit_under_the_retire_is_retired,a_ref_that_moves_at_each_try_is_a_conflict_after_the_tries
+tries+1	KILLED	rc=101	14s	a_ref_that_moves_at_each_try_is_a_conflict_after_the_tries
+tries-const2	SURVIVED	rc=0	16s
+gone-as-retired	KILLED	rc=101	17s	a_ref_deleted_under_the_retire_is_gone,a_retire_deletes_the_ref_and_its_row_only_where_they_name_its_commit,a_row_with_no_ref_is_gone_and_left
+stop-no-refuse	KILLED	rc=101	16s	retires_that_wait_when_the_uploader_stops_are_refused_stopped
+stop-only-lease	SURVIVED	rc=0	13s
+asker-pop	KILLED	rc=101	13s	a_retire_whose_asker_gave_up_is_not_taken
+asker-ctl	KILLED	rc=101	15s	a_retire_whose_asker_gave_up_is_not_taken
+ctl-stopped	KILLED	rc=101	17s	a_retire_after_another_took_the_lease_is_fenced_and_stops
+ctl-asked	KILLED	rc=101	16s	a_retire_of_a_name_that_pends_is_refused_asked
+fence-store	KILLED	rc=101	15s	a_retire_after_another_took_the_lease_is_fenced_and_stops
+store-as-stopped	SURVIVED	rc=0	17s
+no-keeping	SURVIVED	rc=0	15s
+nolease-refuse	KILLED	rc=101	16s	a_retire_of_a_name_that_pends_is_refused_asked,retires_that_wait_when_the_uploader_stops_are_refused_stopped
+client-v2	KILLED	rc=101	3s	tests::socket::a_daemon_of_an_earlier_version_is_not_read
+rewound-optional	KILLED	rc=101	3s	tests::a_line_that_is_not_exactly_a_request_does_not_parse
+rewound-unwritten	KILLED	rc=101	3s	tests::every_line_reads_back_as_written,tests::the_lines_are_version_3s_words
+daemon-v2	KILLED	rc=101	32s	control::tests::a_request_that_cannot_be_taken_is_refused_without_asking
+kill-count-all	KILLED	rc=101	32s	kill::tests::the_uploaders_remote_falls_after_the_nth_retires_transaction
+kill-before	KILLED	rc=101	32s	kill::tests::the_uploaders_remote_falls_after_the_nth_retires_transaction
+record-none	KILLED	rc=101	26s	record::tests::a_publish_has_its_lines_as_asked_and_as_it_ended
+record-op	KILLED	rc=101	28s	record::tests::a_publish_has_its_lines_as_asked_and_as_it_ended
+handler-commit	KILLED	rc=101	33s	control::tests::uploader::each_request_goes_to_the_uploader_and_its_answer_back
+reply-gone	KILLED	rc=101	33s	control::tests::uploader::each_request_goes_to_the_uploader_and_its_answer_back
+retire-name	KILLED	rc=101	29s	control::tests::a_request_that_cannot_be_taken_is_refused_without_asking
+drop-at-make	SURVIVED	rc=0	17s
+# With the scratch tests S1-S3 added (scratch-retire.rs, scratch-uploader.rs):
+tries-const2	SURVIVED	rc=0	17s
+stop-only-lease	SURVIVED	rc=0	16s
+no-keeping	SURVIVED	rc=0	11s
+split-txn	KILLED	rc=101	19s	review_s1_a_landed_retire_whose_answer_was_lost_took_the_row_with_the_ref
+store-as-stopped	KILLED	rc=101	18s	review_s2_a_retire_that_object_storage_fails_is_store_and_the_uploader_goes_on
+drop-at-make	KILLED	rc=101	11s	review_s3_a_retire_asked_before_the_first_take_is_made_after_it
