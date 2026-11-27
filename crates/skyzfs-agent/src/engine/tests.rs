@@ -533,6 +533,44 @@ fn the_fake_daemon_retires_as_skyzfsd_does() {
     );
 }
 
+/// A retire of a name whose publish pends at the fake daemon is refused
+/// `asked`, as skyzfsd refuses it, and leaves the publish pending.
+#[test]
+fn the_fake_daemon_refuses_a_retire_while_the_publish_pends() {
+    let world = World::new(Mode::Idle);
+    let keep = MemKeep::default();
+    let replies = Rc::new(RefCell::new(Vec::new()));
+    let hook = {
+        let (world, replies) = (world.clone(), replies.clone());
+        move |point: Point, _: &str| {
+            if point == ASKED && replies.borrow().is_empty() {
+                let pending = world.borrow().daemon.pending();
+                for name in pending {
+                    let retire = Request::Retire(skyzfs_control::Retire {
+                        name: name.clone(),
+                        commit: [0xee; 32],
+                    });
+                    let reply = FakeDaemon(world.clone()).ask(&retire, &[]);
+                    let still = world.borrow().daemon.pending().contains(&name);
+                    replies.borrow_mut().push((reply, still));
+                }
+            }
+            false
+        }
+    };
+    let mut agent = agent(&world, &keep).with_points(Box::new(hook));
+    agent.begin().expect("begun");
+    agent.settle(LIMIT).expect("settled");
+    let replies = replies.borrow();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    let (reply, still) = &replies[0];
+    assert!(
+        matches!(reply, Ok(Reply::Refused(Code::Asked, _))),
+        "{reply:?}"
+    );
+    assert!(still, "the publish no longer pends");
+}
+
 /// The agent's run with the daemon rebooted just after each of its first
 /// `reboots` requests was accepted, on an idle pool: the held cuts are
 /// lost, and a request asked anew (with a count read after the hold) is

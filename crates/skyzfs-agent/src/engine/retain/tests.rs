@@ -344,6 +344,59 @@ fn a_backlog_is_worked_off_a_few_names_a_round() {
     const { assert!(RETIRING_MAX >= STEPS_MAX) };
 }
 
+/// A name stopped `other` takes no step of the round: it is told once
+/// and not asked again, so the others past `--keep` are worked off at
+/// [`STEPS_MAX`] a round all the same.
+///
+/// Mutant: a name stopped `other` counted as a step.
+#[test]
+fn a_name_stopped_other_takes_no_step() {
+    let (world, keep, names) = published(STEPS_MAX + 4);
+    change_record(&keep, |r| {
+        for p in r.published.iter_mut().take(3) {
+            p.retire = Some(Retire::Other);
+        }
+    });
+    let mut a = agent(&world, &keep);
+    a.set_keep(1);
+    a.retain().expect("retained");
+    assert_eq!(
+        retired(a.outcomes()),
+        names[3..3 + STEPS_MAX].to_vec(),
+        "{:?}",
+        a.outcomes()
+    );
+}
+
+/// The names given up past their time are worked off at [`STEPS_MAX`]
+/// a round too, oldest first.
+///
+/// Mutant: no bound on the names given up in a round.
+#[test]
+fn a_backlog_given_up_is_worked_off_a_few_names_a_round() {
+    let (world, keep, names) = published(STEPS_MAX + 3);
+    let now = world.borrow().now_ms;
+    change_record(&keep, |r| {
+        let published = std::mem::take(&mut r.published);
+        for p in published {
+            r.abandoned.push(crate::record::Abandoned {
+                name: p.name,
+                why: Why::NotWhole,
+                at_ms: now,
+                left: Left::Members(p.members),
+            });
+        }
+    });
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    let mut a = agent(&world, &keep);
+    a.retain().expect("retained");
+    assert_eq!(retired(a.outcomes()), names[..STEPS_MAX].to_vec());
+    assert_eq!(a.record().abandoned.len(), 3);
+    a.retain().expect("retained again");
+    assert_eq!(retired(a.outcomes()), names);
+    assert!(a.record().abandoned.is_empty());
+}
+
 /// The marks are bounded too: with more past `--keep` than
 /// [`RETIRING_MAX`], no more are marked than that.
 #[test]
