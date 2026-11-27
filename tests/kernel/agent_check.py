@@ -215,6 +215,7 @@ FIRST_RC = {
     'runtwice': '1',
     'runheld': '0',
     'runbad': '6',
+    'runrewind': '0',
 }
 # The scenario -> T's outcome where the scenario's premise holds and the
 # case has no kill (expected: a kill leaves some to the criterion alone).
@@ -236,6 +237,7 @@ EXPECTED = {
     'runtwice': 'published',
     'runheld': 'published',
     'runbad': 'published',
+    'runrewind': 'published',
 }
 # `skyzfs-agent run` (arun): the rig's --every-s, and how long after
 # the rig's SIGTERM (between two rounds) or its two signals the run may
@@ -614,7 +616,63 @@ def ended_within(term, ended, limit=END_WITHIN):
     return [] if gap <= limit else [f'it ended {gap:.2f} s after the signal, not within {limit} s']
 
 
-RUN_SCENARIOS = ('run', 'runkill', 'runtwice', 'runheld', 'runbad')
+RUN_SCENARIOS = ('run', 'runkill', 'runtwice', 'runheld', 'runbad', 'runrewind')
+# The daemon's `cuts` answer, as publish_agent.py's `ask cuts` prints it.
+CUTS_LINE = re.compile(r'cuts .*\bgroup=([0-9]+|none) opens=(itself|rewind|none)\b.*')
+NO_BEGIN = 'no publish begun'
+
+
+def read_cuts(text):
+    """A `cuts` answer (rewind-top.txt, rewind-cuts.txt) -> (group, opens),
+    (None, 'none') before the first cut."""
+    m = CUTS_LINE.fullmatch(text.strip())
+    if not m:
+        raise RigError(f'not a cuts answer: {text.strip()[:200]!r}')
+    return (None if m[1] == 'none' else int(m[1])), m[2]
+
+
+def rewind_premise(txg, top, cuts):
+    """rewind-txg, rewind-top.txt and rewind-cuts.txt -> [what is not so]:
+    the pool imported at a group below the daemon's newest cut before
+    the import, and the newest cut after it opens only as a rewind."""
+    if not txg.strip().isdigit():
+        raise RigError(f'rewind-txg: {txg.strip()!r}, not a group')
+    t = int(txg)
+    tg, _ = read_cuts(top)
+    cg, opens = read_cuts(cuts)
+    bad = []
+    if tg is None or tg <= t:
+        bad.append(f'the daemon\'s newest cut before the import is of group {tg}, not above the import\'s {t}')
+    if opens != 'rewind':
+        bad.append(f'after the import the newest cut, of group {cg}, opens {opens}, not only as a rewind: there '
+                   'was nothing to sync past')
+    return bad
+
+
+def judge_synced(rounds, published, err):
+    """`run`'s rounds after a rewind import, the names it printed
+    published and its standard error -> [what is not so]: the first
+    round synced (`synced=` above 0) and began a publish that it or a
+    later round printed published; no later round synced; no round said
+    it began none."""
+    if not rounds:
+        return ['no round line']
+    first, bad = rounds[0], []
+    if first['synced'] is None:
+        bad.append('round 1 has no synced= (an agent from before M2.7d)')
+    elif first['synced'] == 0:
+        bad.append('round 1 synced 0 times with the newest cut opening only as a rewind')
+    if first['begun'] is None:
+        bad.append('round 1 began no publish')
+    elif first['begun'] not in published:
+        bad.append(f'round 1\'s publish {first["begun"]} was not printed published')
+    later = [r['n'] for r in rounds[1:] if r['synced']]
+    if later:
+        bad.append(f'round(s) {later} synced again, past the abandoned groups already')
+    said = [ln for ln in err.splitlines() if NO_BEGIN in ln]
+    if said:
+        bad.append(f'standard error says: {said[0][:200]}')
+    return bad
 
 
 def judge_run(cid, cd, scen, outs, holds, premise, text):
@@ -659,6 +717,19 @@ def judge_run(cid, cd, scen, outs, holds, premise, text):
         ended('run2', 'sigterm')
     if scen == 'runtwice':
         ended('publish', 'second_signal')
+    if scen == 'runrewind':
+        txg = text(at('rewind-txg')).strip()
+        if premise(f'premise_{cid}_rewound', rewind_premise(txg, text(at('rewind-top.txt')),
+                                                            text(at('rewind-cuts.txt'))),
+                   f'imported at group {txg}, below the daemon\'s newest cut; the newest cut then opened only as a '
+                   'rewind'):
+            first = rounds[0] if rounds else {}
+            holds(f'pin_{cid}_synced_past', judge_synced(rounds, outs.get('publish', {}).get('published', {}),
+                                                         text(at('publish.err'))), 'server',
+                  f'round 1 synced {first.get("synced")} times, then began {first.get("begun")}, published')
+        holds(f'pin_{cid}_rounds', judge_rounds(rounds, read_arrivals(text(at('publish.rounds.tsv'))), 2), 'server',
+              f'{len(rounds)} rounds after the rewind import, each ok and beginning its own publish')
+        ended('publish', 'sigterm')
     if scen == 'runbad':
         kind = text(at('bad.kind')).strip()
         if kind not in ('corrupt', 'volume'):

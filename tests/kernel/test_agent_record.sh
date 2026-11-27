@@ -1055,11 +1055,13 @@ runt() {
         echo 'the record' > "$ADIR/record"; : > "$RUN/v/control"
         export FAKE_DIR=$CDIR FAKE_MODE=$2 FAKE_TOOK=$3 FAKE_GAP=${5:-0.15} FAKE_SOCK=$RUN/v/control FAKE_REC=$ADIR/record
         log() { :; }; vrun() { echo "$RUN/v"; }; wait_point() { sleep 0.3; }; case_name() { echo r1; }
-        for f in verdict case_error acmd abg await_agent await_rounds run_rounds_then_term other_remote "scen_$1"; do
+        for f in verdict case_error acmd abg await_agent await_rounds run_rounds_then_term other_remote \
+            rewind_groups "scen_$1"; do
             eval "$(fn "$f")"
         done
         if [ -n "${RUNT_ACMD:-}" ]; then eval "acmd() { $RUNT_ACMD; }"; fi
-        RUN_EVERY=10
+        if [ -n "${RUNT_STUBS:-}" ]; then eval "$RUNT_STUBS"; fi
+        RUN_EVERY=10 REWIND_BACK=8 REWIND_GROUPS=()
         "scen_$1" "${4:-}" --trace-points x
         echo "ADIR=${ADIR#"$T"/} VOL=${VOL#"$T"/}" > "$T/rc.vars"
     )
@@ -1137,6 +1139,37 @@ none"
 runt runbad end "8000 8000 8000" corrupt 0.6
 is "runbad: no round with 3 s left is a verdict; nothing changed" "$(bad_seen)" \
     "rc=3 rounds=1,2,3, ordered sig= ended= verdicts=rounds, bad=none seen= record=the record sock=back"
+# runrewind: stand-ins for the pool, the store and the daemon. Each
+# sync commits one group that wrote, above group 101, the newest before
+# the case (RW_GROW=0: none).
+RW_STUBS='
+    MNT=$T/rmnt RDIR=$T/rc; mkdir -p "$MNT"
+    call() { echo "$*" >> "$CDIR/calls"; }
+    writer_off() { call writer_off; }
+    writer_on() { call "writer_on after $(grep -c "^round " "$CDIR/publish.out" 2>/dev/null) rounds"; }
+    freeze() { call freeze; }; thaw() { call thaw; }
+    committed() { printf "100\n101\n"; }
+    z() { call "z $*"; echo $(( $(cat "$CDIR/syncs" 2>/dev/null || echo 0) + 1 )) > "$CDIR/syncs"; }
+    groups_written() { seq 95 $((101 + ${RW_GROW:-1} * $(cat "$CDIR/syncs" 2>/dev/null || echo 0))); }
+    export_pool() { call export; }; import_pool() { call "import $*"; }
+    pagent() { call "pagent $*"; echo "cuts group=110 opens=rewind"; }
+'
+RUNT_STUBS=$RW_STUBS runt runrewind rounds "14000 3000"
+is "runrewind: frozen, nine syncs, exported, imported at the eighth group back, thawed" \
+    "$(grep -v '^z ' "$T/rc/calls" | tr '\n' ';') $(grep -c '^z 60 zpool sync skzcut$' "$T/rc/calls")" \
+    "writer_off;freeze;export;pagent ask cuts;import -T 103;thaw;pagent ask cuts;writer_on after 1 rounds; 9"
+is "runrewind: the import's group and the cuts read" \
+    "$(cat "$T/rc/rewind-txg" "$T/rc/rewind-top.txt" "$T/rc/rewind-cuts.txt" | tr '\n' ';')" \
+    "103;cuts group=110 opens=rewind;cuts group=110 opens=rewind;"
+is "runrewind: two rounds, then SIGTERM" "$(seen publish)" \
+    "rc=0 rounds=1,2, ordered sig=SIGTERM, ended=after verdicts="
+is "runrewind: the run asked of the agent" "$(cat "$T/rc/argv")" \
+    "run --volume $T/rvol --run $T/rrun --device /dev/null --pool skzcut --dir $T/rc/agent --every-s 10 --trace-points x"
+RW_GROW=0 RUNT_STUBS=$RW_STUBS runt runrewind rounds "3000 3000"
+is "runrewind: too few groups is the rig's error; no import, no run, the writer back" \
+    "$(cat "$T/rc/rig-error.txt"; grep -v '^z ' "$T/rc/calls" | tr '\n' ';'; [ -e "$T/rc/argv" ] || echo " no run")" \
+    "0 groups committed in twelve syncs with the store frozen, not 9
+writer_off;freeze;writer_on after  rounds; no run"
 arun_cases() {
     (
         agent_begin() { :; }; agent_end() { :; }
@@ -1146,7 +1179,7 @@ arun_cases() {
     )
 }
 is "arun: its cases" "$(arun_cases)" \
-    "R-run run|R-kill runkill intent:after:2|R-twice runtwice|R-held runheld|R-corrupt runbad  corrupt|R-volume runbad  volume|"
+    "R-run run|R-kill runkill intent:after:2|R-twice runtwice|R-held runheld|R-corrupt runbad  corrupt|R-volume runbad  volume|R-rewind runrewind|"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

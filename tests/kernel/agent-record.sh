@@ -133,6 +133,9 @@
 #   the agent's own, from a volume directory with another id), and the
 #   daemon's socket moved away so that the next begin fails and the
 #   engine reads the record again (exit 6); then both put back.
+#   runrewind (M2.7d): the pool imported at an older group with the
+#   daemon's cuts of the newer ones held (rewind-*), then a run whose
+#   first round syncs past them and publishes; two rounds, then SIGTERM.
 #
 # The courses:
 # - aplain (job A): a plain publish traced (case `trace`), then a case
@@ -150,7 +153,7 @@
 #   unmarked.
 # - arun (job R): R-run (run), R-kill (runkill at intent:after:2, the
 #   second round's intent), R-twice (runtwice), R-held (runheld),
-#   R-corrupt and R-volume (runbad).
+#   R-corrupt and R-volume (runbad), R-rewind (runrewind).
 #
 # A stall (eight asks with no cut counted, then given up) is left to the
 # agent's fakes: on a real daemon a stall needs a cut that is not
@@ -782,6 +785,67 @@ scen_runbad() {
     mv "$sock.away" "$sock"
     cp -p "$CDIR/record.saved" "$ADIR/record"
 }
+# runrewind (M2.7d): `run` after a rewind import. The writer stopped and
+# the store frozen, so that the daemon holds every cut from then on
+# (none can be uploaded); groups written and synced (rewind_groups)
+# until REWIND_BACK + 1 have committed since; the pool exported and
+# imported at the group REWIND_BACK from the newest (`zpool import -T`).
+# Its next groups are below those of the history it abandoned, and no
+# cut opens as itself until they pass them (design §5.2). The store
+# thaws, and the daemon's newest cut is read: the premise is one that
+# opens only as a rewind (rewind-cuts.txt; rewind-top.txt the daemon's
+# newest cut after the export, rewind-txg the import's group). Then
+# `run`: its first round must sync past and begin a publish, which node
+# B verifies; the writer comes back after that round; two rounds, then
+# SIGTERM.
+REWIND_BACK=8
+# FIRST: written and synced, a group at a time, until REWIND_BACK + 1
+# groups above FIRST have committed with something written (the txgs
+# kstat's groups_written: one that wrote nothing may have left no
+# uberblock to import at), for twelve syncs at most; those
+# groups in REWIND_GROUPS (a global, not output: the syncs' rig_error
+# must not run in a command substitution's subshell). Not `load`: its
+# snapshots are node B's (snaps.tsv), and those of the abandoned
+# history would be gone.
+REWIND_GROUPS=()
+rewind_groups() {
+    local k
+    REWIND_GROUPS=()
+    for k in $(seq 1 12); do
+        dd if=/dev/urandom of="$MNT/rewind-$k" bs=64K count=4 status=none
+        z 60 zpool sync "$POOL"
+        mapfile -t REWIND_GROUPS < <(groups_written | awk -v g="$1" '$1 > g')
+        [ "${#REWIND_GROUPS[@]}" -le "$REWIND_BACK" ] || break
+    done
+}
+scen_runrewind() {
+    local first t
+    shift
+    writer_off
+    freeze
+    first=$(committed | tail -n 1)
+    rewind_groups "${first:-0}"
+    local groups=("${REWIND_GROUPS[@]}")
+    if [ "${#groups[@]}" -le "$REWIND_BACK" ]; then
+        case_error "${#groups[@]} groups committed in twelve syncs with the store frozen, not $((REWIND_BACK + 1))"
+        writer_on
+        return 0
+    fi
+    t=${groups[$(( ${#groups[@]} - REWIND_BACK ))]}
+    echo "$t" > "$CDIR/rewind-txg"
+    export_pool
+    pagent ask cuts > "$CDIR/rewind-top.txt" 2>> "$RDIR/agent.err" \
+        || rig_error "the daemon's cuts after the export: $(tail -n 2 "$RDIR/agent.err")"
+    log "$NAME: case $(basename "$CDIR"): importing at group $t of ${groups[-1]} (the daemon's newest cut: $(cat "$CDIR/rewind-top.txt"))"
+    import_pool -T "$t"
+    thaw
+    pagent ask cuts > "$CDIR/rewind-cuts.txt" 2>> "$RDIR/agent.err" \
+        || rig_error "the daemon's cuts after the rewind: $(tail -n 2 "$RDIR/agent.err")"
+    abg publish run --every-s "$RUN_EVERY" "$@"
+    await_rounds publish 1 300 || true
+    writer_on
+    run_rounds_then_term publish 2
+}
 
 # The courses.
 agent_begin() {
@@ -939,5 +1003,6 @@ rec_arun() {
     acase R-held runheld
     acase R-corrupt runbad "" corrupt
     acase R-volume runbad "" volume
+    acase R-rewind runrewind
     agent_end
 }

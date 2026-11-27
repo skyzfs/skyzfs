@@ -1291,9 +1291,9 @@ class Survivors(unittest.TestCase):
         self.assertEqual((rc, lines['pin_d-carry-swap_carried_by_the_last_request'][0]), (1, 'FAILED'))
 
 
-def rline(n, name, took=3000, late=0, skipped=0, ok=True):
+def rline(n, name, took=3000, late=0, skipped=0, ok=True, synced=None):
     return (f'round {n} {"ok" if ok else "failed"} took_ms={took} late_ms={late} skipped={skipped} '
-            f'begun={name or "-"} under_way=0')
+            f'begun={name or "-"} under_way=0' + ('' if synced is None else f' synced={synced}'))
 
 
 def rounds_of(*lines):
@@ -1522,6 +1522,89 @@ class Run(unittest.TestCase):
         for change in ({'bad.kind': 'other\n'}, {'bad.rounds': 'one\n'}):
             rc, lines = self.judged(self.bad('corrupt', **change), 'R-corrupt')
             self.assertEqual(rc, 2, (change, lines))
+
+
+CUTS_TOP = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=40 group=120 opens=itself'
+CUTS_AFTER = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=42 group=114 opens=rewind'
+
+
+class Rewind(unittest.TestCase):
+    def test_read_cuts(self):
+        self.assertEqual(ac.read_cuts(CUTS_TOP + '\n'), (120, 'itself'))
+        self.assertEqual(ac.read_cuts(CUTS_AFTER), (114, 'rewind'))
+        self.assertEqual(ac.read_cuts('cuts attachment=a state=none count=0 group=none opens=none'), (None, 'none'))
+        for bad in ('', 'refused gone the daemon', 'cuts group=12', 'cuts group=12 opens=maybe',
+                    'accepted group=12 opens=rewind'):
+            with self.assertRaises(RigError, msg=bad):
+                ac.read_cuts(bad)
+
+    def test_rewind_premise(self):
+        self.assertEqual(ac.rewind_premise('112\n', CUTS_TOP, CUTS_AFTER), [])
+        self.assertTrue(ac.rewind_premise('112', CUTS_TOP, CUTS_AFTER.replace('rewind', 'itself')))
+        self.assertTrue(ac.rewind_premise('120', CUTS_TOP, CUTS_AFTER))
+        self.assertTrue(ac.rewind_premise('112', CUTS_TOP.replace('group=120 opens=itself', 'group=none opens=none'),
+                                          CUTS_AFTER))
+        with self.assertRaises(RigError):
+            ac.rewind_premise('', CUTS_TOP, CUTS_AFTER)
+
+    def test_judge_synced(self):
+        good = rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=0))
+        self.assertEqual(ac.judge_synced(good, {'r1': 'c', 'r2': 'c'}, ''), [])
+        for rounds, pub, err, what in [
+                ([], {}, '', 'no round line'),
+                (rounds_of(rline(1, 'r1'), rline(2, 'r2')), {'r1': 'c'}, '', 'no synced='),
+                (rounds_of(rline(1, 'r1', synced=0), rline(2, 'r2', synced=0)), {'r1': 'c'}, '', 'synced 0'),
+                (rounds_of(rline(1, None, synced=5)), {}, '', 'began no publish'),
+                (rounds_of(rline(1, 'r1', synced=5)), {'r2': 'c'}, '', 'not printed published'),
+                (rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=1)), {'r1': 'c'}, '', 'synced again'),
+                (good, {'r1': 'c'}, 'skyzfs-agent: round 2: no publish begun: the newest cut, of group 9, does not '
+                                    'open as itself: the daemon counted no cut after a sync\n', 'standard error')]:
+            bad = ac.judge_synced(rounds, pub, err)
+            self.assertTrue(any(what in b for b in bad), (what, bad))
+
+    def case(self, **change):
+        # Round 1's syncs and settle took 14 s: round 2 is tick 10's, 4 s late.
+        lines = [rline(1, 'r1', took=14000, synced=6), rline(2, 'r2', late=4000, synced=0)]
+        files = {'trace.tsv': trace('r2', *WHOLE), 'publish.out': run_out(lines, ('r1', 'r2')),
+                 'publish.rounds.tsv': arrivals(1014.0, 1017.0), 'publish.term-at': '1018.0\n',
+                 'publish.ended-at': '1018.3\n', 'rewind-txg': '112\n', 'rewind-top.txt': CUTS_TOP + '\n',
+                 'rewind-cuts.txt': CUTS_AFTER + '\n'}
+        files.update(change)
+        return with_run_case('R-rewind', 'runrewind', '-', '0', 'r2', files, pub=(('r1', 121), ('r2', 122)))
+
+    def judged(self, c):
+        rc, lines = run_course(course=c, name='arun')
+        return rc, {k: v for k, v in lines.items() if 'R-rewind' in k}
+
+    def test_runrewind(self):
+        rc, lines = self.judged(self.case())
+        for k in ('premise_R-rewind_rewound', 'pin_R-rewind_synced_past', 'pin_R-rewind_rounds',
+                  'pin_R-rewind_ended_on_sigterm', 'pin_R-rewind_first_run', 'pin_R-rewind_outcome'):
+            self.assertEqual(lines[k][0], 'ok', (k, lines))
+        self.assertEqual(rc, 0, lines)
+
+    def test_runrewind_fails(self):
+        for change, key in [
+                ({'publish.out': run_out([rline(1, 'r1', took=14000, synced=0),
+                                          rline(2, 'r2', late=4000, synced=0)], ('r1', 'r2'))}, 'synced_past'),
+                ({'publish.out': run_out([rline(1, 'r1', took=14000, skipped=1),
+                                          rline(2, 'r2', late=4000)], ('r1', 'r2'))}, 'synced_past'),
+                ({'publish.err': 'skyzfs-agent: round 1: no publish begun: x\n'}, 'synced_past'),
+                ({'publish.out': run_out([rline(1, 'r1', took=14000, synced=6)], ('r1',))}, 'rounds'),
+                ({'publish.ended-at': '1021.0\n'}, 'ended_on_sigterm'),
+                ({'publish.rounds.tsv': arrivals(1014.0, 1023.0)}, 'rounds')]:
+            rc, lines = self.judged(self.case(**change))
+            self.assertEqual(lines[f'pin_R-rewind_{key}'][0], 'FAILED', (change, lines))
+            self.assertEqual(rc, 1, (change, lines))
+
+    def test_runrewind_premise(self):
+        for change in ({'rewind-cuts.txt': CUTS_AFTER.replace('rewind', 'itself')}, {'rewind-txg': '120\n'}):
+            rc, lines = self.judged(self.case(**change))
+            self.assertEqual(lines['premise_R-rewind_rewound'][0], 'ERROR', (change, lines))
+            self.assertNotIn('pin_R-rewind_synced_past', lines)
+            self.assertEqual(rc, 2, (change, lines))
+        rc, lines = self.judged(self.case(**{'rewind-cuts.txt': 'refused gone x\n'}))
+        self.assertEqual(rc, 2, lines)
 
 
 if __name__ == '__main__':
