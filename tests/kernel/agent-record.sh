@@ -3,9 +3,10 @@
 # plan of M2.6): the real agent (bins/skyzfs-agent, built with its test
 # hooks) publishes snapshots of a real pool whose device the real daemon
 # serves with its uploads (cut-record.sh's CUT_UPLOAD=1), and the rig
-# loses the agent, the daemon or both at each step of a publish. Sourced
-# by cut-record.sh, which calls the courses by name (rec_aplain,
-# rec_adaemon, rec_arare); agent_check.py (their CUT_CHECK) judges what
+# loses the agent, the daemon or both at each step of a publish; arun
+# drives `skyzfs-agent run`. Sourced by cut-record.sh, which calls the
+# courses by name (rec_aplain, rec_adaemon, rec_arare, rec_arun);
+# agent_check.py (their CUT_CHECK) judges what
 # each case left, and node B verifies every snapshot published.
 #
 # A case is one publish begun by the agent, under a scenario (below),
@@ -118,6 +119,23 @@
 #   (SIGCONT), with the row landed and the answer never read.
 # - both: the agent killed at its point, and the daemon killed as soon
 #   as the agent has died; the next instance serves, then the settle.
+# - run, runkill, runtwice, runheld, runbad (M2.7a): `skyzfs-agent run
+#   --every-s 10` in the background, its round lines' arrivals on the
+#   rig's clock in LABEL.rounds.tsv, the SIGTERM's and the end's times
+#   in LABEL.term-at and LABEL.ended-at. run: three rounds, then SIGTERM
+#   between two (exit 0). runkill: killed at the case's point, then a
+#   new run in the same directory (run2.{out,err,rc}): two rounds, then
+#   SIGTERM. runtwice: a SIGTERM and a SIGINT at once while the first
+#   round works (exit 1). runheld: after the first round, `recover` and
+#   `settle` of the volume (held, held-settle: exit 8 each), then the
+#   third round and SIGTERM. runbad corrupt|volume: between two rounds
+#   the record made corrupt or replaced by another volume's (other.*:
+#   the agent's own, from a volume directory with another id), and the
+#   daemon's socket moved away so that the next begin fails and the
+#   engine reads the record again (exit 6); then both put back.
+#   runrewind (M2.7d): the pool imported at an older group with the
+#   daemon's cuts of the newer ones held (rewind-*), then a run whose
+#   first round syncs past them and publishes; two rounds, then SIGTERM.
 #
 # The courses:
 # - aplain (job A): a plain publish traced (case `trace`), then a case
@@ -133,6 +151,9 @@
 #   its own included (G1 of #158's review), each point at its first
 #   three reaches and its last (agent_check.py points); then gone and
 #   unmarked.
+# - arun (job R): R-run (run), R-kill (runkill at intent:after:2, the
+#   second round's intent), R-twice (runtwice), R-held (runheld),
+#   R-corrupt and R-volume (runbad), R-rewind (runrewind).
 #
 # A stall (eight asks with no cut counted, then given up) is left to the
 # agent's fakes: on a real daemon a stall needs a cut that is not
@@ -624,6 +645,248 @@ scen_both() {
     serve_again
 }
 
+# `skyzfs-agent run` (M2.7a): one process, a round every RUN_EVERY s.
+RUN_EVERY=10
+# LABEL N SECONDS: until the run in the background has printed N round
+# lines on CDIR/LABEL.out, or has ended, for up to SECONDS. Each round
+# line's arrival, on the rig's clock (its realtime, read every 0.1 s),
+# is a line of CDIR/LABEL.rounds.tsv: the line's number, the time. 0
+# when N lines came.
+await_rounds() {
+    local label=$1 want=$2 t0=$SECONDS k have
+    k=$(wc -l 2>/dev/null < "$CDIR/$label.rounds.tsv") || k=0
+    while :; do
+        have=$(grep -c '^round ' "$CDIR/$label.out" 2>/dev/null) || have=0
+        while [ "$k" -lt "$have" ]; do
+            k=$((k + 1))
+            printf '%s\t%s\n' "$k" "$EPOCHREALTIME" >> "$CDIR/$label.rounds.tsv"
+        done
+        [ "$have" -lt "$want" ] || return 0
+        kill -0 "$AGENT_PID" 2>/dev/null || return 1
+        [ $((SECONDS - t0)) -lt "$3" ] || return 1
+        sleep 0.1
+    done
+}
+# LABEL: the ms left to the next tick after the last round line of
+# CDIR/LABEL.out (--every-s less its took_ms and late_ms; below 0 where
+# it overran its tick, and the next round begins at once); 0 where there
+# is no round line.
+round_left() {
+    awk -v e="$RUN_EVERY" '/^round / { for (i = 3; i <= NF; i++) { split($i, f, "="); v[f[1]] = f[2] }; l = e * 1000 - v["took_ms"] - v["late_ms"] } END { print int(l) }' "$CDIR/$1.out" 2>/dev/null || echo 0
+}
+# LABEL N: N round lines came (await_rounds), then more until one came
+# with 3 s or more left to its next tick (three more at most), and the
+# run is told to end with one SIGTERM there: between two rounds, while
+# it waits for the tick. A round that overran its tick is followed at
+# once by the next (program::schedule), so a SIGTERM right after its
+# line would come while the engine works (Codex on #171). Round lines
+# are stamped until the run ends, so that one printed after the signal
+# has its arrival (the check's pin_ID_no_round_after_sigterm); the end
+# within 60 s (await_agent). The signal's time and the end's, on the
+# rig's clock, are CDIR/LABEL.term-at and LABEL.ended-at. Fewer than N
+# lines in 120 s per line, or a run that ended before a line with 3 s
+# left, is a verdict; a run alive with no such line in three more is the
+# rig's error.
+run_rounds_then_term() {
+    local k=$2 limit=$((120 * $2)) left=0 have
+    while await_rounds "$1" "$k" "$limit"; do
+        left=$(round_left "$1")
+        [ "$left" -lt 3000 ] && [ "$k" -lt $(($2 + 3)) ] || break
+        k=$((k + 1)) limit=120
+    done
+    have=$(grep -c '^round ' "$CDIR/$1.out" 2>/dev/null) || have=0
+    if [ "$have" -ge "$2" ] && [ "$left" -ge 3000 ] && kill -0 "$AGENT_PID" 2>/dev/null; then
+        # Every line read so far is stamped before the signal (a line
+        # that came after the last stamp, and before round_left read
+        # it, would otherwise be stamped after the signal).
+        await_rounds "$1" 0 0 || true
+        kill -TERM "$AGENT_PID" 2>/dev/null || true
+        echo "$EPOCHREALTIME" > "$CDIR/$1.term-at"
+        await_rounds "$1" 1000000 60 || true
+    elif [ "$have" -lt "$2" ]; then
+        verdict rounds "the run printed $have round lines, not $2: $(tail -n 2 "$CDIR/$1.err")"
+    elif ! kill -0 "$AGENT_PID" 2>/dev/null; then
+        verdict rounds "the run ended after $have round lines, before one with 3 s left to its next tick: $(tail -n 2 "$CDIR/$1.err")"
+    else
+        # A run whose rounds overrun its tick again and again does what
+        # its docs allow, and the case cannot signal it between two: the
+        # rig's error, and the run ended with a SIGTERM that no pin reads.
+        case_error "no round line with 3 s left to its next tick in $have rounds at --every-s $RUN_EVERY: no time between two rounds to signal the run in"
+        kill -TERM "$AGENT_PID" 2>/dev/null || true
+    fi
+    await_agent "$1" 60
+    # A line printed just before the end is stamped too, after the signal.
+    await_rounds "$1" 1000000 0 || true
+    echo "$EPOCHREALTIME" > "$CDIR/$1.ended-at"
+}
+# run: three rounds, then SIGTERM between two (exit 0).
+scen_run() {
+    shift
+    abg publish run --every-s "$RUN_EVERY" "$@"
+    run_rounds_then_term publish 3
+}
+# runkill: the run killed at the case's point (a point of its second
+# round), then a new run in the same directory, as after a reboot: two
+# rounds, then SIGTERM.
+scen_runkill() {
+    shift
+    abg publish run --every-s "$RUN_EVERY" "$@"
+    await_agent publish 300
+    abg run2 run --every-s "$RUN_EVERY"
+    run_rounds_then_term run2 2
+}
+# runtwice: two signals while the first round works, a SIGTERM and a
+# SIGINT, sent at once: two signals of one kind sent together can be
+# merged into one while both are pending, two kinds cannot. The second
+# ends the run at once with 1. bash starts a command in the background
+# with SIGINT ignored; the agent's handler (signal-hook, sigaction
+# whatever the disposition was) takes its place.
+scen_runtwice() {
+    shift
+    abg publish run --every-s "$RUN_EVERY" "$@"
+    if wait_point asked after 60; then
+        kill -TERM "$AGENT_PID" 2>/dev/null || true
+        kill -INT "$AGENT_PID" 2>/dev/null || true
+        echo "$EPOCHREALTIME" > "$CDIR/publish.term-at"
+    else
+        verdict asked "the agent did not reach asked:after in 60 s"
+    fi
+    await_agent publish 60
+    echo "$EPOCHREALTIME" > "$CDIR/publish.ended-at"
+}
+# runheld: after the first round, `recover` and `settle` of the volume
+# while the run holds its directory (exit 8 each); the run goes on to
+# its third round, then SIGTERM. held.rounds is how many round lines
+# the run had printed when the refusals ended.
+scen_runheld() {
+    local t
+    shift
+    abg publish run --every-s "$RUN_EVERY" "$@"
+    if await_rounds publish 1 120; then
+        t=$(case_name)
+        acmd held recover --name "${t:-none}" --retry --limit-s 30
+        acmd held-settle settle --limit-s 30
+        grep -c '^round ' "$CDIR/publish.out" > "$CDIR/held.rounds" || true
+    fi
+    run_rounds_then_term publish 3
+}
+# The id of `remote` with its last character changed: another volume's.
+other_remote() {
+    awk '$1 == "id" { c = substr($2, length($2)); $2 = substr($2, 1, length($2) - 1) (c == "0" ? "1" : "0") } { print }' "$1"
+}
+# runbad corrupt|volume: between two rounds the rig makes the record
+# corrupt, or puts another volume's record in its place, and moves the
+# daemon's socket away, so that the next round's begin fails at the
+# daemon's count and the engine reads the record again (Agent::restart):
+# the run must end 6 after that round's line. Then the socket comes
+# back and the record as it was, as a person who judged it would, so
+# that the settle goes on. Another volume's record is the agent's own:
+# a publish in a fresh directory of a volume directory that has only a
+# `remote` of another id enrols the pool, saves the record, and finds
+# no daemon there (other.{out,err,rc}). The rig acts after a round whose
+# line came with 3 s or more left to the next tick.
+scen_runbad() {
+    local kind=$1 sock k left
+    shift
+    echo "$kind" > "$CDIR/bad.kind"
+    if [ "$kind" = volume ]; then
+        mkdir -p "$CDIR/other-vol" "$CDIR/other"
+        other_remote "$VOL/remote" > "$CDIR/other-vol/remote"
+        local adir=$ADIR vol=$VOL
+        ADIR=$CDIR/other VOL=$CDIR/other-vol
+        acmd other publish --limit-s 30
+        ADIR=$adir VOL=$vol
+        [ -s "$CDIR/other/record" ] || { case_error "no record of another volume: $(tail -n 2 "$CDIR/other.err")"; return 0; }
+    fi
+    abg publish run --every-s "$RUN_EVERY" "$@"
+    for k in 1 2 3; do
+        await_rounds publish "$k" 120 || break
+        left=$(round_left publish)
+        [ "${left:-0}" -lt 3000 ] || break
+    done
+    if ! kill -0 "$AGENT_PID" 2>/dev/null || [ "${left:-0}" -lt 3000 ]; then
+        verdict rounds "no round line with 3 s left to its next tick in three rounds: $(tail -n 2 "$CDIR/publish.err")"
+        await_agent publish 60
+        return 0
+    fi
+    grep -c '^round ' "$CDIR/publish.out" > "$CDIR/bad.rounds"
+    cp -p "$ADIR/record" "$CDIR/record.saved"
+    if [ "$kind" = corrupt ]; then
+        printf 'not a record\n' > "$ADIR/record"
+    else
+        cp "$CDIR/other/record" "$ADIR/record"
+    fi
+    sock=$(vrun)/control
+    mv "$sock" "$sock.away"
+    await_agent publish 60
+    mv "$sock.away" "$sock"
+    cp -p "$CDIR/record.saved" "$ADIR/record"
+}
+# runrewind (M2.7d): `run` after a rewind import. The writer stopped and
+# the store frozen, so that no cut is uploaded until the store thaws
+# (the daemon holds two at most, D7: the cut being uploaded, which
+# predates the rewind, and its newest; the abandoned top is replaced by
+# the import's first cut, so this case does not show design §9's
+# publish with cuts of the abandoned history still held); groups written and synced (rewind_groups)
+# until REWIND_BACK + 1 have committed since; the pool exported and
+# imported at the group REWIND_BACK from the newest (`zpool import -T`).
+# Its next groups are below those of the history it abandoned, and no
+# cut opens as itself until they pass them (design §5.2). The store
+# thaws, and the daemon's newest cut is read: the premise is one that
+# opens only as a rewind (rewind-cuts.txt; rewind-top.txt the daemon's
+# newest cut after the export, rewind-txg the import's group). Then
+# `run`: its first round must sync past and begin a publish, which node
+# B verifies; the writer comes back after that round; two rounds, then
+# SIGTERM.
+REWIND_BACK=8
+# FIRST: written and synced, a group at a time, until REWIND_BACK + 1
+# groups above FIRST have committed with something written (the txgs
+# kstat's groups_written: one that wrote nothing may have left no
+# uberblock to import at), for twelve syncs at most; those
+# groups in REWIND_GROUPS (a global, not output: the syncs' rig_error
+# must not run in a command substitution's subshell). Not `load`: its
+# snapshots are node B's (snaps.tsv), and those of the abandoned
+# history would be gone.
+REWIND_GROUPS=()
+rewind_groups() {
+    local k
+    REWIND_GROUPS=()
+    for k in $(seq 1 12); do
+        dd if=/dev/urandom of="$MNT/rewind-$k" bs=64K count=4 status=none
+        z 60 zpool sync "$POOL"
+        mapfile -t REWIND_GROUPS < <(groups_written | awk -v g="$1" '$1 > g')
+        [ "${#REWIND_GROUPS[@]}" -le "$REWIND_BACK" ] || break
+    done
+}
+scen_runrewind() {
+    local first t
+    shift
+    writer_off
+    freeze
+    first=$(committed | tail -n 1)
+    rewind_groups "${first:-0}"
+    local groups=("${REWIND_GROUPS[@]}")
+    if [ "${#groups[@]}" -le "$REWIND_BACK" ]; then
+        case_error "${#groups[@]} groups committed in twelve syncs with the store frozen, not $((REWIND_BACK + 1))"
+        writer_on
+        return 0
+    fi
+    t=${groups[$(( ${#groups[@]} - REWIND_BACK ))]}
+    echo "$t" > "$CDIR/rewind-txg"
+    export_pool
+    pagent ask cuts > "$CDIR/rewind-top.txt" 2>> "$RDIR/agent.err" \
+        || rig_error "the daemon's cuts after the export: $(tail -n 2 "$RDIR/agent.err")"
+    log "$NAME: case $(basename "$CDIR"): importing at group $t of ${groups[-1]} (the daemon's newest cut: $(cat "$CDIR/rewind-top.txt"))"
+    import_pool -T "$t"
+    thaw
+    pagent ask cuts > "$CDIR/rewind-cuts.txt" 2>> "$RDIR/agent.err" \
+        || rig_error "the daemon's cuts after the rewind: $(tail -n 2 "$RDIR/agent.err")"
+    abg publish run --every-s "$RUN_EVERY" "$@"
+    await_rounds publish 1 300 || true
+    writer_on
+    run_rounds_then_term publish 2
+}
+
 # The courses.
 agent_begin() {
     SERVE_K=1
@@ -770,5 +1033,16 @@ rec_arare() {
     done
     acase gone gone holding:before:1
     acase unmarked unmarked
+    agent_end
+}
+rec_arun() {
+    agent_begin
+    acase R-run run
+    acase R-kill runkill intent:after:2
+    acase R-twice runtwice
+    acase R-held runheld
+    acase R-corrupt runbad "" corrupt
+    acase R-volume runbad "" volume
+    acase R-rewind runrewind
     agent_end
 }
