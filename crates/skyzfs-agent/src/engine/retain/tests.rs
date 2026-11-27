@@ -5,11 +5,13 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::time::Duration;
 
-use super::super::fake::{FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, World, POOL, VOLUME};
+use super::super::fake::{
+    FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Snap, World, POOL, VOLUME,
+};
 use super::super::{Agent, Effect, Error, Outcome, Point, Points};
-use super::{ABANDONED_KEEP_DEFAULT, STEPS_MAX};
+use super::{ABANDONED_KEEP_DEFAULT, STEPS_MAX, STUCK_FORGOTTEN};
 use crate::plan::Report;
-use crate::record::{Left, Member, Record, Retire, Why, RETIRING_MAX};
+use crate::record::{Left, Member, Record, Retire, Stuck, Why, RETIRING_MAX, STUCK_MAX};
 
 type FakeAgent = Agent<FakeZfs, FakeDaemon, MemKeep, FakeClock>;
 
@@ -238,10 +240,11 @@ fn a_ref_of_another_commit_stops_the_retirement_for_a_person() {
 
 /// A destroy that fails is told with its reason once, tried at each
 /// round, told again when the reason changes, and the name retired once
-/// it succeeds.
+/// it succeeds. From its first failure the name is stuck and no longer
+/// published (the lead's ruling on #179).
 ///
 /// Mutants: told at each round, not told again on a new reason, given up
-/// after a few tries.
+/// after a few tries, the name kept among those published.
 #[test]
 fn a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round() {
     let (world, keep, names) = published(2);
@@ -281,17 +284,19 @@ fn a_destroy_that_fails_is_told_once_a_reason_and_tried_each_round() {
         .insert(key.clone(), "second reason".into());
     a.retain().expect("retained");
     assert_eq!(not_retired(&a).len(), 2);
-    let p = a
+    assert!(!a.record().published.iter().any(|p| p.name == t));
+    let s = a
         .record()
-        .published
+        .stuck
         .iter()
-        .find(|p| p.name == t)
-        .expect("kept");
-    assert_eq!(p.retire, Some(Retire::Members));
+        .find(|s| s.name == t)
+        .expect("stuck");
+    assert!(!s.members.is_empty());
     world.borrow_mut().destroy_refused.clear();
     a.retain().expect("retained");
     assert_eq!(retired(a.outcomes()), vec![t.clone()]);
     assert!(snaps_of(&world, &t).is_empty());
+    assert!(a.record().stuck.is_empty());
 }
 
 /// A daemon that does not answer `retire` leaves the name to retire at a
@@ -612,4 +617,213 @@ fn a_name_a_person_gave_up_is_looked_up_first() {
         .count();
     assert_eq!(looks, 2);
     assert!(!world.borrow().calls.contains(&"retire"));
+}
+
+/// `n` names stuck, oldest first, seeded in the record: each with its
+/// `pool@<name>` in the world, whose destroy ZFS refuses.
+fn seed_stuck(world: &Rc<RefCell<World>>, keep: &MemKeep, n: usize) -> Vec<String> {
+    const GUID: u64 = 0x5700_0000;
+    let names: Vec<String> = (0..n).map(|i| format!("skz-20261001T{i:06}Z")).collect();
+    {
+        let mut w = world.borrow_mut();
+        for (i, name) in names.iter().enumerate() {
+            let key = format!("{POOL}@{name}");
+            w.pool.as_mut().expect("the pool").snaps.insert(
+                key.clone(),
+                Snap {
+                    guid: GUID + i as u64,
+                    createtxg: 1,
+                    holds: BTreeSet::new(),
+                    held_in: None,
+                },
+            );
+            w.destroy_refused.insert(key, "a clone of it".into());
+        }
+    }
+    change_record(keep, |r| {
+        for (i, name) in names.iter().enumerate() {
+            r.stuck.push(Stuck {
+                name: name.clone(),
+                members: vec![Member {
+                    name: POOL.into(),
+                    snapshot_guid: GUID + i as u64,
+                }],
+                at_ms: 1,
+            });
+        }
+    });
+    names
+}
+
+/// How many destroys of `pool@<t>` ZFS has refused.
+fn refused(world: &Rc<RefCell<World>>, t: &str) -> usize {
+    let line = format!("agent destroy {POOL}@{t}: refused");
+    world.borrow().log.iter().filter(|l| **l == line).count()
+}
+
+/// With [`STUCK_MAX`] stuck, one more stuck forgets the oldest: it is
+/// told `forgotten <t> (destroy failed; destroy by hand)` once, its
+/// snapshot is left, and the new name is the newest stuck. Every name
+/// stuck is tried at each round, outside the round's steps, and told
+/// once while its reason stays.
+///
+/// Mutants: none forgotten past the cap, the newest forgotten, the
+/// oldest forgotten with no line, the names stuck tried within the
+/// round's steps or not at all, told at each round.
+#[test]
+fn past_stuck_max_the_oldest_stuck_is_forgotten() {
+    let (world, keep, names) = published(2);
+    let seeds = seed_stuck(&world, &keep, STUCK_MAX);
+    let t = names[0].clone();
+    world
+        .borrow_mut()
+        .destroy_refused
+        .insert(format!("{POOL}@{t}"), "held by another".into());
+    let mut a = agent(&world, &keep);
+    a.set_keep(1);
+    a.retain().expect("retained");
+    let stuck: Vec<&str> = a.record().stuck.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(stuck.len(), STUCK_MAX);
+    assert_eq!(stuck.first().copied(), Some(seeds[1].as_str()));
+    assert_eq!(stuck.last().copied(), Some(t.as_str()));
+    let forgotten: Vec<&(String, Outcome)> = a
+        .outcomes()
+        .iter()
+        .filter(|(_, o)| matches!(o, Outcome::Forgotten(_)))
+        .collect();
+    assert_eq!(
+        forgotten,
+        vec![&(seeds[0].clone(), Outcome::Forgotten(STUCK_FORGOTTEN.into()))]
+    );
+    assert_eq!(STUCK_FORGOTTEN, "destroy failed; destroy by hand");
+    assert_eq!(snaps_of(&world, &seeds[0]).len(), 1, "left for a person");
+    const { assert!(STUCK_MAX > STEPS_MAX) };
+    for seed in &seeds {
+        assert_eq!(refused(&world, seed), 1, "{seed}");
+    }
+    a.retain().expect("retained again");
+    assert_eq!(refused(&world, &seeds[0]), 1, "forgotten: not tried");
+    for seed in &seeds[1..] {
+        assert_eq!(refused(&world, seed), 2, "{seed}");
+    }
+    assert_eq!(refused(&world, &t), 2);
+    let told = a
+        .reports()
+        .iter()
+        .filter(|(n, r)| *n == seeds[1] && matches!(r, Report::NotRetired(_)))
+        .count();
+    assert_eq!(told, 1);
+    assert_eq!(a.record().stuck.len(), STUCK_MAX);
+    assert!(a.outcomes().iter().all(|(n, _)| *n != seeds[1]));
+}
+
+/// The oldest name stuck is told `forgotten` before the save that drops
+/// it: a stop at that save has told it, and the record still keeps it.
+///
+/// Mutant: told after the save.
+#[test]
+fn the_oldest_stuck_is_told_before_it_is_dropped() {
+    let (world, keep, names) = published(2);
+    let seeds = seed_stuck(&world, &keep, STUCK_MAX);
+    world
+        .borrow_mut()
+        .destroy_refused
+        .insert(format!("{POOL}@{}", names[0]), "held by another".into());
+    let points: Points = Box::new(|p: Point, _: &str| p.effect == Effect::Retain && !p.after);
+    let mut a = agent(&world, &keep).with_points(points);
+    a.set_keep(1);
+    assert!(matches!(a.retain(), Err(Error::Stopped)));
+    assert!(
+        a.outcomes()
+            .contains(&(seeds[0].clone(), Outcome::Forgotten(STUCK_FORGOTTEN.into()))),
+        "{:?}",
+        a.outcomes()
+    );
+    drop(a);
+    let bytes = keep.0.borrow().record.clone().expect("a record");
+    let record = Record::decode(&bytes).expect("decoded");
+    assert!(record.stuck.iter().any(|s| s.name == seeds[0]));
+}
+
+/// A name given up whose members' destroy fails past its time is stuck
+/// too (this module's reading of the lead's ruling), and leaves the
+/// names given up.
+///
+/// Mutant: a name given up left among the given up.
+#[test]
+fn a_name_given_up_whose_destroy_fails_is_stuck() {
+    let (world, keep, names) = published(2);
+    let t = names[0].clone();
+    let now = world.borrow().now_ms;
+    change_record(&keep, |r| {
+        let i = r.published.iter().position(|p| p.name == t).expect("it");
+        let p = r.published.remove(i);
+        r.abandoned.push(crate::record::Abandoned {
+            name: p.name,
+            why: Why::NotWhole,
+            at_ms: now,
+            left: Left::Members(p.members),
+        });
+    });
+    world
+        .borrow_mut()
+        .destroy_refused
+        .insert(format!("{POOL}@{t}"), "a clone of it".into());
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    let mut a = agent(&world, &keep);
+    a.retain().expect("retained");
+    assert!(
+        a.record().abandoned.is_empty(),
+        "{:?}",
+        a.record().abandoned
+    );
+    let stuck: Vec<&str> = a.record().stuck.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(stuck, vec![t.as_str()]);
+    world.borrow_mut().destroy_refused.clear();
+    a.retain().expect("retained again");
+    assert_eq!(retired(a.outcomes()), vec![t.clone()]);
+    assert!(a.record().stuck.is_empty());
+    assert!(snaps_of(&world, &t).is_empty());
+}
+
+/// Every stop of the retry of a name stuck, then a new process: the
+/// name is retired, told at least once, and leaves.
+///
+/// Mutant: the name left stuck before `retired` is told.
+#[test]
+fn a_stop_in_the_retry_of_a_name_stuck_is_taken_up() {
+    for effect in [Effect::DestroyMember, Effect::Retain] {
+        for after in [false, true] {
+            let (world, keep, names) = published(2);
+            let t = names[0].clone();
+            let key = format!("{POOL}@{t}");
+            world
+                .borrow_mut()
+                .destroy_refused
+                .insert(key.clone(), "a clone of it".into());
+            let mut a = agent(&world, &keep);
+            a.set_keep(1);
+            a.retain().expect("stuck");
+            assert_eq!(a.record().stuck.len(), 1);
+            drop(a);
+            world.borrow_mut().destroy_refused.clear();
+            let points: Points =
+                Box::new(move |p: Point, _: &str| p.effect == effect && p.after == after);
+            let mut first = agent(&world, &keep).with_points(points);
+            first.set_keep(1);
+            let stopped = first.retain();
+            let at = format!("{effect:?} after={after} ({stopped:?})");
+            assert!(matches!(stopped, Err(Error::Stopped)), "{at}");
+            let mut told = retired(first.outcomes());
+            drop(first);
+            let mut next = agent(&world, &keep);
+            next.set_keep(1);
+            next.retain().expect("retained by the next process");
+            told.extend(retired(next.outcomes()));
+            assert!(told.contains(&t), "{at}");
+            assert!(told.iter().all(|n| *n == t), "{at}: {told:?}");
+            assert!(next.record().stuck.is_empty(), "{at}");
+            assert!(snaps_of(&world, &t).is_empty(), "{at}");
+        }
+    }
 }

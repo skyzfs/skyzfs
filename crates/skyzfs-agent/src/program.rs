@@ -1826,11 +1826,12 @@ fn ulid(text: &str) -> Result<u128, String> {
 /// abandoned <t> why=<word> at_ms=<ms> left=<nothing|unknown|members:<n>>
 /// published <t> commit=<64 hex digits> group=<G> members=<n> at_ms=<ms>
 ///   retire=<-|ref|members|other>                    (one line)
+/// stuck <t> members=<n> at_ms=<ms>
 /// ```
 ///
-/// `left` and the lines `published` are version 3's (M2.7b-2): what a
-/// name given up left on the pool, and the names published that
-/// retention keeps.
+/// `left` and the lines `published` and `stuck` are version 3's
+/// (M2.7b-2): what a name given up left on the pool, the names published
+/// that retention keeps, and the names whose destroy failed.
 ///
 /// With no record, the one line `absent`.
 pub fn dump(loaded: &Loaded) -> Result<String, String> {
@@ -1915,6 +1916,14 @@ pub fn dump(loaded: &Loaded) -> Result<String, String> {
             p.group,
             p.members.len(),
             p.at_ms
+        ));
+    }
+    for s in &record.stuck {
+        out.push_str(&format!(
+            "stuck {} members={} at_ms={}\n",
+            s.name,
+            s.members.len(),
+            s.at_ms
         ));
     }
     Ok(out)

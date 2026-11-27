@@ -12,7 +12,7 @@ use crate::engine::fake::{
     Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, User, World, POOL, VOLUME,
 };
 use crate::engine::Noted;
-use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Published, Record, Taken};
+use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Published, Record, Stuck, Taken};
 
 fn args(line: &str) -> Vec<String> {
     line.split_whitespace().map(String::from).collect()
@@ -698,6 +698,11 @@ fn the_record_is_dumped_one_line_a_fact() {
             retire,
         })
         .collect(),
+        stuck: vec![Stuck {
+            name: "skz-s".into(),
+            members: vec![member("tank", 4), member("tank/a", 5)],
+            at_ms: 700,
+        }],
     };
     let h = "4d".repeat(32);
     let c = "c0".repeat(32);
@@ -715,7 +720,8 @@ fn the_record_is_dumped_one_line_a_fact() {
          published skz-p0 commit={p} group=60 members=0 at_ms=600 retire=-\n\
          published skz-p1 commit={p} group=61 members=1 at_ms=601 retire=ref\n\
          published skz-p2 commit={p} group=62 members=2 at_ms=602 retire=members\n\
-         published skz-p3 commit={p} group=63 members=3 at_ms=603 retire=other\n",
+         published skz-p3 commit={p} group=63 members=3 at_ms=603 retire=other\n\
+         stuck skz-s members=2 at_ms=700\n",
         "ab".repeat(16)
     );
     assert_eq!(dump(&Loaded::Present(record)), Ok(want));

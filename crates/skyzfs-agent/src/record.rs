@@ -42,7 +42,9 @@
 //! before it (the lead's decision on #144).
 //!
 //! Version 3 (M2.7b-2, retention) adds the names published
-//! ([`Record::published`]) and what each give-up left on the pool
+//! ([`Record::published`]), the names whose destroy failed
+//! ([`Record::stuck`], the lead's ruling on #179), and what each
+//! give-up left on the pool
 //! ([`Abandoned::left`]), and a publish being given up
 //! ([`Phase::Abandoning`]). A record of version 2 reads as version 3
 //! with no name published and each name given up leaving
@@ -110,6 +112,10 @@ pub const RETIRING_MAX: usize = 64;
 /// The most names published that the record holds.
 pub const PUBLISHED_MAX: usize = KEEP_MAX + RETIRING_MAX;
 
+/// The most names whose destroy failed that the record holds
+/// ([`Record::stuck`]); past it the oldest is forgotten.
+pub const STUCK_MAX: usize = 64;
+
 /// The agent's marker in its directory of a volume ([module docs](self)).
 pub const MARKER: &str = "agent";
 
@@ -155,6 +161,25 @@ pub struct Record {
     pub abandoned: Vec<Abandoned>,
     /// The names published, oldest first (version 3).
     pub published: Vec<Published>,
+    /// The names whose ref is retired, or that were given up, and whose
+    /// members' destroy failed, oldest first (version 3; the lead's
+    /// ruling on #179). They count for no room ([`Record::room`]).
+    pub stuck: Vec<Stuck>,
+}
+
+/// A name whose members' destroy failed after nothing else of it was
+/// left to retire: its ref retired (or never made, for a name given
+/// up) and its hold released. Retention tries the destroy again at each
+/// round; at most [`STUCK_MAX`] are kept, and past that the oldest is
+/// forgotten, its `@t` left for a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stuck {
+    /// The snapshot's name, `t`.
+    pub name: String,
+    /// Each member's `@<name>` and its GUID: what is destroyed.
+    pub members: Vec<Member>,
+    /// When its destroy first failed (the wall clock, in ms since 1970).
+    pub at_ms: u64,
 }
 
 /// A name published: `snap/<name>` named `commit` when the publish
@@ -399,6 +424,7 @@ impl From<RecordV2> for Record {
                 })
                 .collect(),
             published: Vec::new(),
+            stuck: Vec::new(),
         }
     }
 }
@@ -493,6 +519,7 @@ impl Record {
             under_way: Vec::new(),
             abandoned: Vec::new(),
             published: Vec::new(),
+            stuck: Vec::new(),
         }
     }
 
@@ -540,7 +567,9 @@ impl Record {
 
     /// Whether a publish may be begun: each publish under way, and one
     /// more, would find room among the names given up and among those
-    /// published, whichever way it ends.
+    /// published, whichever way it ends. The names [`Record::stuck`]
+    /// count for none: a destroy that keeps failing (a clone of the
+    /// snapshot, a hold of another's) does not stop the publishes.
     pub fn room(&self) -> bool {
         let ending = self.under_way.len() + 1;
         self.under_way.len() < UNDER_WAY_MAX
@@ -548,11 +577,13 @@ impl Record {
             && self.published.len() + ending <= PUBLISHED_MAX
     }
 
-    /// Whether `name` is in the record: under way, given up or published.
+    /// Whether `name` is in the record: under way, given up, published
+    /// or stuck.
     pub fn names(&self, name: &str) -> bool {
         self.publish(name).is_some()
             || self.abandoned.iter().any(|a| a.name == name)
             || self.published.iter().any(|p| p.name == name)
+            || self.stuck.iter().any(|s| s.name == name)
     }
 
     /// Whether the record keeps its rules: at most [`UNDER_WAY_MAX`]
@@ -601,6 +632,30 @@ impl Record {
             }
             if published.members.is_empty() {
                 return rule(format!("`{name}` is published with no members"));
+            }
+        }
+        if self.stuck.len() > STUCK_MAX {
+            return rule(format!(
+                "{} names stuck kept; at most {STUCK_MAX}",
+                self.stuck.len()
+            ));
+        }
+        for (i, stuck) in self.stuck.iter().enumerate() {
+            let name = &stuck.name;
+            if !file_name(name) {
+                return rule(format!("`{name}` is not a name the agent gives"));
+            }
+            if self.stuck[..i].iter().any(|s| s.name == *name) {
+                return rule(format!("`{name}` is stuck twice"));
+            }
+            if self.publish(name).is_some()
+                || self.abandoned.iter().any(|a| a.name == *name)
+                || self.published.iter().any(|p| p.name == *name)
+            {
+                return rule(format!("`{name}` is stuck and kept otherwise too"));
+            }
+            if stuck.members.is_empty() {
+                return rule(format!("`{name}` is stuck with no members"));
             }
         }
         for abandoned in &self.abandoned {

@@ -108,6 +108,11 @@ fn full() -> Record {
             published("skz-20261125T005200Z", Some(Retire::Members)),
             published("skz-20261125T005300Z", Some(Retire::Other)),
         ],
+        stuck: vec![Stuck {
+            name: "skz-20261125T004900Z".into(),
+            members: taken(46).members,
+            at_ms: 9,
+        }],
     }
 }
 
@@ -281,6 +286,36 @@ fn a_record_that_breaks_a_rule_is_neither_written_nor_read() {
     let mut published_badly = full();
     published_badly.published[0].name = "a/b".into();
     broken.push(("published with a bad name", published_badly));
+    let stuck_many = |n: usize| -> Vec<Stuck> {
+        (0..n)
+            .map(|i| Stuck {
+                name: format!("skz-20261001T{i:06}Z"),
+                members: taken(46).members,
+                at_ms: 9,
+            })
+            .collect()
+    };
+    let mut too_stuck = full();
+    too_stuck.stuck = stuck_many(STUCK_MAX + 1);
+    broken.push(("too many stuck", too_stuck));
+    let mut stuck_twice = full();
+    stuck_twice.stuck.push(stuck_twice.stuck[0].clone());
+    broken.push(("stuck twice", stuck_twice));
+    for other in ["under way", "given up", "published"] {
+        let mut stuck_too = full();
+        stuck_too.stuck[0].name = match other {
+            "under way" => stuck_too.under_way[0].name.clone(),
+            "given up" => stuck_too.abandoned[0].name.clone(),
+            _ => stuck_too.published[0].name.clone(),
+        };
+        broken.push(("stuck and kept otherwise too", stuck_too));
+    }
+    let mut stuck_empty = full();
+    stuck_empty.stuck[0].members.clear();
+    broken.push(("stuck with no members", stuck_empty));
+    let mut stuck_badly = full();
+    stuck_badly.stuck[0].name = "a/b".into();
+    broken.push(("stuck with a bad name", stuck_badly));
     for (what, record) in broken {
         assert!(
             matches!(record.encode(), Err(Corrupt::Rule(_))),
@@ -305,6 +340,7 @@ fn a_record_that_breaks_a_rule_is_neither_written_nor_read() {
             .into_iter()
             .skip(KEEP_MAX),
     );
+    most.stuck = stuck_many(STUCK_MAX);
     assert!(most.encode().is_ok());
 }
 
@@ -388,6 +424,26 @@ fn a_publish_is_begun_only_with_room_for_its_end() {
         .map(|i| publish(&format!("skz-20261125T0200{i:02}Z"), Phase::Intent, false))
         .collect();
     assert!(!record.room(), "eight under way");
+}
+
+/// The names stuck count for no room: the most of them, beside the
+/// most published that leave room for one more, still let a publish
+/// begin. Mutant: the names stuck counted among those published.
+#[test]
+fn the_names_stuck_count_for_no_room() {
+    let mut record = full();
+    record.under_way.truncate(2);
+    let one = record.published[0].clone();
+    record.published = vec![one; PUBLISHED_MAX - 3];
+    let stuck = record.stuck[0].clone();
+    record.stuck = (0..STUCK_MAX)
+        .map(|i| Stuck {
+            name: format!("skz-20261001T{i:06}Z"),
+            ..stuck.clone()
+        })
+        .collect();
+    assert!(record.room());
+    assert!(record.names("skz-20261001T000063Z"));
 }
 
 fn store() -> (tempfile::TempDir, Store) {
@@ -591,12 +647,14 @@ fn golden_v2() -> Record {
             })
             .collect(),
         published: Vec::new(),
+        stuck: Vec::new(),
     }
 }
 
 /// [`golden_v2`] with what version 3 adds, each value of its own: a
 /// publish being given up, each thing a give-up leaves, and a name
-/// published at each step of its retirement. The record [`GOLDEN`] holds.
+/// published at each step of its retirement, and a name stuck. The
+/// record [`GOLDEN`] holds.
 fn golden() -> Record {
     let mut record = golden_v2();
     let members = |guid: u64| {
@@ -630,6 +688,11 @@ fn golden() -> Record {
         published("p2", 2, Some(Retire::Members)),
         published("p3", 3, Some(Retire::Other)),
     ];
+    record.stuck = vec![Stuck {
+        name: "s0".into(),
+        members: members(20),
+        at_ms: 3000,
+    }];
     record
 }
 
@@ -660,7 +723,7 @@ const GOLDEN_V2: [&str; 18] = [
 /// before another, changes these bytes without a test of reading back
 /// noticing: such a change is a new version ([`VERSION`]).
 const GOLDEN: [&str; 26] = [
-    "535a414703000000ff0200000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
+    "535a4147030000000b0300000f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f01017081",
     "018201060169a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a15e5e5e5e5e5e5e5e5e5e",
     "5e5e5e5e5e5e03ad210000001460000174a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
     "a15e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e03ad2101280103702f6401ac024141",
@@ -684,8 +747,8 @@ const GOLDEN: [&str; 26] = [
     "d1d1d1d1330103702f650bd10f0100027032d2d2d2d2d2d2d2d2d2d2d2d2d2d2",
     "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2340103702f650cd20f0101027033",
     "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3",
-    "350103702f650dd30f0102bbab1675ac8810e16e571554e8568a50989a6b0045",
-    "75d8c917ff74729dd48885",
+    "350103702f650dd30f0102010273300103702f6514b8177ca47de4d9bdff3ed8",
+    "81d9a1c4aa456ccb02adf889aa4a5b9eaa3750409df8f6",
 ];
 
 fn unhex(lines: &[&str]) -> Vec<u8> {

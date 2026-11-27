@@ -527,8 +527,9 @@ pub enum Outcome {
     /// it was this publish's, and each member's `@t` that was this
     /// publish's destroyed ([`Agent::retain`]).
     Retired,
-    /// A name given up that leaves the record with its local snapshot,
-    /// for a person to destroy: why ([`Agent::retain`]).
+    /// A name given up, or the oldest stuck past
+    /// [`crate::record::STUCK_MAX`], that leaves the record with its
+    /// local snapshot, for a person to destroy: why ([`Agent::retain`]).
     Forgotten(String),
 }
 

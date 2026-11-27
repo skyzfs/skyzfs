@@ -22,12 +22,26 @@
 //!    or of a dataset made since) is left. The children go before their
 //!    parents, `pool@t` last, so that a stop half way leaves `pool@t`,
 //!    through which the rest is read again. A destroy that fails is
-//!    told, with its reason, and tried again at each round with no
-//!    limit; it is told once in a process, and again only when the
-//!    reason changes.
+//!    told, with its reason, once in a process and again only when the
+//!    reason changes, and the name moves to the names stuck (below).
 //! 3. The outcome `retired` is told, and then the name leaves the
 //!    record. A kill between the two tells it again: a monitor treats
 //!    `retired` as repeatable.
+//!
+//! **A name stuck** (the lead's ruling on #179): a name whose ref is
+//! retired, or a name given up past its time, whose members' destroy
+//! fails (a clone of the snapshot, a hold of another's) leaves the
+//! names published or given up for [`Record::stuck`], in one save, at
+//! its first failed destroy, so that it counts for no room
+//! ([`Record::room`]) and cannot stop the publishes. Each name stuck is
+//! tried again at each round, outside the round's steps, and leaves
+//! with `retired` once its destroy succeeds. At most [`STUCK_MAX`] are
+//! kept: past that the oldest is forgotten with the line
+//! `forgotten <t> (destroy failed; destroy by hand)`, told before the
+//! save that drops it. A name given up moves there too, though the
+//! ruling names the retired ones: it holds no ref, and a destroy of its
+//! that keeps failing would fill the names given up as surely (this
+//! module's reading).
 //!
 //! **A name given up** is kept for [`Retention::abandoned_keep`]
 //! ([`ABANDONED_KEEP_DEFAULT`]), and then, by what it left
@@ -68,7 +82,7 @@ use skyzfs_control::{Code, Reply, Request, Retire as RetireRequest};
 
 use super::{Agent, Clock, Daemon, Effect, Error, Keep, Outcome};
 use crate::plan::Report;
-use crate::record::{Left, Member, Record, Retire, Why, KEEP_MAX, RETIRING_MAX};
+use crate::record::{Left, Member, Record, Retire, Stuck, Why, KEEP_MAX, RETIRING_MAX, STUCK_MAX};
 use crate::zfs::Zfs;
 
 /// The names published kept by default (`--keep`).
@@ -77,6 +91,8 @@ pub const KEEP_DEFAULT: usize = 60;
 pub const ABANDONED_KEEP_DEFAULT: Duration = Duration::from_secs(24 * 60 * 60);
 /// The steps of retention in one round.
 pub const STEPS_MAX: usize = 8;
+/// Why the oldest name stuck is forgotten past [`STUCK_MAX`].
+pub const STUCK_FORGOTTEN: &str = "destroy failed; destroy by hand";
 
 /// Retention's settings, and what it told in this process.
 #[derive(Debug, Clone)]
@@ -128,6 +144,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// what the daemon and ZFS refuse is told and tried again.
     pub fn retain(&mut self) -> Result<(), Error> {
         self.at.clear();
+        self.retry_stuck()?;
         self.mark_retiring()?;
         let mut steps = 0;
         let marked: Vec<(String, Retire)> = self
@@ -249,8 +266,58 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         if self.destroy_members(name, &members)? {
             self.told(name.to_string(), Outcome::Retired);
             self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;
+        } else {
+            self.stick(name, members)?;
         }
         Ok(())
+    }
+
+    /// Try again the destroy of each name stuck, oldest first; one that
+    /// succeeds is told `retired` and leaves.
+    fn retry_stuck(&mut self) -> Result<(), Error> {
+        let stuck: Vec<(String, Vec<Member>)> = self
+            .record
+            .stuck
+            .iter()
+            .map(|s| (s.name.clone(), s.members.clone()))
+            .collect();
+        for (name, members) in stuck {
+            self.at.clone_from(&name);
+            if self.destroy_members(&name, &members)? {
+                self.told(name.clone(), Outcome::Retired);
+                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Move `name`, whose members' destroy failed, from the names
+    /// published or given up to the names stuck, in one save; past
+    /// [`STUCK_MAX`] the oldest stuck are forgotten, told first.
+    fn stick(&mut self, name: &str, members: Vec<Member>) -> Result<(), Error> {
+        let at_ms = self.clock.now_ms();
+        let over = (self.record.stuck.len() + 1).saturating_sub(STUCK_MAX);
+        let forgotten: BTreeSet<String> = self
+            .record
+            .stuck
+            .iter()
+            .take(over)
+            .map(|s| s.name.clone())
+            .collect();
+        for old in &forgotten {
+            self.told(old.clone(), Outcome::Forgotten(STUCK_FORGOTTEN.to_string()));
+        }
+        let name = name.to_string();
+        self.commit(Effect::Retain, |r| {
+            r.published.retain(|p| p.name != name);
+            r.abandoned.retain(|a| a.name != name);
+            r.stuck.retain(|s| !forgotten.contains(&s.name));
+            r.stuck.push(Stuck {
+                name,
+                members,
+                at_ms,
+            });
+        })
     }
 
     /// Destroy each `@<name>` of the pool whose GUID is one of `members`',
@@ -342,6 +409,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     if self.destroy_members(&name, &members)? {
                         self.told(name.clone(), Outcome::Retired);
                         self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))?;
+                    } else {
+                        self.stick(&name, members)?;
                     }
                 }
             }
