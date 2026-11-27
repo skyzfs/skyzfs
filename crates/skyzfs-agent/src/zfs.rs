@@ -455,6 +455,12 @@ pub trait Zfs {
     /// further either, and no `zpool list` is asked after it, as the
     /// other commands' errors are: a command on a suspended pool may
     /// not return.
+    ///
+    /// It is asked without `-n`, so a scrub under way starts again (from
+    /// reading OpenZFS's `zpool reopen`, not run; the review of #173).
+    /// The design is silent; the reading taken: on a lost volume the
+    /// pool suspends at once, so the restart costs nothing, while with
+    /// `-n` a resilver can be left partial.
     fn reopen(&mut self, pool: &str) -> Result<(), ZfsError>;
     /// The pool's state as the kernel keeps it
     /// (`/proc/spl/kstat/zfs/POOL/state`), with no command: a file

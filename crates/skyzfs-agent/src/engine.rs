@@ -181,6 +181,9 @@ pub enum Stuck {
     NoCut,
     /// An end was asked for (`go` said no).
     Told,
+    /// The watch on the failure note saw a note that makes the volume
+    /// lost ([`Agent::watch_note`]).
+    Noted,
 }
 
 impl fmt::Display for Stuck {
@@ -189,6 +192,7 @@ impl fmt::Display for Stuck {
             Stuck::Bound => "the syncs reached their bound in this process",
             Stuck::NoCut => "the daemon counted no cut after a sync",
             Stuck::Told => "an end was asked for",
+            Stuck::Noted => "the volume's failure note came",
         })
     }
 }
@@ -638,6 +642,9 @@ pub struct Agent<Z, D, K, C> {
     first_device: Option<u64>,
     /// What changed since: the first change seen ([`Agent::moved`]).
     moved: Option<String>,
+    /// The watch on the volume's failure note while the engine works
+    /// ([`Agent::watch_note`]). Kept across [`Agent::restart`].
+    watch: Option<lost::Watch>,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -682,6 +689,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             first_attachment: None,
             first_device: None,
             moved: None,
+            watch: None,
         })
     }
 
@@ -839,9 +847,11 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
 
     /// Sync the pool until the daemon's newest cut opens as itself, one
     /// sync at a time ([module docs](self), "After a rewind import"):
-    /// `cuts` read before each sync, `go` asked before each, and the
-    /// premise checked before the first ([`Error::Premise`]: the agent
-    /// changes nothing on a pool it would not publish).
+    /// `cuts` read before each sync, `go` asked before each and then
+    /// the watch on the failure note ([`Agent::note_came`];
+    /// [`Stuck::Noted`]), and the premise checked before the first
+    /// ([`Error::Premise`]: the agent changes nothing on a pool it would
+    /// not publish).
     pub fn sync_past(&mut self, go: &mut dyn FnMut() -> bool) -> Result<Past, Error> {
         let mut synced = 0u32;
         self.last_synced = 0;
@@ -867,6 +877,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             }
             if !go() {
                 return behind(Stuck::Told);
+            }
+            if self.note_came() {
+                return behind(Stuck::Noted);
             }
             if synced == 0 {
                 let props = self.zfs.props(&self.pool)?;
@@ -951,7 +964,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// rounds, with what is still under way ([`Error::Unsettled`]), as at
     /// the time limit. `skyzfs-agent run` asks whether it was told to
     /// end (`SIGTERM`), so that an end waits for one round and not for
-    /// the time left to the next tick.
+    /// the time left to the next tick. Where a watch on the failure note
+    /// is set, news there stops it the same way ([`Agent::note_came`],
+    /// asked after `go`).
     pub fn settle_while(
         &mut self,
         limit: Duration,
@@ -964,7 +979,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             // the count and the sweep that open it, so that an end asked
             // for during a step waits for no read after it (n1 of the
             // next look at #167; the lead's ruling).
-            if !go() {
+            if !go() || self.note_came() {
                 return self.unsettled();
             }
             // Where the count fails, the limits are the bases, and the
@@ -2135,7 +2150,7 @@ fn minor(dev: u64) -> u64 {
 }
 
 mod lost;
-pub use lost::{Failed, Note, Step, LOOK_EVERY, LOOK_MAX};
+pub use lost::{Failed, Note, Step, Verdict, LOOK_EVERY, LOOK_MAX, NOTE_EVERY};
 
 #[cfg(test)]
 pub(crate) mod fake;

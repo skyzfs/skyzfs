@@ -127,6 +127,32 @@ fn the_failure_note_is_read_beside_the_socket_in_its_boot() {
     assert_eq!(torn.failure().expect("read"), Some(Noted::NotWhole));
 }
 
+/// A note that cannot be read for another reason than its absence is
+/// an error, not "no note" (the review of #173). Mutant: every read
+/// error taken as no note.
+#[test]
+fn a_note_that_cannot_be_read_is_an_error() {
+    use skyzfs_control::failure::Held;
+    let this: [u8; 16] = std::array::from_fn(|i| i as u8);
+    for refused in ["/run/v-1-2/failed", BOOT_ID] {
+        let mut fake = Fake::default();
+        fake.files
+            .insert(PathBuf::from("/run/v-1-2/failed"), note(this, Held::Yes));
+        fake.files
+            .insert(PathBuf::from(BOOT_ID), BOOT.as_bytes().to_vec());
+        fake.read_errors
+            .insert(PathBuf::from(refused), io::ErrorKind::PermissionDenied);
+        let mut daemon = DaemonSocket::new(
+            PathBuf::from("/run/v-1-2/control"),
+            PathBuf::from("/dev/ublkb3"),
+            Duration::from_millis(100),
+            fake,
+        );
+        let e = daemon.failure().expect_err("an error");
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{refused}: {e}");
+    }
+}
+
 /// A boot id that cannot be read, or is not one, is an error, not "no
 /// note": the note there may be this boot's.
 #[test]

@@ -4735,6 +4735,49 @@ mod past {
         world
     }
 
+    /// News on the failure note stops the syncs before the next sync, as
+    /// an end would (F1 of the review of #173), and the line names it.
+    /// Mutant: the watch not asked before a sync.
+    #[test]
+    fn news_on_the_failure_note_stops_the_syncs() {
+        use skyzfs_control::failure::{Failure, Held, Reason};
+        let keep = MemKeep::default();
+        let world = rewound(5);
+        let mut agent = super::agent(&world, &keep);
+        agent.watch_note(Some(Failed::No));
+        let watched = world.clone();
+        let mut asked = 0u32;
+        let mut go = move || {
+            asked += 1;
+            if asked == 2 {
+                // Before the second sync: the daemon failed a second
+                // ago, while a client held its device.
+                let mut w = watched.borrow_mut();
+                w.noted = Some(Noted::Failed(Failure {
+                    held: Held::Yes,
+                    reason: Reason::ImageFailed,
+                    identity: [7; 16],
+                }));
+                w.advance(Duration::from_secs(1));
+            }
+            true
+        };
+        let past = agent.sync_past(&mut go).expect("the syncs");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 1,
+                    why: Stuck::Noted,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        assert_eq!(syncs(&world), 1);
+        assert_eq!(Stuck::Noted.to_string(), "the volume's failure note came");
+    }
+
     /// The daemon's newest cut: its group, and whether it opens as itself.
     fn newest(world: &Rc<RefCell<World>>) -> Option<(u64, bool)> {
         world
@@ -4793,9 +4836,9 @@ mod past {
         world.borrow_mut().away_until = u64::MAX;
         let mut agent = super::agent(&world, &keep);
         assert_eq!(
-        agent.sync_past(&mut || true).expect("unseen"),
-        Past::Unseen { synced: 0 }
-    );
+            agent.sync_past(&mut || true).expect("unseen"),
+            Past::Unseen { synced: 0 }
+        );
         assert_eq!(syncs(&world), 0);
     }
 

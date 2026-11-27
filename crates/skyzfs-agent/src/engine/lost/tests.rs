@@ -10,6 +10,7 @@ use super::super::fake::{
 };
 use super::*;
 use crate::engine::Noted;
+use std::time::Duration;
 
 type FakeAgent = Agent<FakeZfs, FakeDaemon, MemKeep, FakeClock>;
 
@@ -81,12 +82,14 @@ fn a_reopen_then_a_look_until_the_pool_suspends() {
     let Step::Reopened {
         error,
         state,
+        unread,
         looked_ms,
     } = &step
     else {
         panic!("{step:?}");
     };
     assert_eq!(error, &None);
+    assert_eq!(unread, &None);
     assert_eq!(state.as_ref().map(|s| s.0.as_str()), Some("SUSPENDED"));
     // The first look at or after 1050 ms, at 250 ms apart.
     assert_eq!(*looked_ms, 1_250);
@@ -152,6 +155,172 @@ fn no_reopen_of_a_pool_not_imported_or_suspended() {
     assert_eq!(agent(&world).lose().expect("step"), Step::NotImported);
     assert_eq!(world.borrow().reopens, 0);
     assert!(!Step::NotImported.suspended());
+}
+
+/// A look after the reopen that fails ends the look and keeps the
+/// reopen's outcome in the step, with the look's error (F3 of the review
+/// of #173). Mutants: the step an error (the reopen's outcome lost); the
+/// look's error dropped.
+#[test]
+fn a_look_that_fails_after_the_reopen_keeps_the_reopen() {
+    let world = World::new(Mode::Idle);
+    {
+        let mut w = world.borrow_mut();
+        // The look before the reopen reads, the second after it fails.
+        w.pool_state_fails_after = 2;
+        w.pool_state_fails = 1;
+        w.reopen_refused = true;
+    }
+    let step = agent(&world).lose().expect("the step");
+    assert_eq!(world.borrow().reopens, 1);
+    let Step::Reopened {
+        error,
+        state,
+        unread,
+        looked_ms,
+    } = &step
+    else {
+        panic!("{step:?}");
+    };
+    assert!(error.as_deref().is_some_and(|e| e.contains("suspended")));
+    assert_eq!(state, &None);
+    assert!(
+        unread
+            .as_deref()
+            .is_some_and(|e| e.contains("cannot read the pool's state")),
+        "{unread:?}"
+    );
+    assert_eq!(*looked_ms, 250);
+    assert_eq!(Step::verdict(Some(&step)), Verdict::Retry);
+}
+
+/// A look before the reopen that fails is the step's error, and no
+/// reopen is made.
+#[test]
+fn a_look_that_fails_before_the_reopen_is_the_error() {
+    let world = World::new(Mode::Idle);
+    world.borrow_mut().pool_state_fails = 1;
+    let e = agent(&world).lose().expect_err("an error");
+    assert!(
+        e.to_string().contains("cannot read the pool's state"),
+        "{e}"
+    );
+    assert_eq!(world.borrow().reopens, 0);
+}
+
+/// What each step shows (the lead's rulings on F2 and F4 of the review
+/// of #173): only SUSPENDED is lost; a pool not imported, before the
+/// reopen or after it, is failed; anything else is tried again. Mutants:
+/// each arm given another verdict.
+#[test]
+fn the_verdict_of_each_step() {
+    use crate::zfs::PoolState;
+    let reopened = |state: Option<&str>, unread: bool| Step::Reopened {
+        error: None,
+        state: state.map(|s| PoolState(s.into())),
+        unread: unread.then(|| "no".to_string()),
+        looked_ms: 0,
+    };
+    let cases = [
+        (None, Verdict::Retry),
+        (Some(Step::NotImported), Verdict::Failed),
+        (Some(Step::Suspended), Verdict::Lost),
+        (Some(reopened(Some("SUSPENDED"), false)), Verdict::Lost),
+        (Some(reopened(Some("ONLINE"), false)), Verdict::Retry),
+        (Some(reopened(Some("DEGRADED"), false)), Verdict::Retry),
+        (Some(reopened(None, false)), Verdict::Failed),
+        (Some(reopened(None, true)), Verdict::Retry),
+    ];
+    for (step, want) in cases {
+        assert_eq!(Step::verdict(step.as_ref()), want, "{step:?}");
+    }
+    let words = [Verdict::Lost, Verdict::Failed, Verdict::Retry].map(Verdict::word);
+    assert_eq!(words, ["lost", "failed", "retry"]);
+}
+
+/// The watch on the note (F1 of the review of #173): nothing is read
+/// with no watch set; a read at most once each [`NOTE_EVERY`]; a lost
+/// note other than the one seen is news, and stays news; the note seen,
+/// a note no client held, and a read that fails are not. Mutants: a
+/// read at each ask; the note seen taken as news; a failed read taken
+/// as news; the news forgotten at the next ask.
+#[test]
+fn the_watch_sees_a_new_lost_note_about_every_second() {
+    let world = World::new(Mode::Idle);
+    let mut a = agent(&world);
+    let advance = |ms: u64| world.borrow_mut().advance(Duration::from_millis(ms));
+    // No watch: no read.
+    advance(5_000);
+    assert!(!a.note_came());
+    assert_eq!(world.borrow().note_reads, 0);
+    // A watch from no note: the first read a second on.
+    a.watch_note(Some(Failed::No));
+    assert!(!a.note_came());
+    assert_eq!(world.borrow().note_reads, 0);
+    advance(999);
+    assert!(!a.note_came());
+    assert_eq!(world.borrow().note_reads, 0);
+    advance(1);
+    assert!(!a.note_came());
+    assert_eq!(world.borrow().note_reads, 1);
+    // A note no client held is not news.
+    world.borrow_mut().noted = Some(Noted::Failed(failure(Held::No)));
+    advance(1_000);
+    assert!(!a.note_came());
+    assert_eq!(world.borrow().note_reads, 2);
+    // A read that fails is not news.
+    {
+        let mut w = world.borrow_mut();
+        w.noted = Some(Noted::Failed(failure(Held::Yes)));
+        w.note_read_fails = 1;
+    }
+    advance(1_000);
+    assert!(!a.note_came());
+    assert_eq!(world.borrow().note_reads, 3);
+    // A lost note is, at the next read, and stays so with no read more.
+    assert!(!a.note_came(), "no read within the second");
+    advance(1_000);
+    assert!(a.note_came());
+    assert!(a.note_came());
+    assert_eq!(world.borrow().note_reads, 4);
+    // Set again on that note: it is not news.
+    let seen = a.failure().expect("read");
+    a.watch_note(Some(seen));
+    advance(1_000);
+    assert!(!a.note_came());
+    // A torn note is another note.
+    world.borrow_mut().noted = Some(Noted::NotWhole);
+    advance(1_000);
+    assert!(a.note_came());
+    // Set after a read that failed: any lost note is news.
+    a.watch_note(None);
+    advance(1_000);
+    assert!(a.note_came());
+}
+
+/// The watch stops the settle before its next pass, as an end would
+/// (F1 of the review of #173; the syncs: `engine::tests::past`).
+/// Mutant: the watch not asked in the settle.
+#[test]
+fn news_on_the_note_stops_the_settle() {
+    let world = World::new(Mode::Busy);
+    let mut a = agent(&world);
+    a.begin().expect("begun");
+    a.watch_note(Some(Failed::No));
+    let from = world.borrow().now_ms;
+    {
+        // The daemon fails: its note, and no answer more, so the publish
+        // stays under way.
+        let mut w = world.borrow_mut();
+        w.noted = Some(Noted::Failed(failure(Held::Unknown)));
+        w.gone_from = Some(from);
+    }
+    let e = a
+        .settle_while(Duration::from_secs(600), &mut || true)
+        .expect_err("unsettled");
+    assert!(matches!(e, Error::Unsettled(_)), "{e}");
+    let took = world.borrow().now_ms - from;
+    assert!(took < 5_000, "{took} ms");
 }
 
 /// The same note met twice: the first step reopens and the pool

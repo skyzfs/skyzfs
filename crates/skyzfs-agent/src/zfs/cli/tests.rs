@@ -454,6 +454,16 @@ fn the_reopen_is_zpool_reopen_within_its_limit() {
     fake.give(REOPEN, Err(io::ErrorKind::TimedOut));
     let mut zfs = cli(fake);
     assert!(matches!(zfs.reopen("tank"), Err(ZfsError::Other(_))));
+
+    // A reopen ended by a signal is not done (the review of #173).
+    // Mutant: no exit code read as 0.
+    let mut fake = Fake::default();
+    let mut killed = crate::host::fake::output(0, "", "");
+    killed.code = None;
+    fake.give(REOPEN, Ok(killed));
+    let mut zfs = cli(fake);
+    let e = zfs.reopen("tank").expect_err("ended by a signal");
+    assert_eq!(e, ZfsError::Other(format!("{REOPEN}: ended by a signal: ")));
 }
 
 const STATE: &str = "/proc/spl/kstat/zfs/tank/state";
@@ -477,6 +487,15 @@ fn the_pool_state_is_the_kstat_word() {
         assert!(zfs.host().ran.is_empty(), "no command");
     }
     assert_eq!(cli(Fake::default()).pool_state("tank"), Ok(None));
+    // A read that fails otherwise is an error, naming the file (the
+    // review of #173), not "not imported".
+    let mut fake = Fake::default();
+    fake.files
+        .insert(PathBuf::from(STATE), b"ONLINE\n".to_vec());
+    fake.read_errors
+        .insert(PathBuf::from(STATE), std::io::ErrorKind::PermissionDenied);
+    let e = cli(fake).pool_state("tank").expect_err("an error");
+    assert!(e.to_string().contains(STATE), "{e}");
     for text in ["", "\n", "ONLINE SUSPENDED\n"] {
         let mut fake = Fake::default();
         fake.files.insert(PathBuf::from(STATE), text.into());

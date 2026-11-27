@@ -430,6 +430,9 @@ pub struct World {
     still: u32,
     /// The channel answers nothing until then (the daemon away).
     pub away_until: u64,
+    /// The channel answers nothing from then on (a daemon whose volume
+    /// failed has exited).
+    pub gone_from: Option<u64>,
     /// A person destroys `pool@t` of this name as soon as it is not held.
     pub destroyer: Option<String>,
     /// The daemon's rule (R).
@@ -495,6 +498,21 @@ pub struct World {
     pub assist_fails_after: u32,
     /// The daemon's failure note of this boot ([`Daemon::failure`]).
     pub noted: Option<Noted>,
+    /// From when ([`World::now_ms`]) `noted` is there: before, the note
+    /// reads as none (a daemon that fails while the agent runs; F1 of
+    /// the review of #173). `None`: from the start.
+    pub noted_from_ms: Option<u64>,
+    /// The next reads of the note that fail, as a note that cannot be
+    /// read.
+    pub note_read_fails: u32,
+    /// How many times the note was read.
+    pub note_reads: u32,
+    /// The next looks at the pool's state ([`Zfs::pool_state`]) that
+    /// fail, after `pool_state_fails_after` more that do not.
+    pub pool_state_fails: u32,
+    /// The looks at the pool's state that succeed before those of
+    /// `pool_state_fails` begin to fail.
+    pub pool_state_fails_after: u32,
     /// From when the pool reads `SUSPENDED` ([`Zfs::pool_state`]);
     /// `None` while it reads `ONLINE`.
     pub suspended_at: Option<u64>,
@@ -539,6 +557,7 @@ impl World {
             cuts_read: 0,
             still: 0,
             away_until: 0,
+            gone_from: None,
             destroyer: None,
             rule: DAEMON_RULE,
             highest_written: 0,
@@ -561,6 +580,11 @@ impl World {
             assist_fails: 0,
             assist_fails_after: 0,
             noted: None,
+            noted_from_ms: None,
+            note_read_fails: 0,
+            note_reads: 0,
+            pool_state_fails: 0,
+            pool_state_fails_after: 0,
             suspended_at: None,
             suspends_after_ms: None,
             reopen_refused: false,
@@ -1309,7 +1333,7 @@ impl World {
                 }
             }
         }
-        if self.now_ms < self.away_until {
+        if self.now_ms < self.away_until || self.gone_from.is_some_and(|at| self.now_ms >= at) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "the daemon is away",
@@ -1686,7 +1710,15 @@ impl Zfs for FakeZfs {
     }
 
     fn pool_state(&mut self, pool: &str) -> Result<Option<PoolState>, ZfsError> {
-        let world = self.0.borrow();
+        let mut world = self.0.borrow_mut();
+        if world.pool_state_fails > 0 && world.pool_state_fails_after > 0 {
+            world.pool_state_fails_after -= 1;
+        } else if world.pool_state_fails > 0 {
+            world.pool_state_fails -= 1;
+            return Err(ZfsError::Other(
+                "zpool list: exit 1: cannot read the pool's state".into(),
+            ));
+        }
         if world.pool.is_none() || pool != POOL {
             return Ok(None);
         }
@@ -1747,7 +1779,19 @@ impl Daemon for FakeDaemon {
     }
 
     fn failure(&mut self) -> io::Result<Option<Noted>> {
-        Ok(self.0.borrow().noted)
+        let mut world = self.0.borrow_mut();
+        world.note_reads += 1;
+        if world.note_read_fails > 0 {
+            world.note_read_fails -= 1;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the failure note: permission denied",
+            ));
+        }
+        if world.noted_from_ms.is_some_and(|from| world.now_ms < from) {
+            return Ok(None);
+        }
+        Ok(world.noted)
     }
 }
 
