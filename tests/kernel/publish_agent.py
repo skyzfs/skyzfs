@@ -46,6 +46,11 @@ A request refused `rewound` (a rewind, or a daemon's start, may have been
 counted after C) is asked anew by the rig's courses with a count read
 anew (`ask cuts`), as the agent's AskAnew does; `ask look T` reads
 `snap/T` as the daemon finds it (`snap ...`, `absent`, `unreadable ...`).
+`ask retire T H` asks the daemon to retire `snap/T` where it names the
+commit H (version 3, M2.7b-1): `retired`, `gone` where there is no
+`snap/T`, `refused other` where it names another (the daemon's text
+names that commit: "snap/T names commit C, not the request's; it is
+left as it is").
 
 The versions (HELLOS). Version 3 is version 2 with `retire` and the
 store's rewind mark in the answer to `cuts` (`rewound=R`), and each
@@ -72,6 +77,7 @@ Usage:
                          [--assist-after-s A]
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv cuts
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv progress|withdraw|look T
+  publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv retire T H
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv publish T A S C G MANIFEST [E]
   publish_agent.py raw   RUN AGENT.tsv LABEL [GREETING_OUT]  (stdin: the bytes to send,
                          as given, but for a first line `skyzfs-control ?`)
@@ -140,10 +146,10 @@ def parse_answer(line):
     known = {'cuts': CUTS_FIELDS, 'accepted': set(), 'pending': set(),
              'done': {'commit'}, 'expired': set(), 'withdrawn': set(), 'unknown': set(),
              'snap': {'commit', 'state', 'number', 'group', 'manifest-len', 'manifest-hash'}, 'absent': set(),
-             'unreadable': {'commit', 'why'}}
+             'unreadable': {'commit', 'why'}, 'retired': set(), 'gone': set()}
     # Version 3's `cuts` carries the rewind mark, version 2's does not.
     if verb == 'cuts' and 'rewound' in fields:
-        if not fields['rewound'].isdigit():
+        if not is_number(fields['rewound']):
             raise RigError(f'a cuts answer whose rewound is not a number: {line!r}')
         if set(fields) != CUTS_FIELDS | {'rewound'}:
             raise RigError(f'not an answer line: {line!r}')
@@ -152,18 +158,24 @@ def parse_answer(line):
     if verb in ('done', 'snap', 'unreadable') and not is_hex(fields['commit'], 64):
         raise RigError(f'a commit that is not 64 hex digits: {line!r}')
     if verb == 'snap' and not (is_hex(fields['state'], 32) and is_hex(fields['manifest-hash'], 64)
-                               and all(fields[k].isdigit() for k in ('number', 'group', 'manifest-len'))):
+                               and all(is_number(fields[k]) for k in ('number', 'group', 'manifest-len'))):
         raise RigError(f'a snap answer whose fields do not read: {line!r}')
     if verb == 'cuts':
         if not is_hex(fields['attachment'], 32) or not (fields['state'] == 'none' or is_hex(fields['state'], 32)):
             raise RigError(f'a cuts answer whose attachment or state is not 32 hex digits: {line!r}')
-        if not fields['count'].isdigit():
+        if not is_number(fields['count']):
             raise RigError(f'a cuts answer whose count is not a number: {line!r}')
         if (fields['group'] == 'none') != (fields['opens'] == 'none') or (
-                fields['group'] != 'none' and (not fields['group'].isdigit()
+                fields['group'] != 'none' and (not is_number(fields['group'])
                                                or fields['opens'] not in ('itself', 'rewind'))):
             raise RigError(f'a cuts answer whose group and opens do not go together: {line!r}')
     return verb, fields, None, None
+
+
+def is_number(text):
+    """ASCII digits only: str.isdigit() also takes `²` and other digits
+    that int() refuses or the daemon never writes."""
+    return text.isascii() and text.isdigit()
 
 
 def is_hex(text, n):
@@ -187,7 +199,7 @@ def manifest_of(root):
 
 
 class Agent:
-    """The channel through `skyzfsd cuts|publish|publish-progress|withdraw|look`."""
+    """The channel through `skyzfsd cuts|publish|publish-progress|withdraw|look|retire`."""
 
     def __init__(self, skyzfsd, vol, run, log, clock=time.monotonic_ns, runner=subprocess.run):
         self.skyzfsd, self.vol, self.run, self.log = skyzfsd, vol, run, log
@@ -234,6 +246,11 @@ class Agent:
 
     def look(self, name):
         return self.ask('look', '--name', name)
+
+    def retire(self, name, commit):
+        """`retired`, `gone`, or `refused other`, whose text names the
+        commit snap/T names (M2.7b-1)."""
+        return self.ask('retire', '--name', name, '--commit', commit)
 
 
 def raw(run, log, label, data, clock=time.monotonic_ns, limit=60, greeting_out=None):
@@ -513,6 +530,8 @@ def main(argv):
                 a = agent.cuts()
             elif req in ('progress', 'withdraw', 'look'):
                 a = {'progress': agent.progress, 'withdraw': agent.withdraw, 'look': agent.look}[req](args[0])
+            elif req == 'retire':
+                a = agent.retire(args[0], args[1])
             elif req == 'publish':
                 a = agent.publish(*args[:6], expiry=args[6] if len(args) > 6 else None)
             else:

@@ -105,6 +105,28 @@ class Tables(unittest.TestCase):
                 'a2-withdraw': ('withdrawn',),
                 'a2-look': ('absent',),               # withdrawn: never made
             },
+            'pretire': {                              # retire (M2.7b-1)
+                'e1': ('done ',),
+                'e2': ('done ',),
+                'e1-other': ('refused other',),       # asked with e2's commit
+                'e1-kept': ('snap ',),                # the refusal deleted nothing
+                'e1-progress': ('done ',),
+                'e1-retire': ('retired',),
+                'e1-look': ('absent',),
+                'e1-progress-after': ('unknown',),    # its outcome let go (#175's D4)
+                'e2-progress': ('done ',),
+                'e1-again': ('gone',),                # landed, asked again: not an error
+                'e9': ('gone',),                      # never published
+                'e3': ('pending after',),
+                'e3-retire': ('refused asked',),      # its publish pends
+                'e3-withdraw': ('withdrawn',),
+            },
+            'pkillret': {
+                'k1': ('done ',),
+                'k1-retire': ('none ',),              # killed once the transaction landed: no answer
+                'k1-again': ('gone',),                # the next instance, the same retire
+                'k1-look': ('absent',),
+            },
         })
         self.assertEqual(pc.PUBLISHED, {
             'pplain': {'t1': 't1', 't2': 't2', 't4': 't4', 't7': 't7-end'},
@@ -116,11 +138,15 @@ class Tables(unittest.TestCase):
             'pkillpub': {'p1': 'p1-look'},
             'pchannel': {},
             'passist': {'a1': 'a1'},
+            'pretire': {'e2': 'e2'},
+            'pkillret': {},
         })
         # t5 expired, t3 never asked validly, f1 ended by the rewind's
-        # mark, c1 withdrawn, tw withdrawn before the kill, a2 withdrawn.
+        # mark, c1 withdrawn, tw withdrawn before the kill, a2 withdrawn,
+        # e1 and k1 retired, e9 never published.
         self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',),
-                                     'pkill': ('tw',), 'passist': ('a2',)})
+                                     'pkill': ('tw',), 'passist': ('a2',), 'pretire': ('e1', 'e9', 'e3'),
+                                     'pkillret': ('k1',)})
         # A look at a name published must name its row.
         self.assertEqual(pc.LOOKS, {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}})
         # manifest:1 kills before the transaction (no snap/m1 may show),
@@ -129,7 +155,18 @@ class Tables(unittest.TestCase):
         # Exact: the peer's request is never read, so not answered.
         self.assertEqual(pc.COUNTS, {'pchannel': {'control_answered': 4, 'control_peer': 1, 'control_malformed': 2}})
         self.assertEqual(pc.TW_STATUS, {'publish_withdrawn': 1, 'publish_pending': 0, 'publish_published': 0})
-        self.assertEqual(set(pc.KILLED_BY), set(pc.BETWEEN))
+        self.assertEqual(pc.KILLED, {'pkillman': 'm1', 'pkillpub': 'p1', 'pkillret': 'k1'})
+        self.assertEqual(set(pc.KILLED_BY), set(pc.KILLED))
+        self.assertLessEqual(set(pc.BETWEEN), set(pc.KILLED))
+        for course, (t, _) in pc.BETWEEN.items():
+            self.assertEqual(pc.KILLED[course], t)
+        # A retire's line is written after the uploader's answer: none
+        # in the instance killed after the transaction landed.
+        self.assertEqual(pc.RETIRES, {
+            'pretire': [[('e1', 'refused other', 'e2', 'e1'), ('e1', 'retired', 'e1', None),
+                         ('e1', 'gone', 'e1', None), ('e9', 'gone', 'e1', None),
+                         ('e3', 'refused asked', 'e1', None)]],
+            'pkillret': [[], [('k1', 'gone', 'k1', None)]]})
 
     def test_killed_by_is_in_the_hook_s_own_words(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -140,6 +177,9 @@ class Tables(unittest.TestCase):
         self.assertEqual(pc.KILLED_BY['pkillman'],
                          'after the framed manifest PUT {n} landed'.format(n=1))
         self.assertEqual(pc.KILLED_BY['pkillpub'], 'after the transaction of publish {} ({}) landed'.format(1, 'p1'))
+        self.assertIn('"after the transaction of retire {} ({name}) landed, before the uploader knew it"', src)
+        self.assertEqual(pc.KILLED_BY['pkillret'], 'after the transaction of retire {} ({name}) landed'.format(
+            1, name='k1'))
 
     def test_each_published_name_ends_done_and_each_course_has_a_table(self):
         """Each published name ends `done`, but p1, which `look` reads

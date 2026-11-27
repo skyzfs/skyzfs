@@ -6,8 +6,9 @@ Usage: publish_check.py NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]
 
 Called by tests/kernel/cut-record.sh as its CUT_CHECK after each of the
 publish courses (pplain, prewind, prewindf, prewindc, pkill, pkillman,
-pkillpub, pchannel, passist), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG is the
-daemon's request log; BASE is `-`. Environment: as nodeb_check.py's
+pkillpub, pchannel, passist, pretire, pkillret), recorded through the
+daemon with its uploads (CUT_UPLOAD=1). LOG is the daemon's request log;
+BASE is `-`. Environment: as nodeb_check.py's
 (SKZ_NODEB, SKZ_S3_ENDPOINT, SKZ_S3_BUCKET and the keys). The volume in
 object storage is `cut-NAME`.
 
@@ -24,7 +25,10 @@ What the course left in DIR:
 - T-between.txt: node B's `snap-row` between a kill and the next
   instance's answer, where the course takes one; kill.tsv, the killed
   daemon's exit status, and serve.log, its stderr, which names the hook
-  that killed it (pkillman, pkillpub);
+  that killed it (pkillman, pkillpub, pkillret);
+- refs-after.txt (pretire): node B's `refs` after e1's retire;
+- k1-before.txt (pkillret): node B's `snap-row` of k1 once it is done
+  and before its retire;
 - rewind-row.txt (prewind), tw-row.txt and tw-status.txt (pkill): node
   B's `row` and the daemon's status at the course's premise;
 - rewind-top.txt (prewind): the group of the daemon's newest cut before
@@ -78,6 +82,30 @@ prewindf's f1 once ended, prewindc's c1 once withdrawn, pkill's tw once
 withdrawn).
 With object storage down it must be `refused store` or `refused
 no-answer`, never `absent` (prewind's r1-look).
+
+`retire` (M2.7b-1, control protocol 3; pretire, pkillret): asked with a
+commit that `snap/T` does not name, it is refused `other`, naming the
+one it does (pin_e1_other_names_its_own), and `snap/T` is left as it
+was (pin_e1_kept); with its own, `retired`, and then `look` reads
+`absent`, node B finds no ref and no row (ABSENT) and its listing of
+the refs has no `snap/T` and still the other snapshot's
+(pin_e1_not_listed), which node B then reads in full. Asked again, or
+for a name never published, it is `gone`. `progress` reads `done` on
+the snapshot's commit while it is published, and `unknown` once it is
+retired, as for a name never asked (the outcome is let go, #175's D4;
+pin_progress_commits and EXPECTED). A retire of a name whose publish
+pends is refused `asked` (e3, then withdrawn). Killed once its
+transaction has landed (pkillret: `--kill-at-upload retire:1`), the
+next instance answers the same retire `gone`. Node B reads snap/k1 on
+its commit before the retire (pin_k1_there_before_the_retire) and
+neither its ref nor its row between the kill and the take-over
+(pin_k1_retired_whole): the hook's line is printed only once the
+transaction landed, and one transaction deletes both, so either left,
+torn or whole, is a verdict and not the rig's error. The request log's
+`retire` lines, by instance, must be RETIRES: the killed instance wrote
+none for k1. Where the lines name commits (M2.7b-2), each must name the
+commit asked and, after `refused other`, the one snap/T named; a daemon
+from before writes neither, and both forms are read.
 
 A publish waiting for its cut across a rewind import (prewindf: the
 newest group's root block zeroed, then `zpool import -F`, which on this
@@ -219,6 +247,7 @@ prints. Exit 0: every line holds. Exit 1: a verdict. Exit 2: the rig's
 own error, which is also what any exception ends in.
 """
 import os
+import re
 import shutil
 import sys
 import time
@@ -230,7 +259,8 @@ import nodeb_check  # noqa: E402
 import publish_agent  # noqa: E402
 from cut_check import RigError  # noqa: E402
 
-COURSES = ('pplain', 'prewind', 'prewindf', 'prewindc', 'pkill', 'pkillman', 'pkillpub', 'pchannel', 'passist')
+COURSES = ('pplain', 'prewind', 'prewindf', 'prewindc', 'pkill', 'pkillman', 'pkillpub', 'pchannel', 'passist',
+           'pretire', 'pkillret')
 
 # label -> the answers allowed, each a prefix of the answer line.
 EXPECTED = {
@@ -317,6 +347,33 @@ EXPECTED = {
         'a2-withdraw': ('withdrawn',),
         'a2-look': ('absent',),
     },
+    # Retiring a published snapshot (M2.7b-1): with another commit it is
+    # refused and kept; with its own it is retired; asked again, `gone`,
+    # as for a name never published.
+    'pretire': {
+        'e1': ('done ',),
+        'e2': ('done ',),
+        'e1-other': ('refused other',),       # e2's commit: snap/e1 names another
+        'e1-kept': ('snap ',),                # and is left as it was
+        'e1-progress': ('done ',),            # on its commit (pin_progress_commits)
+        'e1-retire': ('retired',),
+        'e1-look': ('absent',),
+        'e1-progress-after': ('unknown',),    # the outcome let go with the snapshot
+        'e2-progress': ('done ',),            # and e2's kept
+        'e1-again': ('gone',),                # a retire that landed, asked again
+        'e9': ('gone',),                      # never published
+        'e3': ('pending after',),             # G far above: pends
+        'e3-retire': ('refused asked',),      # a publish of the name pends
+        'e3-withdraw': ('withdrawn',),
+    },
+    # The daemon killed itself once the retire's transaction landed: no
+    # answer; the next instance answers the same retire `gone`.
+    'pkillret': {
+        'k1': ('done ',),
+        'k1-retire': ('none ',),
+        'k1-again': ('gone',),
+        'k1-look': ('absent',),
+    },
     'pchannel': {
         'nu': ('refused no-upload',),
         'version': ('refused version',),
@@ -338,12 +395,15 @@ PUBLISHED = {
     'pkillpub': {'p1': 'p1-look'},
     'pchannel': {},
     'passist': {'a1': 'a1'},
+    'pretire': {'e2': 'e2'},                  # e1 is retired, and e2 kept
+    'pkillret': {},
 }
 # Names that must have no ref and no row: an expired publish, one never
 # asked validly, one withdrawn before a kill and past whose G the pool's
-# cuts went.
+# cuts went, one retired, one asked to be retired and never published,
+# one asked to be retired while its publish pended and then withdrawn.
 ABSENT = {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',), 'pkill': ('tw',),
-          'passist': ('a2',)}
+          'passist': ('a2',), 'pretire': ('e1', 'e9', 'e3'), 'pkillret': ('k1',)}
 # The names published -> the label of a `look` at them, whose `snap`
 # answer must name the row node B read (pin_T_look).
 LOOKS = {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}}
@@ -361,13 +421,113 @@ COUNTS = {'pchannel': {'control_answered': 4, 'control_peer': 1, 'control_malfor
 # pkill's status after tw's withdrawal and the commit past its G, before
 # tk is asked (DIR/tw-status.txt), exactly.
 TW_STATUS = {'publish_withdrawn': 1, 'publish_pending': 0, 'publish_published': 0}
-# The hook's words in the killed instance's serve.log, by course.
+# The name the hook killed the daemon on, by course, and the hook's
+# words in the killed instance's serve.log.
+KILLED = {'pkillman': 'm1', 'pkillpub': 'p1', 'pkillret': 'k1'}
 KILLED_BY = {'pkillman': 'after the framed manifest PUT 1 landed',
-             'pkillpub': 'after the transaction of publish 1 (p1) landed'}
+             'pkillpub': 'after the transaction of publish 1 (p1) landed',
+             'pkillret': 'after the transaction of retire 1 (k1) landed'}
+# The request log's `retire` lines, by instance in order: (T, the answer
+# as record.rs words it, the label whose done names the commit asked,
+# the label whose done names the commit a `refused other` found, or
+# None). A retire's line is written once the uploader has answered, so
+# the instance killed after its transaction landed has none (pkillret).
+# Since M2.7b-2 (#179) the line ends ` commit=H`, and ` found=H2` after
+# `refused other`; a daemon from before writes neither. Both forms are
+# read, the commits pinned where they are written (judge_retire_lines).
+RETIRES = {'pretire': [[('e1', 'refused other', 'e2', 'e1'), ('e1', 'retired', 'e1', None),
+                         ('e1', 'gone', 'e1', None), ('e9', 'gone', 'e1', None),
+                         ('e3', 'refused asked', 'e1', None)]],
+           'pkillret': [[], [('k1', 'gone', 'k1', None)]]}
 
 
 def flat(text):
     return ' '.join(str(text).split())
+
+
+def retire_line(result):
+    """A `retire` line's result column -> (T, the answer, {key: value}
+    of its trailing `key=value` words): `T retired|gone|refused CODE`
+    (record.rs, M2.7b-1), and since M2.7b-2 with ` commit=H`, and
+    ` found=H2` after `refused other`. The answer is the words before
+    the first `commit=`; every word after it must be one `key=value`,
+    else the fields are {'?': the line}, which no want matches."""
+    t, _, rest = result.partition(' ')
+    words = rest.split(' ') if rest else []
+    k = next((i for i, w in enumerate(words) if w.startswith('commit=')), len(words))
+    fields = {}
+    for w in words[k:]:
+        key, eq, value = w.partition('=')
+        if not eq or key in fields:
+            return t, ' '.join(words[:k]), {'?': result}
+        fields[key] = value
+    return t, ' '.join(words[:k]), fields
+
+
+def retire_lines(instances):
+    """The request log's `retire` lines -> per instance in order, [(T,
+    the answer, fields)] (retire_line)."""
+    return [[retire_line(ln['result']) for ln in inst['lines'] if ln['event'] == 'publish' and ln['op'] == 'retire']
+            for inst in instances]
+
+
+def judge_retire_lines(seen, want, ends):
+    """-> what differs between the retire lines seen and WANT, both per
+    instance: T and the answer, in order; and, where the lines name
+    commits (M2.7b-2), exactly `commit=` the commit asked and, only
+    after `refused other`, `found=` the commit snap/T named. One log is
+    all of one form: a line with commits beside one without is wrong."""
+    if len(seen) != len(want):
+        return [f'{len(seen)} instances in the request log, not {len(want)}']
+    bad = [f'instance {k + 1}: {", ".join(f"{t} {a}" for t, a, _ in s) or "none"}, not '
+           f'{", ".join(f"{t} {a}" for t, a, _, _ in w) or "none"}'
+           for k, (s, w) in enumerate(zip(seen, want)) if [x[:2] for x in s] != [x[:2] for x in w]]
+    if bad:
+        return bad
+    if len({bool(f) for inst in seen for _, _, f in inst}) > 1:
+        return ['some retire lines name commits and some do not']
+    for inst, wants in zip(seen, want):
+        for (t, a, f), (_, _, asked, found) in zip(inst, wants):
+            if not f:
+                continue
+            need = {'commit': done_commit(ends.get(asked, ''))}
+            if found is not None:
+                need['found'] = done_commit(ends.get(found, ''))
+            if None in need.values() or f != need:
+                bad.append(f'{t} {a}: {" ".join(f"{k}={v[:12]}" for k, v in f.items())}, not '
+                           f'{" ".join(f"{k}={str(v)[:12]}" for k, v in need.items())}')
+    return bad
+
+
+def judge_progress(ends, want):
+    """WANT {label of a progress: label of the publish it asks after}
+    -> what differs: each progress must be `done` on the commit its
+    publish was done on."""
+    bad = []
+    for label, flow in want.items():
+        got, done = done_commit(ends.get(label, '')), done_commit(ends.get(flow, ''))
+        if done is None or got != done:
+            bad.append(f'{label} answered {ends.get(label, "nothing")[:60]!r}, {flow} was done on {str(done)[:12]}')
+    return bad
+
+
+def judge_listed(text, absent, there):
+    """skyzfs-nodeb refs' lines (NAME, COMMIT, GENERATION) -> what is
+    wrong: a name of ABSENT listed, or a name of THERE not listed on its
+    commit (None: on any)."""
+    refs = {}
+    for ln in text.splitlines():
+        f = ln.split('\t')
+        if len(f) != 3 or not publish_agent.is_hex(f[1], 64) or not publish_agent.is_number(f[2]):
+            raise RigError(f'skyzfs-nodeb refs: not a name, a commit and a generation: {ln!r}')
+        refs[f[0]] = f[1]
+    bad = [f'{n} is listed (on {refs[n][:12]})' for n in absent if n in refs]
+    for n, c in there.items():
+        if n not in refs:
+            bad.append(f'{n} is not listed')
+        elif c is not None and refs[n] != c:
+            bad.append(f'{n} is listed on {refs[n][:12]}, not {c[:12]}')
+    return bad
 
 
 def read_ends(text):
@@ -1193,13 +1353,58 @@ def main():
                     f"wrote a group in {p['set_wrote']} of them and the `zpool sync` after it in "
                     f"{p['sync_wrote']}; the daemon counted {p['cuts']} cuts between the first and the last "
                     f"({p['cuts_per_min']} a minute); " + ups)
-        if name in BETWEEN:
-            t, there = BETWEEN[name]
+        if name in KILLED:
+            t = KILLED[name]
             kill = text_of('kill.tsv').strip()
             serve = text_of('serve.log', need=False)
             premise(f'premise_{t}_killed_by_the_hook', kill == 'killed_rc\t137' and KILLED_BY[name] in serve,
                     f"{flat(kill)}; serve.log {'has' if KILLED_BY[name] in serve else 'lacks'} "
                     f"'{KILLED_BY[name]}'")
+        if name == 'pkillret':
+            before = read_snap_row(text_of('k1-before.txt'))
+            done = done_commit(ends.get('k1', ''))
+            holds('pin_k1_there_before_the_retire',
+                  [] if done is not None and before['ref'] is not None and before['ref'][0] == done
+                  and before['row'] is not None else
+                  [f"done names {str(done)[:12]}; before the retire node B read snap/k1 "
+                   f"{'on ' + before['ref'][0][:12] if before['ref'] else 'none'}, "
+                   f"row {'there' if before['row'] is not None else 'none'}"],
+                  'server', 'node B read snap/k1 and its row on the commit done named, before the retire '
+                  '(the read between the kill and the take-over can see it)')
+            got = read_snap_row(text_of('k1-between.txt'))
+            seen = (f"snap/k1 {'on ' + got['ref'][0][:12] if got['ref'] else 'none'}, "
+                    f"row {'there' if got['row'] is not None else 'none'} after the kill")
+            # The hook's line (premise_k1_killed_by_the_hook) is printed
+            # only once the retire's transaction landed, and one
+            # transaction deletes both: a ref or a row left, torn or
+            # whole, is the server's (#178's D2).
+            holds('pin_k1_retired_whole', [] if got['ref'] is None and got['row'] is None else [seen], 'server',
+                  'no snap/k1 and no row after the kill: the ref and its row went together')
+        if name in RETIRES:
+            seen = retire_lines(instances)
+            named = any(f for inst in seen for _, _, f in inst)
+            holds('pin_retire_lines', judge_retire_lines(seen, RETIRES[name], ends), 'server',
+                  'the request log\'s retire lines by instance: '
+                  + ' | '.join(', '.join(f'{t} {a}' for t, a, _ in inst) or 'none' for inst in seen)
+                  + ('; each names the commit asked, and a refusal `other` the one snap/T named' if named else
+                     '; the lines name no commit (a daemon from before M2.7b-2)'))
+        if name == 'pretire':
+            commit = done_commit(ends.get('e1', ''))
+            other = re.findall(r'\b[0-9a-f]{64}\b', ends.get('e1-other', ''))
+            holds('pin_e1_other_names_its_own', [] if commit is not None and other == [commit] else
+                  [f"refused other names {', '.join(c[:12] for c in other) or 'no commit'}, e1 was done on "
+                   f"{str(commit)[:12]}"], 'server', 'refused `other`, naming the commit snap/e1 names')
+            kept = ends.get('e1-kept', '')
+            holds('pin_e1_kept', [] if commit is not None and kept.startswith(f'snap commit={commit} ') else
+                  [f'e1-kept answered {kept[:60]!r}, not snap/e1 on {str(commit)[:12]}'], 'server',
+                  'after the refusal, a look reads snap/e1 on its commit')
+            holds('pin_e1_not_listed', judge_listed(text_of('refs-after.txt'), {'snap/e1': None},
+                                                    {'snap/e2': done_commit(ends.get('e2', ''))}),
+                  'server', 'node B lists no snap/e1 after its retire, and snap/e2 on its commit')
+            holds('pin_progress_commits', judge_progress(ends, {'e1-progress': 'e1', 'e2-progress': 'e2'}),
+                  'server', '`progress` reads done on the commit each publish was done on')
+        if name in BETWEEN:
+            t, there = BETWEEN[name]
             got = read_snap_row(text_of(f'{t}-between.txt'))
             is_there = got['ref'] is not None or got['row'] is not None
             if there:
