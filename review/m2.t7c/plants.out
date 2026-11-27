@@ -1,0 +1,69 @@
+R1	caught by test_publish_check.py, test_publish_check_main.py	RETIRES pretire without e9's `gone`
+R2	caught by test_publish_check.py, test_publish_check_main.py	RETIRES pretire: e1's second line `gone`, not `retired`
+R3	caught by test_publish_check.py, test_publish_check_main.py	RETIRES pkillret: the killed instance wrote `k1 retired`
+R4	caught by test_publish_check.py, test_publish_check_main.py	RETIRES pkillret: one instance only
+R5	caught by test_publish_check_main.py	judge_retire_lines: order not judged
+R6	caught by test_publish_check_main.py	judge_retire_lines: the count of instances not judged
+R7	caught by test_publish_check_main.py	retire lines judged for pretire only
+A1	caught by test_publish_check.py, test_publish_check_main.py	ABSENT pretire without e1
+A2	caught by test_publish_check.py, test_publish_check_main.py	ABSENT pretire without e9
+A3	caught by test_publish_check.py, test_publish_check_main.py	ABSENT pkillret empty
+A4	caught by test_publish_check_main.py	ABSENT judges the ref only (a row left is not seen)
+K1	caught by test_publish_check_main.py	pkillret premise: the ref only
+K2	caught by test_publish_check_main.py	pkillret premise: the row only
+K3	caught by test_publish_check_main.py	pkillret premise: always holds
+K4	caught by test_publish_check.py, test_publish_check_main.py	pkillret not in KILLED (the hook premise not read)
+K5	caught by test_publish_check.py	KILLED_BY pkillret: the hook's words without the name
+E1	caught by test_publish_check.py	EXPECTED e1-other: any refusal
+E2	caught by test_publish_check.py	EXPECTED e1-kept: absent too
+E3	caught by test_publish_check.py, test_publish_check_main.py	EXPECTED e1-retire: gone too
+E4	caught by test_publish_check.py	EXPECTED e1-look: snap too
+E5	caught by test_publish_check.py, test_publish_check_main.py	EXPECTED e1-again: retired too
+E6	caught by test_publish_check.py, test_publish_check_main.py	EXPECTED e9: any refusal too
+E7	caught by test_publish_check.py, test_publish_check_main.py	EXPECTED k1-retire: retired too
+E8	caught by test_publish_check.py, test_publish_check_main.py	EXPECTED k1-again: retired too
+E9	caught by test_publish_check.py	EXPECTED k1-look: snap too
+E10	caught by test_publish_check.py, test_publish_check_main.py	PUBLISHED pretire without e2
+P1	caught by test_publish_check_main.py	pin_e1_other: the commit among others
+P2	caught by test_publish_check_main.py	pin_e1_other: any commit
+P3	caught by test_publish_check_main.py	pin_e1_other: no word boundary
+P4	caught by test_publish_check_main.py	pin_e1_kept: any `snap` answer
+P5	caught by test_publish_check_main.py	judge_listed: a listed absent name not judged
+P6	caught by test_publish_check_main.py	judge_listed: e2's commit not judged
+P7	caught by test_publish_check_main.py	judge_listed: e2 not listed not judged
+P8	caught by test_publish_check_main.py	pin_e1_not_listed: e2 on any commit
+F1	caught by test_publish_check_main.py	fixture: e1's retire answered `gone` (nothing deleted, said gone)
+F2	caught by test_publish_check_main.py	fixture: a look reads e1 after its retire
+F3	caught by test_publish_check_main.py	fixture: node B still finds e1 (ref and row)
+F4	caught by test_publish_check_main.py	fixture: node B's listing has snap/e1
+F5	caught by test_publish_check_main.py	fixture: the request log lacks `e1 retired`
+F6	caught by test_publish_check_main.py	fixture: `other` names e2's commit (the request's)
+F7	caught by test_publish_check_main.py	fixture: the refusal deleted e1 (look absent)
+F8	caught by test_publish_check_main.py	fixture: e9, never published, answered `retired`
+F9	caught by test_publish_check_main.py	fixture: e1 asked again answered `retired`
+F10	caught by test_publish_check_main.py	fixture: snap/k1 there after the kill (ref and row)
+F11	caught by test_publish_check_main.py	fixture: a torn retire at the kill (row left)
+F12	caught by test_publish_check_main.py	fixture: the killed instance logged `k1 retired`
+F13	caught by test_publish_check_main.py	fixture: the next instance retired k1 again
+F14	caught by test_publish_check_main.py	fixture: the killed retire answered
+F15	caught by test_publish_check_main.py	fixture: the daemon exited 0, not killed
+F16	caught by test_publish_check_main.py	fixture: node B finds k1 after the take-over
+G1	caught by test_publish_agent.py	is_number is isdigit
+G2	caught by test_publish_agent.py	rewound alone by isdigit
+G3	caught by test_publish_agent.py	count alone by isdigit
+G4	caught by test_publish_agent.py	the cuts group alone by isdigit
+G5	SURVIVES	snap's manifest-len alone by isdigit
+G6	SURVIVES	snap's group alone by isdigit
+G7	caught by test_publish_agent.py	`retired` not a known answer
+G8	caught by test_publish_agent.py	`retired` takes any field
+G9	caught by test_publish_agent.py	retire sends --hash
+G10	caught by test_publish_agent.py	main's retire swaps T and H
+C1	caught by test_cut_record.sh	pretire asks e1-other with its own commit
+C2	caught by test_cut_record.sh	pkillret kills at the second retire
+C3	caught by test_cut_record.sh	pkillret not a publish course
+C4	caught by test_cut_record.sh	pcommit takes any done
+C5	caught by test_cut_record.sh	node B read after the take-over
+C6	SURVIVES	pkillret does not wait for the daemon to die
+C7	caught by test_cut_record.sh	the node B listing taken before the retire
+checkout clean after every plant: True
+64 of 67 caught

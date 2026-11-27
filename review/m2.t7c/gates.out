@@ -1,0 +1,8 @@
+python3 tests/kernel/test_publish_agent.py: exit 0: Ran 38 tests in 0.319s OK 
+python3 tests/kernel/test_publish_check.py: exit 0: Ran 48 tests in 0.003s OK 
+python3 tests/kernel/test_publish_check_main.py: exit 0: Ran 66 tests in 0.138s OK 
+bash tests/kernel/test_cut_record.sh: exit 0: all passed 
+bash tests/kernel/test_agent_record.sh: exit 0: all passed 
+
+# shellcheck (0.9.0 here; CI newer): base 14ae5ae vs head b7202e1
+the only difference is in cut-record.sh's SC2317 notes (unreachable command, this version's false positive for functions called by name): 1301 at the base, 1355 at the head, from the new functions' bodies. Every other line is the same. CI's shellcheck step passed at the head in skyzfs-ci's push run 45953051678.

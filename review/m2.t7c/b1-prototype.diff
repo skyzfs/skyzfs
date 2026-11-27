@@ -1,0 +1,53 @@
+diff --git a/tests/kernel/publish_check.py b/tests/kernel/publish_check.py
+index ce7dec4..4959a90 100644
+--- a/tests/kernel/publish_check.py
++++ b/tests/kernel/publish_check.py
+@@ -1294,11 +1294,14 @@ def main():
+                     f"'{KILLED_BY[name]}'")
+         if name == 'pkillret':
+             got = read_snap_row(text_of('k1-between.txt'))
+-            premise('premise_k1_retired_before_the_kill', got['ref'] is None and got['row'] is None,
+-                    'no snap/k1 and no row after the kill (the hook after the transaction)'
+-                    if got['ref'] is None and got['row'] is None else
+-                    f"snap/k1 {'on ' + got['ref'][0][:12] if got['ref'] else 'none'}, "
++            seen = (f"snap/k1 {'on ' + got['ref'][0][:12] if got['ref'] else 'none'}, "
+                     f"row {'there' if got['row'] is not None else 'none'} after the kill")
++            # The premise: the transaction landed before the kill, as the
++            # hook says (something of it is gone). Torn, it is the
++            # server's: one transaction deletes both.
++            premise('premise_k1_retired_before_the_kill', got['ref'] is None or got['row'] is None, seen)
++            holds('pin_k1_retired_whole', [] if got['ref'] is None and got['row'] is None else [seen], 'server',
++                  'no snap/k1 and no row after the kill: the ref and its row went together')
+         if name in RETIRES:
+             seen = retire_lines(instances)
+             holds('pin_retire_lines', judge_retire_lines(seen, RETIRES[name]), 'server',
+diff --git a/tests/kernel/test_publish_check_main.py b/tests/kernel/test_publish_check_main.py
+index 1376882..f992ddf 100644
+--- a/tests/kernel/test_publish_check_main.py
++++ b/tests/kernel/test_publish_check_main.py
+@@ -787,7 +787,7 @@ class Retire(unittest.TestCase):
+         rc, lines = run_course('pkillret')
+         self.assertEqual(rc, 0)
+         self.assertEqual(verdicts(lines, 'premise_k1_killed_by_the_hook', 'premise_k1_retired_before_the_kill',
+-                                  'pin_retire_lines', 'pin_k1_absent'), ['ok'] * 4)
++                                  'pin_k1_retired_whole', 'pin_retire_lines', 'pin_k1_absent'), ['ok'] * 5)
+ 
+     def test_other_naming_another_commit_ends_1(self):
+         for text in (f"refused other snap/T names commit {commit_of('e2')}, not the request's",
+@@ -844,10 +844,15 @@ class Retire(unittest.TestCase):
+             self.assertEqual((rc, lines['pin_retire_lines'][0]), (1, 'FAILED'), name)
+ 
+     def test_k1_there_after_the_kill_ends_2(self):
++        text = f'ref\t{commit_of("k1")}\t3\nsnaprow\t{S}\t8\t50\t{commit_of("k1")}\t{ULID}\t1\t{"0" * 64}\n'
++        rc, lines = run_course('pkillret', write('k1-between.txt', text))
++        self.assertEqual((rc, lines['premise_k1_retired_before_the_kill'][0]), (2, 'ERROR'))
++
++    def test_k1_torn_at_the_kill_ends_1(self):
+         for text in (f'ref\t{commit_of("k1")}\t3\nsnaprow\tnone\n',
+                      f'ref\tnone\nsnaprow\t{S}\t8\t50\t{commit_of("k1")}\t{ULID}\t1\t{"0" * 64}\n'):
+             rc, lines = run_course('pkillret', write('k1-between.txt', text))
+-            self.assertEqual((rc, lines['premise_k1_retired_before_the_kill'][0]), (2, 'ERROR'), text)
++            self.assertEqual((rc, lines['pin_k1_retired_whole'][0]), (1, 'FAILED'), text)
+ 
+     def test_k1_at_node_b_after_the_take_over_ends_1(self):
+         rc, lines = run_course('pkillret', rows={'k1': (8, 50)})

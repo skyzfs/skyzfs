@@ -1,0 +1,13 @@
+== S1 pkillret: torn at the kill, the row left (ref gone)
+   exit 2
+   pin_k1_absent: FAILED: [server] a row
+   premise_k1_retired_before_the_kill: ERROR: [rig] snap/k1 none, row there after the kill
+   rig_error: ERROR: [rig] premise_k1_retired_before_the_kill: snap/k1 none, row there after the kill
+== S2 pkillret: torn at the kill, the ref left (row gone)
+   exit 2
+   pin_answer_k1-again: FAILED: [server] answered 'retired', not gone
+   premise_k1_retired_before_the_kill: ERROR: [rig] snap/k1 on 6ab9f1eb8f7d, row none after the kill
+   rig_error: ERROR: [rig] premise_k1_retired_before_the_kill: snap/k1 on 6ab9f1eb8f7d, row none after the kill
+== S3 pkillpub: torn at the kill, the row only
+   exit 1
+   pin_p1_found: FAILED: [server] done names f64551fcd6f0, the ref after the kill none
