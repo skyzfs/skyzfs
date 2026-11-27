@@ -341,7 +341,7 @@ fn a_backlog_is_worked_off_a_few_names_a_round() {
     assert_eq!(retired(a.outcomes()).len(), STEPS_MAX);
     a.retain().expect("retained");
     assert_eq!(retired(a.outcomes()), names[..STEPS_MAX + 3].to_vec());
-    assert!(RETIRING_MAX >= STEPS_MAX);
+    const { assert!(RETIRING_MAX >= STEPS_MAX) };
 }
 
 /// The marks are bounded too: with more past `--keep` than

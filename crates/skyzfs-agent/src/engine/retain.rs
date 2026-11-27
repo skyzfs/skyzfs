@@ -122,7 +122,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.retention.abandoned_keep = keep;
     }
 
-    /// One round of retention ([module docs](self)). `skyzfs-agent run`
+    /// One round of retention (the docs of the module `retain`). `skyzfs-agent run`
     /// calls it after a round that touched the pool and was not failed.
     /// An error is one of saving the record, or a stop of the tests:
     /// what the daemon and ZFS refuse is told and tried again.

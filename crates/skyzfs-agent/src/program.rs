@@ -67,13 +67,17 @@
 //!
 //! ```text
 //! round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<k> begun=<t|-> under_way=<count>
-//!   synced=<k> bound=0|1
+//!   synced=<k> bound=0|1 [early_ms=<ms>] [reopen=held]
 //! ```
 //!
 //! on one line.
 //!
 //! - `took_ms`: how long the round ran; `late_ms`: how long after its
-//!   tick it began.
+//!   tick it began. `early_ms`, only on a round begun before its tick
+//!   (news of a lost volume, or a quick retry of the step), says how
+//!   long before; such a round does not use up its tick, whose round
+//!   still comes on it (D1 of the review of #173). `reopen=held`, only
+//!   on a round whose reopen the cap held back (below).
 //! - `skipped`: ticks that passed while this round ran and had no round
 //!   of their own. Rounds never overlap: the next round begins as this
 //!   one ends, for the last tick that passed, and its `late_ms` says by
@@ -215,7 +219,7 @@
 //!
 //!   ```text
 //!   lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
-//!     step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-|unread>
+//!     step=not-imported|suspended|reopened|held|failed reopen=ok|failed|- state=<STATE|-|unread>
 //!     looked_ms=<ms|-> verdict=lost|failed|retry
 //!   ```
 //!
@@ -237,8 +241,22 @@
 //!     `run` goes on; a later start of the daemon may serve the volume.
 //!   - `retry`: the step showed neither. The pool's state could not be
 //!     read (`step=failed`, or `state=unread`), or the pool did not read
-//!     SUSPENDED at the last look (the reopen refused or not). The round
-//!     is failed, and the next round takes the step again.
+//!     SUSPENDED at the last look (the reopen refused or not), or the cap
+//!     held the reopen back (`step=held`). The round is failed, and the
+//!     step is taken again: [`QUICK_RETRY`] after the round ends, for
+//!     [`QUICK_RETRIES`] rounds in a row, then at the ticks (the lead's
+//!     ruling on D1 of the review of #173). A round with another verdict
+//!     ends the run of quick retries.
+//!
+//!   **The cap on reopens** (the lead's ruling on the review of #173).
+//!   Once [`REOPEN_CAP`] reopens of one note in this process have left
+//!   the pool unsuspended (a wrong `--pool`, a layout that keeps it
+//!   going), the pool is reopened only at every [`REOPEN_CAP`]th round
+//!   after, and standard error says so once. The rounds in between read
+//!   its state only (`step=held reopen=- state=<STATE> looked_ms=-`),
+//!   so a pool that zed suspends meanwhile is still found lost; they
+//!   take no quick retry. A reopen restarts a scrub under way, which is
+//!   what the cap spares. Another note starts the count again.
 //!
 //!   A round that reads such a note touches nothing but the step, whatever
 //!   its verdict: no sync, no begin and no settle of what is under way,
@@ -264,8 +282,8 @@
 //! where it asks whether to go on (before a sync after a rewind import,
 //! before a begin after syncs, before each pass of the settle) and ends
 //! the wait: the round's line follows, and the next round begins at once,
-//! early for its tick, and takes the step. Rounds stay `--every-s` apart
-//! otherwise. A step of the engine under way is not cut, so the note is
+//! early for its tick (`early_ms`), and takes the step. Rounds stay
+//! `--every-s` apart otherwise, but for the quick retries above. A step of the engine under way is not cut, so the note is
 //! seen after at most about a second plus that step.
 //!
 //! `publish` and `settle` read the note too, before anything else, and
@@ -397,7 +415,7 @@ use skyzfs_control::{hex, EXPIRY_MAX};
 
 use crate::engine::{
     Agent, Choice, Clock, Daemon, Effect, Error, Failed, Note, Outcome, Past, Point, Points, Step,
-    Stuck, Verdict,
+    Stuck, Verdict, QUICK_RETRIES, QUICK_RETRY, REOPEN_CAP,
 };
 use crate::plan::Report;
 use crate::record::{Keep, Left, Loaded, Person, Phase, Retire, Why};
@@ -1219,13 +1237,15 @@ fn lost_said(n: u64, note: &Note, step: Option<&Step>, verdict: Verdict, err: &m
 ///
 /// ```text
 /// lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
-///   step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-|unread>
+///   step=not-imported|suspended|reopened|held|failed reopen=ok|failed|- state=<STATE|-|unread>
 ///   looked_ms=<ms|-> verdict=lost|failed|retry
 /// ```
 ///
 /// on one line. `step` is `None` where the step failed before the
 /// reopen (its error is on standard error). `state=unread` where a look
-/// after the reopen failed; `verdict` is [`Step::verdict`].
+/// after the reopen failed; `step=held` where `run`'s cap on reopens
+/// ([`crate::engine::REOPEN_CAP`]) held the reopen back and the pool
+/// read `state`; `verdict` is [`Step::verdict`].
 pub fn lost_line(pool: &str, volume: &[u8; 16], note: &Note, step: Option<&Step>) -> String {
     let verdict = Step::verdict(step).word();
     let (word, reopen, state, looked) = match step {
@@ -1246,6 +1266,7 @@ pub fn lost_line(pool: &str, volume: &[u8; 16], note: &Note, step: Option<&Step>
             looked_ms.to_string(),
         ),
         Some(Step::Suspended) => ("suspended", "-", "SUSPENDED".to_string(), "-".to_string()),
+        Some(Step::Held { state }) => ("held", "-", state.to_string(), "-".to_string()),
         Some(step) => (step.word(), "-", "-".to_string(), "-".to_string()),
     };
     format!(
@@ -1350,20 +1371,38 @@ pub struct Round {
     /// Whether its syncs met their bound with the daemon's newest cut
     /// still behind ([`crate::engine::Stuck::Bound`]).
     pub bound: bool,
+    /// How long before its tick it began, in milliseconds, where it began
+    /// early: on news of a lost volume, or as a quick retry of a step
+    /// ([`QUICK_RETRY`]). `None` for a round on its tick or after it.
+    pub early_ms: Option<u64>,
+    /// Whether the cap on reopens ([`REOPEN_CAP`]) held the round's
+    /// reopen back (`step=held` on its `lost` line).
+    pub reopen_held: bool,
 }
 
 /// The line of standard output for a round of `run` (M2.T4 reads it):
 ///
 /// ```text
 /// round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<ticks> begun=<t|-> under_way=<count>
-///   synced=<k> bound=0|1
+///   synced=<k> bound=0|1 [early_ms=<ms>] [reopen=held]
 /// ```
 ///
-/// on one line.
+/// on one line. `early_ms` only on a round begun before its tick
+/// ([`Round::early_ms`]), and `reopen=held` only on one whose reopen the
+/// cap held back ([`Round::reopen_held`]): a round on its tick, of a
+/// volume not lost, has the line it had before them.
 pub fn round_line(round: &Round) -> String {
+    let early = round
+        .early_ms
+        .map_or(String::new(), |ms| format!(" early_ms={ms}"));
+    let held = if round.reopen_held {
+        " reopen=held"
+    } else {
+        ""
+    };
     format!(
         "round {} {} took_ms={} late_ms={} skipped={} begun={} under_way={} synced={} \
-         bound={}\n",
+         bound={}{early}{held}\n",
         round.n,
         if round.failed { "failed" } else { "ok" },
         round.took_ms,
@@ -1431,6 +1470,14 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
     let start = agent.clock().mono_ms();
     let mut tick = 0u64;
     let mut restart = false;
+    // The lost note the last steps were on, and what they did with it:
+    // the reopens that left the pool unsuspended, the rounds since those
+    // met the cap, and the quick retries in a row (the lead's rulings on
+    // the review of #173). A new note starts them again.
+    let mut noted: Option<Note> = None;
+    let mut reopens = 0u64;
+    let mut since_cap = 0u64;
+    let mut quick = 0u32;
     for n in 1u64.. {
         if !go() {
             break;
@@ -1452,6 +1499,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         // (F2 and F4 of the review of #173): its `lost` line, then its
         // round line.
         let mut lost = None;
+        let mut reopen_held = false;
         let read = agent.failure();
         match &read {
             Ok(Failed::No) => {}
@@ -1465,7 +1513,26 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                 );
             }
             Ok(Failed::Lost(note)) => {
-                let step = match agent.lose() {
+                if noted != Some(*note) {
+                    noted = Some(*note);
+                    reopens = 0;
+                    since_cap = 0;
+                    quick = 0;
+                }
+                // Past the cap, the pool is reopened only at every
+                // REOPEN_CAPth round, and looked at in between.
+                let reopen = if reopens >= REOPEN_CAP {
+                    since_cap = since_cap.saturating_add(1);
+                    since_cap.is_multiple_of(REOPEN_CAP)
+                } else {
+                    true
+                };
+                let taken = if reopen {
+                    agent.lose()
+                } else {
+                    agent.look_lost()
+                };
+                let step = match taken {
                     Ok(step) => Some(step),
                     Err(e) => {
                         failed.push(e);
@@ -1473,6 +1540,19 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                     }
                 };
                 let verdict = Step::verdict(step.as_ref());
+                reopen_held = matches!(step, Some(Step::Held { .. }));
+                if verdict == Verdict::Retry && matches!(step, Some(Step::Reopened { .. })) {
+                    reopens = reopens.saturating_add(1);
+                    if reopens == REOPEN_CAP {
+                        let _ = writeln!(
+                            err,
+                            "skyzfs-agent: round {n}: {REOPEN_CAP} reopens of this note left \
+                             the pool unsuspended: it is reopened only every {REOPEN_CAP}th \
+                             round from now on, and its state read at the others (is --pool \
+                             the pool on this volume?)"
+                        );
+                    }
+                }
                 lost_said(n, note, step.as_ref(), verdict, err);
                 lost = Some((
                     lost_line(agent.pool(), &agent.volume(), note, step.as_ref()),
@@ -1623,6 +1703,8 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             under_way: agent.record().under_way.len(),
             synced,
             bound,
+            early_ms: (began < due).then(|| due - began),
+            reopen_held,
         };
         if let Some((line, _)) = &lost {
             let _ = out.write_all(line.as_bytes());
@@ -1644,15 +1726,30 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             return exit::MOVED;
         }
         agent.forget();
-        tick = tick.saturating_add(passed.max(1));
+        // A round begun early does not use up its tick: the round of that
+        // tick still comes on it (D1 of the review of #173).
+        let early = began < due;
+        tick = tick.saturating_add(if early { passed } else { passed.max(1) });
         let due = start.saturating_add(tick.saturating_mul(every_ms));
+        // A step whose verdict is retry is taken again within seconds, a
+        // few times in a row ([`QUICK_RETRY`], [`QUICK_RETRIES`]); then at
+        // the ticks. Not past the cap on reopens.
+        let mut until = due;
+        if lost_verdict == Some(Verdict::Retry) {
+            if quick < QUICK_RETRIES && reopens < REOPEN_CAP {
+                quick += 1;
+                until = until.min(now.saturating_add(ms(QUICK_RETRY)));
+            }
+        } else {
+            quick = 0;
+        }
         // News on the note begins the next round at once, early for its
-        // tick: the tick after it is the next one due.
-        while agent.clock().mono_ms() < due && !agent.note_came() {
+        // tick.
+        while agent.clock().mono_ms() < until && !agent.note_came() {
             if !go() {
                 return exit::PUBLISHED;
             }
-            let left = due.saturating_sub(agent.clock().mono_ms());
+            let left = until.saturating_sub(agent.clock().mono_ms());
             agent.clock().sleep(Duration::from_millis(left).min(WAKE));
         }
     }

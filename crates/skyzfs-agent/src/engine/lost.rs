@@ -56,8 +56,11 @@
 //! devices are now: the device under it is gone, so no premise can be
 //! checked, and the pool is the one this volume's agent was set up for.
 //! That is this module's reading, the conservative one: a pool that is
-//! not on the volume is made to read once, which suspends nothing that
-//! has its devices.
+//! not on the volume is made to read, which suspends nothing that has
+//! its devices. It is reopened at every round that takes the step, up
+//! to [`REOPEN_CAP`] reopens of one note in a process, and at every
+//! [`REOPEN_CAP`]th round after that (a reopen restarts a scrub under
+//! way).
 //!
 //! What a round of `run` does with each, and the exit codes, are the
 //! program's (`crate::program`, "`run`").
@@ -76,6 +79,23 @@ pub const LOOK_EVERY: Duration = Duration::from_millis(250);
 /// `run` while it waits for a tick ([`Agent::watch_note`]; the lead's
 /// ruling on F1 of the review of #173: "about every second").
 pub const NOTE_EVERY: Duration = Duration::from_secs(1);
+
+/// How many reopens of one note may leave the pool unsuspended before
+/// `run` reopens only at every [`REOPEN_CAP`]th round (the lead's ruling
+/// on the review of #173): a pool that never reads SUSPENDED, a wrong
+/// `--pool` or one whose layout keeps it going, is not reopened every
+/// round without end, and a scrub under way is not restarted each time.
+/// Each round in between still looks at its state ([`Agent::look_lost`]).
+pub const REOPEN_CAP: u64 = 10;
+
+/// How soon `run` takes the step again after a round whose verdict is
+/// [`Verdict::Retry`], for at most [`QUICK_RETRIES`] rounds in a row
+/// before it goes back to one a tick (the lead's ruling on D1 of the
+/// review of #173): "within seconds" holds for a retry too.
+pub const QUICK_RETRY: Duration = Duration::from_secs(5);
+
+/// How many quick retries ([`QUICK_RETRY`]) `run` takes in a row.
+pub const QUICK_RETRIES: u32 = 3;
 
 /// How long [`Agent::lose`] looks at most (the lead's answer to Q3 of
 /// the plan of M2.7c; provisional). The pool suspended about 1.0 to
@@ -131,6 +151,13 @@ pub enum Step {
     NotImported,
     /// Nothing: the pool reads SUSPENDED already.
     Suspended,
+    /// Nothing: the pool reads `state`, not SUSPENDED, and the reopen is
+    /// held back ([`Agent::look_lost`]): `run` caps the reopens of one
+    /// note that leave the pool unsuspended ([`REOPEN_CAP`]).
+    Held {
+        /// The pool's state at the look.
+        state: PoolState,
+    },
     /// The pool was reopened, and looked at until it read SUSPENDED or
     /// [`LOOK_MAX`] passed.
     Reopened {
@@ -157,6 +184,7 @@ impl Step {
         match self {
             Step::NotImported => "not-imported",
             Step::Suspended => "suspended",
+            Step::Held { .. } => "held",
             Step::Reopened { .. } => "reopened",
         }
     }
@@ -164,7 +192,7 @@ impl Step {
     /// Whether the pool reads SUSPENDED after the step.
     pub fn suspended(&self) -> bool {
         match self {
-            Step::NotImported => false,
+            Step::NotImported | Step::Held { .. } => false,
             Step::Suspended => true,
             Step::Reopened { state, .. } => state.as_ref().is_some_and(PoolState::suspended),
         }
@@ -177,6 +205,7 @@ impl Step {
             None => Verdict::Retry,
             Some(Step::NotImported) => Verdict::Failed,
             Some(Step::Suspended) => Verdict::Lost,
+            Some(Step::Held { .. }) => Verdict::Retry,
             Some(Step::Reopened {
                 unread: Some(_), ..
             }) => Verdict::Retry,
@@ -299,9 +328,24 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// it ends the look, and is in the step (`unread`), with the
     /// reopen's outcome.
     pub fn lose(&mut self) -> Result<Step, Error> {
+        self.step_lost(true)
+    }
+
+    /// [`Agent::lose`] with the reopen held back: the pool's state is
+    /// read once, and a pool that reads neither SUSPENDED nor gone is
+    /// left as it is ([`Step::Held`]). For the rounds that `run`'s cap
+    /// on reopens ([`REOPEN_CAP`]) does not reopen in: a pool that zed
+    /// suspended meanwhile is still found lost.
+    pub fn look_lost(&mut self) -> Result<Step, Error> {
+        self.step_lost(false)
+    }
+
+    /// The step, with the reopen where `reopen` says.
+    fn step_lost(&mut self, reopen: bool) -> Result<Step, Error> {
         match self.zfs.pool_state(&self.pool)? {
             None => return Ok(Step::NotImported),
             Some(state) if state.suspended() => return Ok(Step::Suspended),
+            Some(state) if !reopen => return Ok(Step::Held { state }),
             Some(_) => {}
         }
         let error = self.zfs.reopen(&self.pool).err().map(|e| e.to_string());

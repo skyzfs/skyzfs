@@ -2241,7 +2241,10 @@ fn minor(dev: u64) -> u64 {
 }
 
 mod lost;
-pub use lost::{Failed, Note, Step, Verdict, LOOK_EVERY, LOOK_MAX, NOTE_EVERY};
+pub use lost::{
+    Failed, Note, Step, Verdict, LOOK_EVERY, LOOK_MAX, NOTE_EVERY, QUICK_RETRIES, QUICK_RETRY,
+    REOPEN_CAP,
+};
 mod retain;
 pub use retain::{ABANDONED_KEEP_DEFAULT, KEEP_DEFAULT, STEPS_MAX};
 

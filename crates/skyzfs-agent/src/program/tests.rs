@@ -1105,6 +1105,8 @@ fn a_round_line_says_what_the_round_did() {
         under_way: 1,
         synced: 4,
         bound: false,
+        early_ms: None,
+        reopen_held: false,
     };
     assert_eq!(
         round_line(&round),
@@ -1120,6 +1122,19 @@ fn a_round_line_says_what_the_round_did() {
     assert_eq!(
         round_line(&failed),
         "round 3 failed took_ms=3456 late_ms=12 skipped=2 begun=- under_way=1 synced=4 bound=1\n"
+    );
+    // A round begun early, and one whose reopen the cap held back: the
+    // two fields come last, only where they apply.
+    let early = Round {
+        late_ms: 0,
+        early_ms: Some(55_000),
+        reopen_held: true,
+        ..failed
+    };
+    assert_eq!(
+        round_line(&early),
+        "round 3 failed took_ms=3456 late_ms=0 skipped=2 begun=- under_way=1 synced=4 bound=1 \
+         early_ms=55000 reopen=held\n"
     );
 }
 
@@ -2691,6 +2706,9 @@ mod failed_volume {
         assert_eq!(field(lines[1], "under_way"), "0");
         assert_eq!(world.borrow().reopens, 1);
         assert!(world.borrow().programs.is_empty(), "nothing begun");
+        // The round's only call is the reopen: no sync, count, snapshot
+        // or settle (P17 of the review of #173).
+        assert_eq!(world.borrow().calls, ["reopen"], "{out}");
         assert_eq!(err, "");
     }
 
@@ -2769,12 +2787,18 @@ mod failed_volume {
     }
 
     /// A pool that does not read SUSPENDED within the look is not shown
-    /// lost: the round fails, and the next round takes the step again,
-    /// until the pool suspends; then `run` ends with 11 (the lead's
-    /// ruling on F2 of the review of #173). Mutants: an end with 11 on a
-    /// pool that reads ONLINE; the round not failed; no second step.
+    /// lost: the round fails, and the step is taken again, until the pool
+    /// suspends; then `run` ends with 11 (the lead's ruling on F2 of the
+    /// review of #173). The step is taken again [`QUICK_RETRY`] after a
+    /// round that failed so, [`QUICK_RETRIES`] times in a row, each such
+    /// round marked early and the round of the tick still on its tick;
+    /// then at the ticks (the lead's ruling on D1 of the review of #173).
+    /// Mutants: an end with 11 on a pool that reads ONLINE; the round not
+    /// failed; no second step; no quick retry; more quick retries than
+    /// the bound; a quick retry that uses up its tick (round 5 late, or
+    /// none at 60 s); `early_ms` left out.
     #[test]
-    fn a_pool_not_shown_suspended_is_tried_again_at_the_next_round() {
+    fn a_pool_not_shown_suspended_is_tried_again_within_seconds_then_at_the_ticks() {
         let world = lost_world(noted(Held::Yes));
         // The reopen does nothing at first: the pool stays ONLINE.
         world.borrow_mut().suspends_after_ms = None;
@@ -2784,7 +2808,7 @@ mod failed_volume {
         let watched = world.clone();
         let mut go = until(&world, start + 600_000);
         let mut asked = move || {
-            // From the third round, a reopen makes the pool suspend.
+            // From 120 s on, a reopen makes the pool suspend.
             if mono(&watched) >= start + 120_000 {
                 watched.borrow_mut().suspends_after_ms = Some(1_050);
             }
@@ -2793,24 +2817,35 @@ mod failed_volume {
         let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut asked);
         assert_eq!(code, exit::LOST, "{out}{err}");
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 6, "{out}");
-        for i in [0, 2] {
+        assert_eq!(lines.len(), 12, "{out}");
+        // Each look lasts LOOK_MAX (10 s): round 1 at 0 s, the quick
+        // retries 5 s after each round ends (15, 30 and 45 s), the round
+        // of the tick at 60 s, then 120 s, where the pool suspends.
+        let early = [None, Some(45_000), Some(30_000), Some(15_000), None];
+        for (i, early) in early.iter().enumerate() {
             assert!(
-                lines[i].ends_with(
+                lines[2 * i].ends_with(
                     " step=reopened reopen=ok state=ONLINE looked_ms=10000 verdict=retry"
                 ),
                 "{out}"
             );
+            let round = lines[2 * i + 1];
             assert!(
-                lines[i + 1].starts_with(&format!("round {} failed ", i / 2 + 1)),
+                round.starts_with(&format!("round {} failed ", i + 1)),
                 "{out}"
             );
+            assert_eq!(field(round, "late_ms"), "0", "{out}");
+            match early {
+                Some(ms) => assert!(round.ends_with(&format!(" early_ms={ms}")), "{out}"),
+                None => assert!(!round.contains("early_ms"), "{out}"),
+            }
         }
         assert!(
-            lines[4].ends_with(" state=SUSPENDED looked_ms=1250 verdict=lost"),
+            lines[10].ends_with(" state=SUSPENDED looked_ms=1250 verdict=lost"),
             "{out}"
         );
-        assert!(lines[5].starts_with("round 3 ok "), "{out}");
+        assert!(lines[11].starts_with("round 6 ok "), "{out}");
+        assert!(!lines[11].contains("early_ms"), "{out}");
         assert!(
             err.contains(
                 "round 1: the volume is lost for this boot (note=whole reason=image-failed \
@@ -2818,8 +2853,211 @@ mod failed_volume {
             ),
             "{err}"
         );
-        assert_eq!(world.borrow().reopens, 3);
+        assert_eq!(world.borrow().reopens, 6);
         assert!(world.borrow().programs.is_empty(), "nothing begun");
+    }
+
+    /// After [`REOPEN_CAP`] reopens of one note that leave the pool
+    /// unsuspended, the pool is reopened only at every [`REOPEN_CAP`]th
+    /// round, and the rounds in between read its state only (`step=held`,
+    /// `reopen=held`), with no quick retry; it is said once on standard
+    /// error. A pool zed suspends meanwhile is found lost at the next
+    /// round, held or not (the lead's ruling on the review of #173).
+    /// Mutants: no cap; a cap that never reopens again; a held round that
+    /// reads nothing; quick retries past the cap; the cap said each round.
+    #[test]
+    fn reopens_that_leave_the_pool_online_are_capped() {
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().suspends_after_ms = None;
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let (code, out, err) = scheduled(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(&world, start + 990_000),
+        );
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        let steps: Vec<&str> = lines.iter().step_by(2).copied().collect();
+        let rounds: Vec<&str> = lines.iter().skip(1).step_by(2).copied().collect();
+        // 4 rounds by 45 s (one and its three quick retries), then one a
+        // tick: the 10th reopen at 360 s, held rounds from 420 s to 900 s,
+        // the 10th round after the cap (960 s) reopens.
+        assert_eq!(rounds.len(), 20, "{out}");
+        for (i, (step, round)) in steps.iter().zip(&rounds).enumerate() {
+            assert!(
+                round.starts_with(&format!("round {} failed ", i + 1)),
+                "{out}"
+            );
+            if (10..19).contains(&i) {
+                assert!(
+                    step.ends_with(" step=held reopen=- state=ONLINE looked_ms=- verdict=retry"),
+                    "{out}"
+                );
+                assert!(round.ends_with(" bound=0 reopen=held"), "{out}");
+            } else {
+                assert!(
+                    step.contains(" step=reopened reopen=ok state=ONLINE "),
+                    "{out}"
+                );
+                assert!(!round.contains("reopen=held"), "{out}");
+            }
+            if i >= 4 {
+                assert!(!round.contains("early_ms"), "round {} early: {out}", i + 1);
+            }
+        }
+        assert_eq!(world.borrow().reopens, 11);
+        assert_eq!(
+            err.matches("10 reopens of this note left the pool unsuspended")
+                .count(),
+            1,
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "round 10: 10 reopens of this note left the pool unsuspended: it is reopened \
+                 only every 10th round from now on"
+            ),
+            "{err}"
+        );
+
+        // zed suspends the pool at 500 s, during the held rounds: the next
+        // round (13, at 540 s) finds it SUSPENDED with no reopen, and `run`
+        // ends with 11.
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().suspends_after_ms = None;
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let mut go = until(&world, start + 990_000);
+        let mut asked = move || {
+            if mono(&watched) >= start + 500_000 && watched.borrow().suspended_at.is_none() {
+                let at = watched.borrow().now_ms;
+                watched.borrow_mut().suspended_at = Some(at);
+            }
+            go()
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut asked);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let last: Vec<&str> = out.lines().rev().take(2).collect();
+        assert!(
+            last[1].contains(" step=suspended reopen=- state=SUSPENDED "),
+            "{out}"
+        );
+        assert!(last[0].starts_with("round 13 ok "), "{out}");
+        assert_eq!(world.borrow().reopens, 10);
+
+        // Past the cap, a round that finds the pool not imported (from 400
+        // to 430 s) ends the quick retries' run, and the held rounds after
+        // it still come at the ticks: past the cap there is no quick retry.
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().suspends_after_ms = None;
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let pool = world.borrow().pool.clone();
+        let mut go = until(&world, start + 700_000);
+        let mut asked = move || {
+            let now = mono(&watched);
+            let gone = (start + 400_000..start + 430_000).contains(&now);
+            watched.borrow_mut().pool = if gone { None } else { pool.clone() };
+            go()
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut asked);
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        // Rounds 1 to 10 reopen (the last at 360 s), 11 (420 s) finds no
+        // pool, then held rounds at 480, 540, 600 and 660 s.
+        assert_eq!(lines.len(), 30, "{out}");
+        assert!(lines[20].contains(" step=not-imported "), "{out}");
+        for i in [22, 24, 26, 28] {
+            assert!(lines[i].contains(" step=held "), "{out}");
+            assert!(!lines[i + 1].contains("early_ms"), "{out}");
+        }
+        assert_eq!(world.borrow().reopens, 10);
+    }
+
+    /// A volume lost while `run` waits, whose pool does not suspend: the
+    /// rounds after the first step are the quick retries and then the
+    /// ticks, never back to back: the watch takes each round's own note
+    /// as no news (W12 of the review of #173). Mutants: the watch set
+    /// only at the first round; no quick retry.
+    #[test]
+    fn rounds_on_a_lost_note_are_not_back_to_back() {
+        let world = World::new(Mode::Idle);
+        let failed_at = world.borrow().now_ms + 30_000;
+        {
+            let mut w = world.borrow_mut();
+            w.noted = Some(noted(Held::Unknown));
+            w.noted_from_ms = Some(failed_at);
+            w.gone_from = Some(failed_at);
+            w.suspends_after_ms = None;
+        }
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let (code, out, err) = scheduled(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(&world, start + 300_000),
+        );
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        // Round 1 at 0 s; the note at 30 s and its step at once (round 2,
+        // early); three quick retries; the ticks at 120, 180 and 240 s.
+        let rounds = rounds(&out);
+        assert_eq!(rounds.len(), 8, "{out}");
+        assert_eq!(world.borrow().reopens, 7, "{out}");
+    }
+
+    /// A volume lost while the syncs after a rewind import have not yet
+    /// made the newest cut open as itself: the syncs stop on the news
+    /// (`Stuck::Noted`), the round says why it began nothing, its line
+    /// counts the syncs that returned and is not `bound`, and the next
+    /// round takes the step (P19 and P20 of the review of #173).
+    /// Mutants: the syncs not stopped by the note; `bound=1` on a stop by
+    /// news; `synced=` not the syncs that returned.
+    #[test]
+    fn a_volume_lost_before_the_cut_opens_stops_the_syncs() {
+        let world = rewound_t(5);
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let mut failed = false;
+        let mut go = move || {
+            let mut w = watched.borrow_mut();
+            // After the first sync, while the newest cut is still behind.
+            if w.synced_at.len() == 1 && !failed {
+                failed = true;
+                w.advance(Duration::from_secs(2));
+                let now = w.now_ms;
+                w.noted = Some(noted(Held::Yes));
+                w.noted_from_ms = Some(now);
+                w.gone_from = Some(now);
+                w.suspends_after_ms = Some(1_050);
+            }
+            w.now_ms - crate::engine::fake::EPOCH_MS < start + 600_000
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "{out}");
+        assert!(lines[0].starts_with("round 1 ok "), "{out}");
+        assert_eq!(field(lines[0], "synced"), "1", "{out}");
+        assert_eq!(field(lines[0], "bound"), "0", "{out}");
+        assert_eq!(field(lines[0], "begun"), "-", "{out}");
+        assert!(lines[1].starts_with("lost tank "), "{out}");
+        assert!(lines[2].starts_with("round 2 ok "), "{out}");
+        assert!(
+            err.contains("round 1: no publish begun: the newest cut, of group ")
+                && err.contains("the volume's failure note came"),
+            "{err}"
+        );
+        assert_eq!(world.borrow().synced_at.len(), 1, "{out}");
+        assert!(world.borrow().programs.is_empty(), "{out}");
     }
 
     /// A reopen refused because zed suspended the pool first is a lost
@@ -3034,7 +3272,7 @@ mod failed_volume {
     /// standard error at each round, no pool touched (no ZFS call at all:
     /// no sync, begin or settle), each round `ok` with nothing begun, and
     /// `run` goes on (the lead's answer to Q2; Codex's P2 on #173).
-    /// Mutants: a reopen; an end with 9; the round going on to the sync,
+    /// Mutants: a reopen; an end with 11; the round going on to the sync,
     /// the begin and the settle.
     #[test]
     fn a_volume_failed_with_no_client_touches_no_pool() {
