@@ -1118,7 +1118,9 @@ mod uploader {
                     "o" => Ok(Retired::Other([5; 32])),
                     "s" => Err(RetireRefused::Stopped),
                     "a" => Err(RetireRefused::Asked),
-                    _ => Err(RetireRefused::Store("down".into())),
+                    // The uploader words the text whole (`RemoteError`'s
+                    // `object storage: …`); the channel adds no prefix.
+                    _ => Err(RetireRefused::Store("object storage: down".into())),
                 });
             }
         });
