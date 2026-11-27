@@ -175,6 +175,12 @@ pub trait Remote {
     /// no error says that the transaction did not land: asked again, a
     /// retire that landed finds [`Retired::Gone`]. The commit's blocks and
     /// the manifests stay, for garbage collection (M4).
+    ///
+    /// A pin is not looked at: where `skynbd_engine::Engine`'s own
+    /// snapshot delete refuses a pinned ref, a retire deletes it all the
+    /// same. Nothing in SkyZFS pins `snap/T` today; a clone or a browse
+    /// that will (M3, M4) needs a check here first (D2 of the review of
+    /// #175, the lead's ruling).
     async fn retire(&mut self, name: &str, commit: CommitHash) -> Result<Retired, RemoteError>;
 
     /// Drop the writes not committed.

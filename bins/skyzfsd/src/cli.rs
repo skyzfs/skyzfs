@@ -375,8 +375,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       retire deletes the snapshot snap/T from object storage, its ref
       and its record in one transaction, where the ref still names the
       commit H (64 hexadecimal digits): `retired`. `gone` where there is
-      no snap/T; refused other COMMIT where snap/T names another commit,
-      which is left as it is. A retire goes through the uploader, under
+      no snap/T; refused other where snap/T names another commit (the
+      text names it), which is left as it is. A retire goes through the uploader, under
       its lease: refused stopped once the uploader has stopped, and no
       answer while it is in a long step. A monitor treats `retired` as
       repeatable: asked again after its answer was lost, the same retire

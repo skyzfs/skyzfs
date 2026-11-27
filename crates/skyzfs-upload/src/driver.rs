@@ -454,9 +454,15 @@ impl<L: Local, R: Remote> Driver<L, R> {
         commit: CommitHash,
     ) -> Result<crate::remote::Retired, RemoteError> {
         let result = self.remote.retire(name, commit).await;
-        if let Err(e) = &result {
-            self.figures.errors += 1;
-            self.figures.last_error = Some(e.clone());
+        match &result {
+            Ok(crate::remote::Retired::Retired | crate::remote::Retired::Gone) => {
+                self.publishing.retired(name);
+            }
+            Ok(crate::remote::Retired::Other(_)) => {}
+            Err(e) => {
+                self.figures.errors += 1;
+                self.figures.last_error = Some(e.clone());
+            }
         }
         result
     }

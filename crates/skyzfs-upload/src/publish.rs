@@ -721,6 +721,18 @@ impl Publishing {
             .map_or(Progress::Unknown, Outcome::progress)
     }
 
+    /// `snap/<name>` was retired, or found gone (M2.7b): the outcome of
+    /// its publish is no longer kept, so that [`Publishing::progress`]
+    /// answers [`Progress::Unknown`], as for a name never asked, and not
+    /// `done` for a snapshot that is no longer listed (D4 of the review
+    /// of #175). A publish of the name that pends is left as it is: the
+    /// uploader refuses such a retire before it is made.
+    pub fn retired(&mut self, name: &str) {
+        if self.outcomes.remove(name).is_some() {
+            self.order.retain(|kept| kept != name);
+        }
+    }
+
     /// End each publish whose time is up at `now` ([`Request::expiry`]):
     /// it is dropped and counted ([`Progress::Expired`]). One whose
     /// transaction failed, and so may have landed, is looked up first:

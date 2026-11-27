@@ -244,12 +244,17 @@ const PUBLISH_AGAIN: &str = "a publish may have been taken: ask again, or withdr
 const RETIRE_AGAIN: &str = "the retire may still be made: ask again, which answers gone once it is";
 
 /// The uploader's answer, waited for at most the waiter's limit. A
-/// `no-answer` ends with `again`.
+/// `no-answer`, and an `ended` where the uploader took the request and
+/// dropped it, end with `again`.
 fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>, again: &str) -> Result<T, Reply> {
     match waiter.within(rx)? {
         Some(Ok(answer)) => Ok(answer),
-        // The uploader dropped the request unanswered: it has ended.
-        Some(Err(_)) => Err(ended()),
+        // The uploader dropped the request unanswered: it has ended,
+        // perhaps in the request's own step, which may have landed.
+        Some(Err(_)) => Err(Reply::Refused(
+            Code::Ended,
+            format!("the uploader has ended; {again}"),
+        )),
         None => Err(Reply::Refused(
             Code::NoAnswer,
             format!(

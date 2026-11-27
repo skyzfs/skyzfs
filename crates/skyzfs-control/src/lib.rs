@@ -176,7 +176,8 @@
 //! of those before the uploader sees it, and its two waits share the
 //! one [`ANSWER_LIMIT`]. For `look`,
 //! `no-answer` and `store` are object storage's (above). The other codes
-//! are a publish's refusals (`skyzfs_upload::Refusal`).
+//! are a publish's refusals (`skyzfs_upload::Refusal`) and a retire's
+//! (`skyzfs_upload::RetireRefused`, and `other` above).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

@@ -5,9 +5,11 @@
 //! §5.4). It is the daemon's first interface that is not a file. The rule
 //! a publish follows, and what object storage holds once it is made, are
 //! `skyzfs_upload::publish`'s (M2.5-1); this module carries the requests
-//! to the uploader and its answers back. The protocol (version 2), its
-//! limits and the client are `skyzfs_control`'s (M2.6a), so that the
-//! agent does not link the daemon; they are re-exported here.
+//! to the uploader and its answers back; since M2.7b-1 it also asks the
+//! uploader to retire a published snapshot (`retire`). The protocol
+//! (version 3), its limits and the client are `skyzfs_control`'s
+//! (M2.6a), so that the agent does not link the daemon; they are
+//! re-exported here.
 //!
 //! # The socket
 //!
@@ -129,7 +131,7 @@ pub fn retired_reply(answer: &Result<Retired, RetireRefused>) -> Reply {
         ),
         Err(RetireRefused::Store(e)) => Reply::Refused(
             Code::Store,
-            format!("object storage: {e}; the retire may have landed: ask again"),
+            format!("{e}; the retire may have landed: ask again"),
         ),
     }
 }

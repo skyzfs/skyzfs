@@ -4243,3 +4243,151 @@ async fn a_retire_whose_asker_gave_up_is_not_taken() {
         (true, Ok(Retired::Retired))
     );
 }
+
+/// A retire that lands, or finds no `snap/T`, ends what the uploader
+/// kept of the name's publish: `progress` answers `unknown` and not
+/// `done` for a snapshot that is no longer listed (D4 of the review of
+/// #175). One refused `other` leaves it. Mutant: the outcome kept after
+/// a retire, or cleared at `other`.
+#[tokio::test(start_paused = true)]
+async fn a_retire_ends_what_was_kept_of_the_publish() {
+    let mut fx = Fixture::new(96).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    for name in ["t", "u"] {
+        assert_eq!(
+            up.publishing().ask(asked(state, name, 0, 7)),
+            Answer::Accepted
+        );
+    }
+    for _ in 0..100 {
+        if up.publishing().progress("u") != Progress::Pending
+            && up.publishing().progress("t") != Progress::Pending
+        {
+            break;
+        }
+        let wait = up.turn().await;
+        tokio::time::advance(wait).await;
+    }
+    let head = head_of(&fx).await;
+    assert_eq!(up.publishing().progress("t"), Progress::Done(head));
+    assert_eq!(up.publishing().progress("u"), Progress::Done(head));
+
+    assert_eq!(
+        retire_of(&mut up, "t", [0x0b; 32]).await,
+        (true, Ok(Retired::Other(head)))
+    );
+    assert_eq!(up.publishing().progress("t"), Progress::Done(head));
+    assert_eq!(
+        retire_of(&mut up, "t", head).await,
+        (true, Ok(Retired::Retired))
+    );
+    assert_eq!(up.publishing().progress("t"), Progress::Unknown);
+
+    // snap/u deleted by another: the retire finds it gone.
+    let refs = clock.refs(&fx);
+    let name = skyzfs_upload::publish::snap_ref("u");
+    let found = refs.get(fx.vol, &name).await.expect("the ref");
+    assert!(found.is_some(), "snap/u");
+    let outcome = refs
+        .transact(
+            fx.vol,
+            vec![skynbd_refs::RefOp::CasRef {
+                name,
+                expected: found,
+                new_commit: None,
+            }],
+        )
+        .await
+        .expect("the delete");
+    assert_eq!(outcome, skynbd_refs::TxnOutcome::Committed);
+    assert_eq!(
+        retire_of(&mut up, "u", head).await,
+        (true, Ok(Retired::Gone))
+    );
+    assert_eq!(up.publishing().progress("u"), Progress::Unknown);
+}
+
+/// A retire that object storage fails is answered `store`, with a text
+/// that names object storage once, and the uploader goes on: asked
+/// again, the retire is made. G2 of the review of #175. Mutant: a store
+/// error answered `stopped` (`store-as-stopped`), which the agent would
+/// read as "this daemon retires nothing more".
+#[tokio::test(start_paused = true)]
+async fn a_retire_that_object_storage_fails_is_refused_store_and_can_be_asked_again() {
+    let mut fx = Fixture::new(97).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    assert_eq!(
+        up.publishing().ask(asked(state, "t", 0, 7)),
+        Answer::Accepted
+    );
+    until_idle(&mut up, 100).await;
+    let head = head_of(&fx).await;
+    let before = snap(&fx, "t").await;
+
+    fx.store.arm(FaultOp::Put, "refs", 0).await;
+    let (taken, answer) = retire_of(&mut up, "t", head).await;
+    fx.store.disarm().await;
+    assert!(taken);
+    let Err(RetireRefused::Store(text)) = answer else {
+        panic!("not refused store: {answer:?}");
+    };
+    assert!(text.starts_with("object storage: "), "{text}");
+    assert_eq!(text.matches("object storage").count(), 1, "{text}");
+    assert_eq!(snap(&fx, "t").await, before, "nothing deleted");
+    assert!(
+        !matches!(up.shown().state, State::Stopped | State::LeaseLost { .. }),
+        "{:?}",
+        up.shown().state
+    );
+    assert_eq!(
+        retire_of(&mut up, "t", head).await,
+        (true, Ok(Retired::Retired))
+    );
+}
+
+/// A retire asked before the lease is first held waits for it, and is
+/// made and answered once the lease is taken. G3 of the review of #175.
+/// Mutant: the retires that wait dropped when the driver is made
+/// (`drop-at-make`), so that the asker hears nothing.
+#[tokio::test(start_paused = true)]
+async fn a_retire_asked_before_the_lease_is_held_is_answered_once_it_is() {
+    let mut fx = Fixture::new(98).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    fx.store.arm(FaultOp::Any, "", 0).await;
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    assert!(up.control(Control::Retire {
+        name: "t".into(),
+        commit: [1; 32],
+        reply,
+    }));
+    for _ in 0..3 {
+        let wait = up.turn().await;
+        assert!(matches!(up.shown().state, State::NoLease(_)));
+        assert_eq!(
+            answer.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+        tokio::time::advance(wait).await;
+    }
+    fx.store.disarm().await;
+    for _ in 0..20 {
+        if let Ok(answer) = answer.try_recv() {
+            assert_eq!(answer, Ok(Retired::Gone));
+            assert!(up.driver().is_some());
+            return;
+        }
+        let wait = up.turn().await;
+        tokio::time::advance(wait).await;
+    }
+    panic!("the retire asked before the lease was never answered");
+}

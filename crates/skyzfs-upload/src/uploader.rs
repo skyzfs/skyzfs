@@ -107,6 +107,18 @@
 //! answer: the channel asks it of the store at the desk
 //! (`queued::Desk::cuts_now`), beside the uploader's calls.
 //!
+//! **A retire** (M2.7b, the agent's retention) is the one request that
+//! calls object storage: it is not answered between two turns but
+//! queued ([`Control::Retire`]), and taken at the next turn as a step of
+//! its own, before the publishes' and the cut's, under the lease and
+//! the fence as they are ([`Driver::retire`]). It is answered after
+//! that step. It is refused at once where the asker has stopped
+//! waiting, where the uploader steps no more, or where a publish of
+//! the name pends; one asked before the lease is first held waits for
+//! it, and a stop answers each retire that waits `stopped`. A retire
+//! that lands, or finds no `snap/T`, ends what the uploader kept of the
+//! name's publish ([`Publishing::retired`]).
+//!
 //! [`Uploader::run`] turns it until it is told to stop, and takes it by
 //! value: a turn dropped at the stop can leave the driver half way
 //! through a step (`Driver::step` is not made to be dropped at an
@@ -315,10 +327,24 @@ pub enum RetireRefused {
     Stopped,
     /// A publish of the name pends on this uploader.
     Asked,
-    /// Object storage answered with an error, or the ref moved at each of
-    /// [`crate::remote::RETIRE_TRIES`] tries: the transaction may have
-    /// landed, and asking again tells.
+    /// Object storage answered with an error, or `snap/T` moved at each
+    /// of [`crate::remote::RETIRE_TRIES`] tries: the transaction may have
+    /// landed, and asking again tells. The text says which, whole: it
+    /// names object storage itself, so a caller adds no prefix.
     Store(String),
+}
+
+/// The text of a retire that failed for [`RetireRefused::Store`]. A
+/// conflict of a retire is `snap/T` moving under it, not the head or a
+/// cut's row as for a publish ([`RemoteError::Conflict`]'s own text).
+fn retire_failed(e: &RemoteError) -> String {
+    match e {
+        RemoteError::Conflict => format!(
+            "object storage: snap/T moved under each of {} tries",
+            crate::remote::RETIRE_TRIES
+        ),
+        other => other.to_string(),
+    }
 }
 
 /// A retire asked, waiting for its turn.
@@ -605,7 +631,7 @@ where
                     self.fenced(holder, epoch)
                 }
                 Err(e) => {
-                    let _ = ask.reply.send(Err(RetireRefused::Store(e.to_string())));
+                    let _ = ask.reply.send(Err(RetireRefused::Store(retire_failed(&e))));
                     Duration::ZERO
                 }
             };

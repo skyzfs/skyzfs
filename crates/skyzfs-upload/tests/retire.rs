@@ -361,3 +361,24 @@ async fn a_ref_that_moves_at_each_try_is_a_conflict_after_the_tries() {
     assert_eq!(remote.retire("t", commit).await, Ok(Retired::Retired));
     assert_eq!(snap(&fx, "t").await, (None, None));
 }
+
+/// A retire whose transaction lands and whose answer is lost: the ref
+/// and its row went together, so asking again finds `gone` and nothing
+/// is left behind. G1 of the review of #175. Mutant: the ref and the row
+/// deleted in two transactions, the first of which lands and fails
+/// (`split-txn`), leaving the row.
+#[tokio::test]
+async fn a_retire_that_lands_unheard_deleted_the_ref_and_its_row_together() {
+    let mut fx = Fixture::new(84).await;
+    let commit = published(&mut fx).await;
+    let mut remote = fx.remote();
+    fx.store
+        .arm_when(FaultOp::Put, "refs", 0, skynbd_store::FaultWhen::After)
+        .await;
+    let failed = remote.retire("t", commit).await;
+    fx.store.disarm().await;
+    assert!(matches!(failed, Err(RemoteError::Store(_))), "{failed:?}");
+    assert_eq!(snap(&fx, "t").await, (None, None), "both went, at once");
+    let mut remote = fx.remote();
+    assert_eq!(remote.retire("t", commit).await, Ok(Retired::Gone));
+}
