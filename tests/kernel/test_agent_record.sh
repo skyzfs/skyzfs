@@ -1012,16 +1012,26 @@ n = int(open(cnt).read()) if os.path.exists(cnt) else 0
 open(cnt, 'w').write(str(n + 1))
 with open(os.path.join(d, 'argv'), 'a') as f:
     f.write(' '.join(sys.argv[1:]) + '\n')
+# The handlers only note the signal; nap() records and ends. A handler
+# that wrote and exited itself could run inside the other one (Python
+# runs a pending handler between two steps of any code, a handler's
+# too) and end the process before the outer one had written its signal.
 got = []
 def on(sig, _):
     got.append(sig)
-    with open(os.path.join(d, 'signals'), 'a') as f:
-        f.write(signal.Signals(sig).name + '\n')
-    if mode != 'twice' or len(got) == 2:
-        if os.environ.get('FAKE_TERM_LINE'):
-            print('round 99 ok took_ms=1 late_ms=0 skipped=0 begun=r99 under_way=0', flush=True)
-        time.sleep(float(os.environ.get('FAKE_LINGER', '0')))
-        sys.exit(1 if mode == 'twice' else 0)
+def nap(t):
+    end = time.monotonic() + t
+    while True:
+        if got and (mode != 'twice' or len(got) >= 2):
+            with open(os.path.join(d, 'signals'), 'a') as f:
+                f.write(''.join(signal.Signals(s).name + '\n' for s in list(got)))
+            if os.environ.get('FAKE_TERM_LINE'):
+                print('round 99 ok took_ms=1 late_ms=0 skipped=0 begun=r99 under_way=0', flush=True)
+            time.sleep(float(os.environ.get('FAKE_LINGER', '0')))
+            sys.exit(1 if mode == 'twice' else 0)
+        if time.monotonic() >= end:
+            return
+        time.sleep(0.01)
 signal.signal(signal.SIGTERM, on)
 signal.signal(signal.SIGINT, on)
 open(os.path.join(d, 'ready'), 'w').write(str(n + 1))
@@ -1030,18 +1040,18 @@ if mode == 'killfirst' and n == 0:
 for k, t in enumerate(took, 1):
     print(f'round {k} ok took_ms={t} late_ms=0 skipped=0 begun=r{k} under_way=0', flush=True)
     print(f'snap/r{k} c', flush=True)
-    time.sleep(gap)
+    nap(gap)
 if mode == 'end':
     sys.exit(3)
 if mode == 'bad':
     while os.path.exists(os.environ['FAKE_SOCK']):
-        time.sleep(0.05)
+        nap(0.05)
     with open(os.environ['FAKE_REC']) as f, open(os.path.join(d, 'seen'), 'w') as g:
         g.write(f.read())
     print(f'round {len(took) + 1} failed took_ms=1 late_ms=0 skipped=0 begun=- under_way=0', flush=True)
     sys.exit(6)
 while True:
-    time.sleep(0.05)
+    nap(0.05)
 EOF
 chmod +x "$T/fake-agent"
 for f in await_rounds round_left run_rounds_then_term scen_run scen_runkill scen_runtwice scen_runheld scen_runbad other_remote rec_arun; do
@@ -1238,6 +1248,162 @@ arun_cases() {
 }
 is "arun: its cases" "$(arun_cases)" \
     "R-run run|R-kill runkill intent:after:2|R-twice runtwice|R-held runheld|R-corrupt runbad  corrupt|R-volume runbad  volume|R-rewind runrewind|"
+
+# The failure course (afail).
+is "a zed that is neither on nor off" "$(refused CUT_AGENT=/bin/true CUT_S3_DOWN=x CUT_S3_UP=y CUT_AGENT_ZED=maybe)" \
+    "64 CUT_AGENT_ZED is on or off, not maybe"
+for f in astamp_now astamp afinish fail_now failed_end note_stat fcase frun fail_unknown fail_wait afail_zed afail_end rec_afail; do
+    is "$f is in the script" "$([ -n "$(fn "$f")" ] && echo yes)" yes
+done
+# astamp: each line of the run's output and errors stamped once; 0 on a
+# line that matches, 1 at the run's end (its time written), 2 at the
+# limit.
+stamps() {
+    (
+        CDIR=$T/as; rm -rf "$CDIR"; mkdir -p "$CDIR"
+        eval "$(fn astamp_now)"; eval "$(fn astamp)"
+        ( echo "round 1 a"; sleep 0.3; echo "lost x"; echo e1 >&2; sleep 0.3; printf 'round 2 b\nhalf' ) \
+            > "$CDIR/p.out" 2> "$CDIR/p.err" &
+        AGENT_PID=$!
+        r1=0; astamp p 10 '^lost ' || r1=$?
+        r2=0; astamp p 10 || r2=$?
+        sleep 5 & AGENT_PID=$!
+        r3=0; astamp q 1 || r3=$?
+        kill "$AGENT_PID"
+        echo "$r1 $r2 $r3 $(cut -f1 "$CDIR/p.out.tsv" | tr '\n' ,) $(cut -f1 "$CDIR/p.err.tsv" | tr '\n' ,)" \
+            "$([ -s "$CDIR/p.ended-at" ] && echo ended)" \
+            "$(awk -F '\t' 'NR > 1 && $2 < t { print "unordered" } { t = $2 }' "$CDIR/p.out.tsv")"
+    )
+}
+is "astamp: stamps, a match, the end, the limit; a line with no newline not stamped" "$(stamps)" "0 1 2 1,2,3, 1, ended "
+# The course's cases, in order, and a case's line.
+is "afail: zed, the begin, U, W, the end" "$(
+    afail_zed() { printf 'zed;'; }; agent_begin() { printf 'begin;'; }; fcase() { printf '%s;' "$*"; }
+    afail_end() { printf 'end;'; }
+    eval "$(fn rec_afail)"; rec_afail)" "zed;begin;U unknown;W wait;end;"
+fcases() {
+    (
+        RDIR=$T/fc; rm -rf "$RDIR"; mkdir -p "$RDIR"
+        log() { :; }
+        fail_unknown() { echo "$*" > "$CDIR/args"; echo 12 > "$CDIR/publish.rc"; }
+        eval "$(fn fcase)"
+        fcase U unknown
+        echo "$(cat "$RDIR/cases.tsv") [$(cat "$RDIR/cases/U/args")] [$CDIR] $([ -d "$RDIR/cases/U/agent" ] && echo agent)"
+    )
+}
+is "fcase: the case's line, its trace, its own agent directory" "$(fcases)" \
+    "$(printf 'U\tunknown\t-\t12\t-') [--trace-points $T/fc/cases/U/trace.tsv] [] agent"
+# The failed daemon's end and the note.
+fends() {
+    (
+        CDIR=$T/fe; rm -rf "$CDIR"; mkdir -p "$CDIR/run"; SERVE_K=2
+        verdict() { echo "verdict $1" >> "$CDIR/v"; }
+        serve_log() { echo /dev/null; }
+        vrun() { echo "$CDIR/run"; }
+        eval "$(fn failed_end)"; eval "$(fn note_stat)"
+        bash -c 'exit 3' & FAILED_PID=$!
+        failed_end
+        note_stat before
+        printf 'n' > "$CDIR/run/failed"
+        note_stat after
+        echo "$(cat "$CDIR/failed.rc") [$FAILED_PID] $(cut -f1,3 "$CDIR/note.tsv" | tr '\t\n' ' ;')" \
+            "$(awk -F '\t' 'NR == 2 { print ($2 ~ /^[0-9]+\.[0-9]+$/) ? "mtime" : "no mtime" }' "$CDIR/note.tsv")"
+    )
+}
+is "failed_end and note_stat" "$(fends)" "3 [] before -;after 1; mtime"
+# A daemon that has not ended 60 s after the signal: a verdict, and
+# `timeout` for its status.
+fhang() {
+    (
+        CDIR=$T/fh; rm -rf "$CDIR"; mkdir -p "$CDIR"; SERVE_K=2
+        verdict() { echo "verdict $1" >> "$CDIR/v"; }
+        serve_log() { echo /dev/null; }
+        seq() { echo 1; }
+        sleep 30 & FAILED_PID=$!
+        eval "$(fn failed_end)"
+        failed_end
+        kill "$FAILED_PID" 2>/dev/null
+        echo "$(cat "$CDIR/failed.rc") $(cat "$CDIR/v")"
+    )
+}
+is "failed_end: a daemon still running is a verdict" "$(fhang)" "timeout verdict daemon_failed"
+# fail_now: SIGUSR1 to the daemon, the two clocks, and the daemon handed
+# from SERVE_PID to FAILED_PID.
+fnow() {
+    (
+        CDIR=$T/fn; rm -rf "$CDIR"; mkdir -p "$CDIR"; SERVE_K=1
+        log() { :; }; rig_error() { echo "rig_error $*"; }
+        sleep 30 & SERVE_PID=$!; pid=$SERVE_PID
+        eval "$(fn fail_now)"
+        fail_now
+        st=0; wait "$pid" || st=$?
+        echo "[$SERVE_PID] $([ "$FAILED_PID" = "$pid" ] && echo handed) $st" \
+            "$(awk -F '\t' 'NF == 2 && $1 ~ /^[0-9]+\.[0-9]+$/ && $2 ~ /^[0-9]+$/ { print "clocks" }' "$CDIR/fail-at")"
+    )
+}
+is "fail_now: the signal, both clocks, SERVE_PID emptied" "$(fnow)" "[] handed $((128 + 10)) clocks"
+# afail_end: the pool and the daemon are lost to the course's end.
+fend() {
+    (
+        WRITER="" WATCH_PID="" S3_IS_DOWN="" POOL_LOST="" DAEMON_GONE=""
+        afail_zed_log() { :; }
+        eval "$(fn afail_end)"
+        afail_end
+        echo "$POOL_LOST $DAEMON_GONE"
+    )
+}
+is "afail_end: no pool to export and no daemon to stop" "$(fend)" "1 1"
+# U's steps with stand-ins, and its error where round 1 leaves too little
+# time to export the pool before the next round.
+fu() { # TOOK_MS -> the calls
+    (
+        CDIR=$T/fu; rm -rf "$CDIR"; mkdir -p "$CDIR"; SERVE_K=1; AGENT_SERVE=(--lease-ttl-s 300)
+        VOL=$T/fuv RUN=$T/fur
+        printf '#!/bin/sh\necho "$@" > %s/skz.args\nexit 4\n' "$CDIR" > "$T/skz"; chmod +x "$T/skz"; SKYZFSD=$T/skz
+        c() { echo "$*" >> "$CDIR/calls"; }
+        frun() { c frun "$*"; echo "round 1 ok took_ms=$took late_ms=0 skipped=0 begun=a under_way=0" > "$CDIR/publish.out"; }
+        astamp() { c astamp "$*"; }
+        afinish() { c afinish "$*"; }
+        writer_off() { c writer_off; }; writer_on() { c writer_on; }
+        export_pool() { c export; }; import_pool() { c import; }
+        udevadm() { :; }
+        fail_now() { c fail_now; }; failed_end() { c failed_end; }; note_stat() { c note "$1"; }
+        serve_start() { c serve_start "$*" "[${SERVE_ARGS[*]}]"; }
+        case_error() { c case_error "$*"; }
+        verdict() { c verdict "$*"; }
+        eval "$(fn fail_unknown)"
+        took=$1
+        fail_unknown --trace-points x
+        tr '\n' ';' < "$CDIR/calls"; echo " rc=$(cat "$CDIR/refused.rc" 2>/dev/null) [$(cat "$CDIR/skz.args" 2>/dev/null)]"
+    )
+}
+is "U: round 1, the export, the failure, the refused start, round 3, the acknowledged start, the import, the end" "$(fu 9000)" \
+    "frun publish --trace-points x;astamp publish 180 ^round 1 ;writer_off;export;fail_now;astamp publish 90 ^lost ;failed_end;note failed;note refused;astamp publish 150 ^round 3 ;serve_start 2 acknowledged [--lease-ttl-s 300];import;note served;writer_on;afinish publish 150; rc=4 [serve --dir $T/fuv --run-dir $T/fur --lease-ttl-s 300]"
+is "U: round 1 with less than 20 s to its tick is the rig's error" "$(fu 41000)" \
+    "frun publish --trace-points x;astamp publish 180 ^round 1 ;case_error round 1 left 19000 ms to its tick, not 20 s or more: no time to export the pool between two rounds;afinish publish 1; rc= []"
+# W's steps with stand-ins; a run that ended before the failure is a
+# verdict, and nothing fails the volume.
+fw() { # ASTAMP_STATUS -> the calls
+    (
+        CDIR=$T/fw; rm -rf "$CDIR"; mkdir -p "$CDIR"; : > "$CDIR/publish.err"; POOL=nopool FAIL_AFTER=12
+        c() { echo "$*" >> "$CDIR/calls"; }
+        freeze() { c freeze; }
+        frun() { c frun "$*"; }
+        wait_point() { c wait_point "$*"; }
+        astamp() { c astamp "$*"; return "$ST"; }
+        afinish() { c afinish "$*"; }
+        fail_now() { c fail_now; }; failed_end() { c failed_end; }; note_stat() { c note "$1"; }
+        verdict() { c verdict "$1"; }
+        lim() { c lim "$2 $3"; }
+        eval "$(fn fail_wait)"
+        ST=$1 fail_wait --trace-points x
+        tr '\n' ';' < "$CDIR/calls"
+    )
+}
+is "W: frozen, asked, 12 s, the failure, the end, the note, run again" "$(fw 2)" \
+    "freeze;frun publish --trace-points x;wait_point asked after 120;astamp publish 12;fail_now;afinish publish 90;failed_end;note failed;frun again;afinish again 90;lim zpool status;lim bash -c;"
+is "W: a run that ended before the failure" "$(fw 1)" \
+    "freeze;frun publish --trace-points x;wait_point asked after 120;astamp publish 12;verdict publish_waiting;afinish publish 1;"
 
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

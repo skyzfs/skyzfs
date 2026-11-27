@@ -10,7 +10,8 @@ Usage:
 
 The first form is cut-record.sh's CUT_CHECK after the agent rig's courses
 (aplain, adaemon, arare, arun; tests/kernel/agent-record.sh says what each
-does), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG
+does; the failure course afail is agent_fail_check.py's, which this hands
+it to), recorded through the daemon with its uploads (CUT_UPLOAD=1). LOG
 is the daemon's request log; BASE is `-`. Environment: as
 nodeb_check.py's. The volume in object storage is `cut-NAME`.
 
@@ -156,6 +157,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import agent_fail_check  # noqa: E402
 import cut_daemon_check  # noqa: E402
 import nodeb_check  # noqa: E402
 import publish_check  # noqa: E402
@@ -883,6 +885,8 @@ def main():
         return
     if len(sys.argv) not in (6, 7):
         sys.exit(__doc__)
+    if sys.argv[1] in agent_fail_check.COURSES:
+        sys.exit(agent_fail_check.main(sys.argv[1:3]))
     name, rdir, log = sys.argv[1:4]
     t0 = time.monotonic()
     lines = []

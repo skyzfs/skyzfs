@@ -713,5 +713,42 @@ is "pchannel learns the greeting from version, before the others" \
 is "the peer sends in the learned greeting" \
     "$(sed -n '/^ppeer() {$/,/^}$/p' "$SCRIPT" | grep -c "printf '%s\\\\ncuts\\\\n' \"\$PCHANNEL_HELLO\"")" 1
 
+# A course that failed its volume (afail): no daemon stopped at the end,
+# and the cleanup does not export a pool that may be suspended with no
+# device under it.
+endfn=$(sed -n '/^end() {$/,/^}$/p' "$SCRIPT")
+is "end is in the script" "$([ -n "$endfn" ] && echo yes)" yes
+ends() { # DAEMON_GONE -> what end did
+    # shellcheck disable=SC2034,SC2329
+    (
+        SERVER=daemon NAME=e OUT=$T/e RDIR=$T/e WORK=$T/e CHECK=none DAEMON_GONE=$1 WORST=0
+        rm -rf "$OUT"; mkdir -p "$OUT"; : > "$RDIR/requests.tsv"
+        log() { :; }; end_daemon() { printf 'end_daemon '; }
+        eval "$endfn"
+        end
+        cut -f2 "$OUT/recordings.tsv"
+    )
+}
+is "end with the volume failed: no stop" "$(ends 1)" "recorded"
+is "end with a daemon: stopped" "$(ends '')" "end_daemon recorded"
+cleanfn=$(sed -n '/^cleanup() {$/,/^}$/p' "$SCRIPT")
+is "cleanup is in the script" "$([ -n "$cleanfn" ] && echo yes)" yes
+cleans() { # POOL_LOST -> what lim was asked
+    # shellcheck disable=SC2034,SC2329
+    (
+        POOL=p POOL_LOST=$1 SERVER=daemon VOL=$T/cv RUN=$T/cr SKYZFSD=skz LW=lw LOWER=lo LOWER_UP="" MH_SAVED=""
+        NOFLUSH=$T/none STRAY="" HOLD_PID="" WATCH_PID="" WRITER="" AGENT_PID="" S3_IS_DOWN="" SERVE_PID=""
+        ON_RIG_ERROR="" VLOOP="" LLOOP="" MLOOP="" SLOOP=""
+        mkdir -p "$VOL"; : > "$T/lims"
+        lim() { shift; echo "$*" >> "$T/lims"; }
+        dmsetup() { :; }; losetup() { :; }
+        eval "$cleanfn"
+        cleanup
+    )
+    tr '\n' ';' < "$T/lims"
+}
+is "cleanup with the pool lost: no export" "$(cleans 1)" "skz detach --dir $T/cv --run-dir $T/cr;"
+is "cleanup: the export" "$(cleans '')" "zpool export -f p;skz detach --dir $T/cv --run-dir $T/cr;"
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

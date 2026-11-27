@@ -188,7 +188,7 @@ UPLOAD_NAMED="unostore ukillput ufailed"
 # The channel rig's (skyzfs-publish-rig.yml), by name only.
 PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist pretire pkillret"
 # The agent rig's (skyzfs-agent-rig.yml; agent-record.sh), by name only.
-AGENT_NAMED="aplain adaemon arare arun"
+AGENT_NAMED="aplain adaemon arare arun afail"
 KNOWN=$ALL
 [ "$UPLOAD" != 1 ] || { ALL="$ALL $UPLOAD_ONLY"; KNOWN="$ALL $UPLOAD_NAMED $PUBLISH_NAMED $AGENT_NAMED"; }
 RECS=${*:-$ALL}
@@ -223,6 +223,11 @@ SERVE_ARGS=(); CREATE_ARGS=(); PRE_SERVE=""; DRAIN_STATE=idle; DRAIN_HELD=1; WRI
 # Set while a course has taken object storage down (CUT_S3_DOWN): the
 # cleanup brings it back.
 S3_IS_DOWN=""
+# Set by a course that ends with its volume failed (afail): no daemon
+# to stop at the end, and a pool that may be suspended with no device
+# under it, which the cleanup does not export (an export of it would
+# wait its whole limit and leave a command that cannot be killed).
+DAEMON_GONE=""; POOL_LOST=""
 NOFLUSH=/sys/module/zfs/parameters/zfs_nocacheflush
 # One line in recordings.tsv whatever the message holds. A course may
 # set ON_RIG_ERROR to a function that is then given the message, once
@@ -338,7 +343,7 @@ cleanup() {
     # lim and not timeout(1): timeout waits for a child that cannot be
     # killed, and an export of a pool whose device has no server is one
     # (run 45828678468 hung here until it was cancelled).
-    lim 120 zpool export -f "$POOL" > /dev/null 2>&1
+    [ -n "$POOL_LOST" ] || lim 120 zpool export -f "$POOL" > /dev/null 2>&1
     if [ -n "$SERVE_PID" ]; then
         kill -TERM "$SERVE_PID" 2>/dev/null
         serve_end 30 || { kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; }
@@ -643,7 +648,11 @@ begin() {
 end() {
     local record=$WORK/log.img base=$WORK/base.img
     if [ "$SERVER" = daemon ]; then
-        end_daemon
+        if [ -n "$DAEMON_GONE" ]; then
+            log "$NAME: no daemon to stop: the course failed its volume"
+        else
+            end_daemon
+        fi
         record=$RDIR/requests.tsv; base=-
         log "$NAME: recorded, $(du -h "$record" | cut -f1) of request log"
     else
@@ -2157,7 +2166,7 @@ record() {
         pkillpub) SERVE_ARGS=(--kill-at-upload publish:1) ;;
         pkillret) SERVE_ARGS=(--kill-at-upload retire:1) ;;
         pchannel) PRE_SERVE=ulease_other ;;
-        aplain|adaemon|arare|arun) SERVE_ARGS=("${AGENT_SERVE[@]}") ;;
+        aplain|adaemon|arare|arun|afail) SERVE_ARGS=("${AGENT_SERVE[@]}") ;;
         ulost) SERVE_ARGS=(--lease-ttl-s 3); DRAIN_STATE=lease_lost; DRAIN_HELD="" ;;
     esac
     if [ "$1" = stray ]; then begin "$1" delay-end; else begin "$1"; fi
