@@ -1,0 +1,3 @@
+A22	runrewind: no end's pin	killed	ERROR: test_runrewind (__main__.Rewind.test_runrewind) | ERROR: test_runrewind_fails (__main__.Rewind.test_runrewind_fails) | FAILED (errors=2)
+Q04	end_daemon: pid let go after rig_error	killed	FAIL end_daemon: unreaped after SIGKILL, its pid let go: got 'rig error [set]: skyzfsd serve did not end 60 s after SIGTERM: lease kept
+Z09	writing's default margin 3	killed	FAIL: writing: the margin's default: got '0', want '2'

@@ -1,0 +1,4 @@
+C08	pin not judged	killed	ERROR: test_runrewind (__main__.Rewind.test_runrewind) | ERROR: test_run (__main__.Run.test_run) | ERROR: test_run_fails (__main__.Run.test_run_fails)
+C09	rounds_after: a line at most 100 s late passes	killed	FAIL: test_rounds_after (__main__.Rounds.test_rounds_after) | AssertionError: False is not true | FAIL: test_run_fails (__main__.Run.test_run_fails)
+C10	rounds_after: a bad term-at taken as 0	killed	FAIL: test_rounds_after (__main__.Rounds.test_rounds_after) | AssertionError: RigError not raised | FAILED (failures=1)
+C11	pin judged on the second signal too	SURVIVES	

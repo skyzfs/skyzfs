@@ -1,0 +1,75 @@
+   181.977  mark freeze-R-rewind
+   182.001  cut 52 group 58 opens itself
+   182.129  cut 53 group 61 opens itself
+   182.257  cut 54 group 64 opens itself
+   182.386  cut 55 group 67 opens itself
+   182.515  cut 56 group 70 opens itself
+   182.643  cut 57 group 73 opens itself
+   182.771  cut 58 group 76 opens itself
+   182.900  cut 59 group 79 opens itself
+   183.028  cut 60 group 82 opens itself
+   183.151  mark session-1-end
+   183.175  cut 61 group 86 opens itself
+   183.181  cut 62 group 95 opens itself
+   183.314  mark session-2-begin
+   183.400  cut 63 group 62 opens rewind
+   183.409  cut 64 group 63 opens rewind
+   183.420  cut 65 group 65 opens rewind
+   183.555  mark session-2-ready
+   184.194  mark thaw-R-rewind
+   184.243  cut 66 group 67 opens rewind
+   184.256  cut 67 group 68 opens rewind
+   184.263  cut 68 group 71 opens rewind
+   184.271  cut 69 group 72 opens rewind
+   184.278  cut 70 group 75 opens rewind
+   184.287  cut 71 group 76 opens rewind
+   184.294  cut 72 group 79 opens rewind
+   184.301  cut 73 group 80 opens rewind
+   184.308  cut 74 group 83 opens rewind
+   184.316  cut 75 group 84 opens rewind
+   184.323  cut 76 group 87 opens itself
+   184.331  cut 77 group 88 opens itself
+   184.368  agent intent skz-20261127T005349Z
+   184.429  agent take skz-20261127T005349Z
+   184.437  cut 78 group 91 opens itself
+   184.513  cut 79 group 92 opens itself
+   185.044  publish asked 91 77 skz-20261127T005349Z refused rewound
+   185.185  publish asked 91 79 skz-20261127T005349Z accepted
+   189.793  cut 80 group 93 opens itself
+   189.960  publish ended skz-20261127T005349Z refused rewound
+   190.528  publish asked 91 80 skz-20261127T005349Z accepted
+   194.736  agent intent skz-20261127T005359Z
+   194.822  agent take skz-20261127T005359Z
+   194.834  cut 81 group 94 opens itself
+   194.930  cut 82 group 95 opens itself
+   195.051  publish ended skz-20261127T005349Z refused rewound
+   195.070  publish asked 94 80 skz-20261127T005359Z refused rewound
+   195.144  publish asked 91 82 skz-20261127T005349Z accepted
+   195.239  publish asked 94 82 skz-20261127T005359Z accepted
+   200.036  cut 83 group 96 opens itself
+   200.290  publish ended skz-20261127T005349Z done commit=5cd317485074296c545d386b1c005fdb89498e84c2c39c8389879753de7f78c1
+   200.296  publish ended skz-20261127T005359Z done commit=5cd317485074296c545d386b1c005fdb89498e84c2c39c8389879753de7f78c1
+   200.830  cut 84 group 97 opens itself
+   200.908  cut 85 group 98 opens itself
+   202.043  mark session-2-end
+   202.067  cut 86 group 99 opens itself
+   202.072  cut 87 group 100 opens itself
+   202.077  cut 88 group 109 opens itself
+== rewind-txg
+61
+== rewind-top.txt
+cuts attachment=922215aacf04c8fc47ee2a4066e1d891 state=8b146f82012cba615f7871b04326a15c count=62 group=95 opens=itself
+== rewind-cuts.txt
+cuts attachment=922215aacf04c8fc47ee2a4066e1d891 state=8b146f82012cba615f7871b04326a15c count=65 group=65 opens=rewind
+== publish.out
+round 1 ok took_ms=10488 late_ms=0 skipped=0 begun=skz-20261127T005349Z under_way=1 synced=6
+snap/skz-20261127T005349Z 5cd317485074296c545d386b1c005fdb89498e84c2c39c8389879753de7f78c1
+snap/skz-20261127T005359Z 5cd317485074296c545d386b1c005fdb89498e84c2c39c8389879753de7f78c1
+round 2 ok took_ms=6297 late_ms=488 skipped=0 begun=skz-20261127T005359Z under_way=0 synced=0
+== publish.rounds.tsv
+1	1795740839.490843
+2	1795740845.781916
+== publish.term-at
+1795740845.782028
+== publish.ended-at
+1795740846.037738

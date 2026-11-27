@@ -1,0 +1,85 @@
+   182.138  mark freeze-R-rewind
+   182.372  cut 52 group 58 opens itself
+   182.678  cut 53 group 61 opens itself
+   182.880  cut 54 group 64 opens itself
+   182.977  cut 55 group 67 opens itself
+   183.234  cut 56 group 70 opens itself
+   183.454  cut 57 group 73 opens itself
+   183.677  cut 58 group 76 opens itself
+   183.710  cut 59 group 79 opens itself
+   183.841  cut 60 group 82 opens itself
+   183.965  mark session-1-end
+   183.997  cut 61 group 86 opens itself
+   184.003  cut 62 group 95 opens itself
+   184.136  mark session-2-begin
+   184.227  cut 63 group 62 opens rewind
+   184.239  cut 64 group 63 opens rewind
+   184.276  cut 65 group 65 opens rewind
+   184.377  mark session-2-ready
+   185.052  mark thaw-R-rewind
+   185.375  cut 66 group 67 opens rewind
+   185.581  cut 67 group 68 opens rewind
+   186.165  cut 68 group 71 opens rewind
+   186.249  cut 69 group 72 opens rewind
+   186.428  cut 70 group 75 opens rewind
+   186.514  cut 71 group 76 opens rewind
+   186.638  cut 72 group 79 opens rewind
+   186.768  cut 73 group 80 opens rewind
+   186.892  cut 74 group 83 opens rewind
+   187.091  cut 75 group 84 opens rewind
+   187.940  cut 76 group 87 opens itself
+   188.119  cut 77 group 88 opens itself
+   188.196  agent intent skz-20261127T014532Z
+   188.301  agent take skz-20261127T014532Z
+   188.386  cut 78 group 91 opens itself
+   188.655  cut 79 group 92 opens itself
+   189.248  publish asked 91 77 skz-20261127T014532Z refused rewound
+   189.645  publish asked 91 79 skz-20261127T014532Z accepted
+   194.034  cut 80 group 93 opens itself
+   194.172  publish ended skz-20261127T014532Z refused rewound
+   195.018  publish asked 91 80 skz-20261127T014532Z accepted
+   196.141  agent intent skz-20261127T014540Z
+   196.260  agent take skz-20261127T014540Z
+   196.340  cut 81 group 94 opens itself
+   196.546  cut 82 group 95 opens itself
+   196.584  publish ended skz-20261127T014532Z refused rewound
+   196.765  publish asked 91 82 skz-20261127T014532Z accepted
+   196.992  publish asked 94 80 skz-20261127T014540Z refused rewound
+   197.272  publish asked 94 82 skz-20261127T014540Z accepted
+   201.591  cut 83 group 96 opens itself
+   201.826  publish ended skz-20261127T014532Z done commit=ab2a54b8ecf966405491ffc1fb1757ac49b747fc0a853972ef90854bd29505bb
+   201.833  publish ended skz-20261127T014540Z done commit=ab2a54b8ecf966405491ffc1fb1757ac49b747fc0a853972ef90854bd29505bb
+   202.843  cut 84 group 97 opens itself
+   202.886  cut 85 group 98 opens itself
+   205.133  agent intent skz-20261127T014549Z
+   205.195  agent take skz-20261127T014549Z
+   205.205  cut 86 group 99 opens itself
+   205.300  cut 87 group 100 opens itself
+   205.394  publish asked 99 85 skz-20261127T014549Z accepted
+   205.404  publish ended skz-20261127T014549Z done commit=e566d8d9d135b86b33b2808bee326041870ed91ea12cee15538b0ebd668b4e9d
+   205.676  cut 88 group 101 opens itself
+   206.905  mark session-2-end
+   206.932  cut 89 group 102 opens itself
+   206.946  cut 90 group 103 opens itself
+   206.952  cut 91 group 112 opens itself
+== rewind-txg
+61
+== rewind-top.txt
+cuts attachment=1c4f628e72af9135aff493631c528dc5 state=de52c9314052d69d2df2bbfdcfe00c62 count=62 group=95 opens=itself
+== rewind-cuts.txt
+cuts attachment=1c4f628e72af9135aff493631c528dc5 state=de52c9314052d69d2df2bbfdcfe00c62 count=65 group=65 opens=rewind
+== publish.out
+round 1 ok took_ms=11017 late_ms=0 skipped=0 begun=skz-20261127T014532Z under_way=1 synced=6
+snap/skz-20261127T014532Z ab2a54b8ecf966405491ffc1fb1757ac49b747fc0a853972ef90854bd29505bb
+snap/skz-20261127T014540Z ab2a54b8ecf966405491ffc1fb1757ac49b747fc0a853972ef90854bd29505bb
+round 2 ok took_ms=6858 late_ms=1017 skipped=0 begun=skz-20261127T014540Z under_way=0 synced=0
+snap/skz-20261127T014549Z e566d8d9d135b86b33b2808bee326041870ed91ea12cee15538b0ebd668b4e9d
+round 3 ok took_ms=664 late_ms=0 skipped=0 begun=skz-20261127T014549Z under_way=0 synced=0
+== publish.rounds.tsv
+1	1795743940.160079
+2	1795743947.003648
+3	1795743949.864262
+== publish.term-at
+1795743949.868517
+== publish.ended-at
+1795743950.087211

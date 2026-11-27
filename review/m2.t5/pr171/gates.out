@@ -1,0 +1,31 @@
+head: 4ccc4b4 Agent rig: read the round line's fields after under_way by name
+tests/kernel/test_agent_check.py: Ran 106 tests in 3.502s  OK 
+tests/kernel/test_publish_check.py: Ran 48 tests in 0.002s  OK 
+tests/kernel/test_publish_check_main.py: Ran 55 tests in 0.170s  OK 
+tests/kernel/test_nodeb_check.py: Ran 29 tests in 0.042s  OK 
+tests/kernel/test_txg_probe.py: Ran 20 tests in 3.693s  OK 
+tests/kernel/test_dsync_writer.py: Ran 15 tests in 3.081s  OK 
+tests/kernel/test_zfs_cli_json.py: Ran 7 tests in 0.043s  OK 
+tests/kernel/test_cut_check.py: Ran 42 tests in 0.046s  OK 
+tests/kernel/test_cut_daemon_check.py: Ran 104 tests in 11.388s  OK 
+tests/kernel/test_zfs_cli_record.sh: ok: scale_all: a long ZCR_SCALE_FULL_MAX capped ok: scale_all: ZCR_SCALE_FULL_MAX 0 kept 
+tests/kernel/test_cut_record.sh: ok   pidle_run says how the inner bash ended all passed 
+tests/lib/test_lim.sh: ok: [set -e] a bare failing lim ends the caller with the command's status, its output passed on all passed 
+tests/kernel/test_agent_record.sh run 1: ok   published: a list that fails FAIL recover: in plain, a daemon ended after the case's error is a verdict: got '', want 'daemon_serving' FAIL reserve: a stop that ends 1 is a verdict, then served again: got ' ', want 'daemon_stopped serve_again' FAIL reserve: a stop that ends 0: got ' ', want ' serve_again' FAIL reserve: a daemon that had ended (0) before the stop is a verdict, then served again: got '  ', want 'daemon_stopped skyzfsd serve 2 had ended before SIGTERM (status 0) serve_again' 
+tests/kernel/test_agent_record.sh run 2: ok   published: a list that fails ok   asettle: a list of the snapshots that fails ok   destroy: a release that fails ok   gone: the destroy bounded; its failure the case's error, its log kept apart ok   cleanup: an end with no failure 
+tests/kernel/test_agent_record.sh run 3: ok   published: a list that fails ok   asettle: a list of the snapshots that fails ok   destroy: a release that fails ok   gone: the destroy bounded; its failure the case's error, its log kept apart ok   cleanup: an end with no failure 
+yaml ok: .github/workflows/skyzfs-agent-rig.yml
+yaml ok: .github/workflows/skyzfs-zfs-cli-record.yml
+shellcheck tests/kernel/agent-record.sh: head 2 findings, base 2
+shellcheck tests/kernel/cut-record.sh: head 1299 findings, base 1299
+shellcheck tests/kernel/zfs-cli-record.sh: head 3 findings, base 3
+shellcheck tests/kernel/test_agent_record.sh: head 208 findings, base 200
+    2c2
+    <     198 tests/kernel/test_agent_record.sh: note: Command appears to be unreachable. Check usage (or ignore if invoked indirectly). [SC2317]
+    ---
+    >     206 tests/kernel/test_agent_record.sh: note: Command appears to be unreachable. Check usage (or ignore if invoked indirectly). [SC2317]
+shellcheck tests/kernel/test_zfs_cli_record.sh: head 91 findings, base 80
+    9c9
+    <      53 tests/kernel/test_zfs_cli_record.sh: note: Command appears to be unreachable. Check usage (or ignore if invoked indirectly). [SC2317]
+    ---
+    >      64 tests/kernel/test_zfs_cli_record.sh: note: Command appears to be unreachable. Check usage (or ignore if invoked indirectly). [SC2317]

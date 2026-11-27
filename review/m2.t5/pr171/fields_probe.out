@@ -1,0 +1,23 @@
+''                                       -> synced=None n=4 under_way=1
+' synced=3'                              -> synced=3 n=4 under_way=1
+' synced=3 bound=0'                      -> synced=3 n=4 under_way=1
+' synced=0 bound=1'                      -> synced=0 n=4 under_way=1
+' bound=1 synced=3'                      -> synced=3 n=4 under_way=1
+' synced=3 bound=1 later=x'              -> synced=3 n=4 under_way=1
+' later=x'                               -> synced=None n=4 under_way=1
+' syncedx=9'                             -> synced=None n=4 under_way=1
+' synced_total=9 synced=3'               -> synced=3 n=4 under_way=1
+' synced=3 synced_total=9'               -> synced=3 n=4 under_way=1
+' bound=1'                               -> synced=None n=4 under_way=1
+' synced=03'                             -> synced=3 n=4 under_way=1
+' synced=3 bound=0 bound=1'              -> RigError: a round line with bound= twice: 'round 4 ok took_ms=5 late_ms=0 skippe
+' synced=3 bound='                       -> RigError: a line of the agent's output that is not one of its five: 'round 4 ok 
+' synced=3  bound=0'                     -> RigError: a line of the agent's output that is not one of its five: 'round 4 ok 
+' synced=3 bound=0 '                     -> RigError: a line of the agent's output that is not one of its five: 'round 4 ok 
+' synced=3 Bound=0'                      -> RigError: a line of the agent's output that is not one of its five: 'round 4 ok 
+' synced=3 bound2=0'                     -> RigError: a line of the agent's output that is not one of its five: 'round 4 ok 
+' synced=-1'                             -> RigError: a round line whose synced= is not a count: 'round 4 ok took_ms=5 late_
+' synced=3 x=a=b'                        -> RigError: a line of the agent's output that is not one of its five: 'round 4 ok 
+' synced=3\tbound=0'                     -> RigError: a line of the agent's output that is not one of its five: 'round 4 ok 
+#172 line -> {'n': 1, 'ok': True, 'took_ms': 4200, 'late_ms': 0, 'skipped': 0, 'begun': 'skz-20261127T004500Z', 'under_way': 1, 'synced': 4}
+judge_synced on #172 lines -> []
