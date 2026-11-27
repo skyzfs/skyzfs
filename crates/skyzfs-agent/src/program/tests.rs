@@ -12,7 +12,7 @@ use crate::engine::fake::{
     Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, User, World, POOL, VOLUME,
 };
 use crate::engine::Noted;
-use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Record, Taken};
+use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Published, Record, Taken};
 
 fn args(line: &str) -> Vec<String> {
     line.split_whitespace().map(String::from).collect()
@@ -119,7 +119,8 @@ fn run_is_parsed_with_its_options() {
         parse(&args(&format!("run {COMMON}")), false),
         Ok(Command::Run {
             run: run(),
-            every: every(60)
+            every: every(60),
+            kept: Kept::default(),
         })
     );
     assert_eq!(EVERY_DEFAULT, every(60));
@@ -133,9 +134,26 @@ fn run_is_parsed_with_its_options() {
                 expiry: Some(every(120)),
                 ..run()
             },
-            every: every(5)
+            every: every(5),
+            kept: Kept::default(),
         })
     );
+    assert_eq!(
+        parse(
+            &args(&format!("run {COMMON} --keep 1000 --abandoned-keep-s 7")),
+            false
+        ),
+        Ok(Command::Run {
+            run: run(),
+            every: every(60),
+            kept: Kept {
+                keep: 1000,
+                abandoned_keep: every(7),
+            },
+        })
+    );
+    assert_eq!(Kept::default().keep, 60);
+    assert_eq!(Kept::default().abandoned_keep, every(24 * 60 * 60));
     let rows = [
         ("--limit-s 30", "run takes no option --limit-s"),
         ("--every-s 0", "at least 1"),
@@ -143,6 +161,13 @@ fn run_is_parsed_with_its_options() {
         ("--expiry-s 999999", "--expiry-s: at most"),
         ("--name t", "run takes no option --name"),
         ("--give-up", "run takes no option --give-up"),
+        (
+            "--keep 0",
+            "--keep: \"0\" is not a whole number from 1 to 1000",
+        ),
+        ("--keep 1001", "from 1 to 1000"),
+        ("--keep x", "from 1 to 1000"),
+        ("--abandoned-keep-s 0", "at least 1"),
     ];
     for (extra, why) in rows {
         let got = refused(&format!("run {COMMON} {extra}"), false);
@@ -636,14 +661,47 @@ fn the_record_is_dumped_one_line_a_fact() {
                 None,
             ),
         ],
-        abandoned: vec![Abandoned {
-            name: "skz-z".into(),
-            why: Why::NameTaken,
-            at_ms: 500,
-        }],
+        abandoned: vec![
+            Abandoned {
+                name: "skz-z".into(),
+                why: Why::NameTaken,
+                at_ms: 500,
+                left: Left::Nothing,
+            },
+            Abandoned {
+                name: "skz-y".into(),
+                why: Why::Person,
+                at_ms: 501,
+                left: Left::Unknown,
+            },
+            Abandoned {
+                name: "skz-x".into(),
+                why: Why::TooOld,
+                at_ms: 502,
+                left: Left::Members(vec![member("tank", 1), member("tank/a", 2)]),
+            },
+        ],
+        published: [
+            None,
+            Some(Retire::Ref),
+            Some(Retire::Members),
+            Some(Retire::Other),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, retire)| Published {
+            name: format!("skz-p{i}"),
+            commit: [0xc1; 32],
+            group: 60 + i as u64,
+            members: vec![member("tank", 3); i],
+            at_ms: 600 + i as u64,
+            retire,
+        })
+        .collect(),
     };
     let h = "4d".repeat(32);
     let c = "c0".repeat(32);
+    let p = "c1".repeat(32);
     let want = format!(
         "volume {}\n\
          enrolled tank pool_guid=11 leaf_guid=12\n\
@@ -651,7 +709,13 @@ fn the_record_is_dumped_one_line_a_fact() {
          publish skz-b phase=held count=5 group=40 stalls=1 attempts=2 held=yes asked_ms=- held_until_ms=- manifest={h} commit=- person=give-up begun_ms=1000\n\
          publish skz-c phase=asked count=5 group=41 stalls=1 attempts=2 held=yes asked_ms=2000 held_until_ms=3000 manifest={h} commit=- person=stopped begun_ms=1000\n\
          publish skz-d phase=done count=5 group=42 stalls=1 attempts=2 held=yes asked_ms=- held_until_ms=- manifest={h} commit={c} person=- begun_ms=1000\n\
-         abandoned skz-z why=name-taken at_ms=500\n",
+         abandoned skz-z why=name-taken at_ms=500 left=nothing\n\
+         abandoned skz-y why=person at_ms=501 left=unknown\n\
+         abandoned skz-x why=too-old at_ms=502 left=members:2\n\
+         published skz-p0 commit={p} group=60 members=0 at_ms=600 retire=-\n\
+         published skz-p1 commit={p} group=61 members=1 at_ms=601 retire=ref\n\
+         published skz-p2 commit={p} group=62 members=2 at_ms=602 retire=members\n\
+         published skz-p3 commit={p} group=63 members=3 at_ms=603 retire=other\n",
         "ab".repeat(16)
     );
     assert_eq!(dump(&Loaded::Present(record)), Ok(want));
@@ -663,6 +727,14 @@ fn the_record_is_dumped_one_line_a_fact() {
     assert_eq!(dump(&Loaded::Absent), Ok("absent\n".into()));
     assert!(dump(&Loaded::Corrupt(crate::record::Corrupt::Hash))
         .is_err_and(|why| why.contains("corrupt")));
+}
+
+/// A member `name` whose snapshot's GUID is `guid`.
+fn member(name: &str, guid: u64) -> Member {
+    Member {
+        name: name.into(),
+        snapshot_guid: guid,
+    }
 }
 
 /// The fake daemon with `look` blind: a `done` is never confirmed.
@@ -1345,6 +1417,14 @@ impl crate::zfs::Zfs for SlowCount {
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), crate::zfs::ZfsError> {
         self.zfs.destroy(pool, t)
     }
+    fn destroy_one(
+        &mut self,
+        pool: &str,
+        dataset: &str,
+        t: &str,
+    ) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.destroy_one(pool, dataset, t)
+    }
     fn members(
         &mut self,
         pool: &str,
@@ -1786,7 +1866,7 @@ fn a_begin_refused_for_eight_under_way_still_settles() {
     assert_eq!(field(rounds[8], "begun"), "-", "{out}");
     assert_eq!(field(rounds[8], "under_way"), "8", "{out}");
     assert!(
-        err.contains("skyzfs-agent: round 9: 8 publishes are under way"),
+        err.contains("skyzfs-agent: round 9: no room in the record: 8 publishes under way"),
         "{err}"
     );
     // A refused begin changed nothing: the round after it does not start
@@ -2006,14 +2086,16 @@ fn an_outcome_is_out_before_the_record_forgets_it() {
             "{effect:?} {after}: {again}"
         );
     }
-    // A give-up is told once its record is saved, before its manifest
-    // goes. A stop between the two (`Abandon:after`) has not told it,
-    // and no later run tells it: the record keeps it among the
-    // abandoned, which `record` prints (the window the module's docs
-    // name in "`run`").
+    // A give-up is recorded at `Abandoning`, then told, then moved to the
+    // names given up, then its manifest goes (M2.7b-2). A stop before it
+    // is told leaves it under way at `Abandoning`, and the next run tells
+    // it; a stop after it is told and before the move tells it again:
+    // at least once, never lost.
     for (effect, after, told) in [
-        (Effect::Abandon, false, false),
-        (Effect::Abandon, true, false),
+        (Effect::Abandoning, false, false),
+        (Effect::Abandoning, true, false),
+        (Effect::Abandon, false, true),
+        (Effect::Abandon, true, true),
         (Effect::Unlink, false, true),
     ] {
         let world = World::new(Mode::Busy);
@@ -2036,10 +2118,16 @@ fn an_outcome_is_out_before_the_record_forgets_it() {
             "{effect:?} {after}: {out}{err}"
         );
         let kept = agent.record().abandoned.iter().any(|a| a.name == t);
+        let moved = effect == Effect::Unlink || (effect == Effect::Abandon && after);
+        assert_eq!(kept, moved, "{effect:?} {after}");
+        // The next run tells it where the record still holds it under
+        // way, and not where it has moved.
+        let mut next = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let (_, again, _) = executed(&mut next, &Task::Settle, LIMIT);
         assert_eq!(
-            kept,
-            after || effect == Effect::Unlink,
-            "{effect:?} {after}"
+            again.contains(&format!("abandoned {t} ")),
+            !moved,
+            "{effect:?} {after}: {again}"
         );
     }
 }

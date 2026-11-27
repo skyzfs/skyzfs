@@ -404,7 +404,9 @@ fn check(ran: &Ran) -> Result<(), String> {
             | Report::Refused(_)
             | Report::HeldAway
             | Report::NotWhole(_)
-            | Report::Unreadable(_) => return Err(format!("{t} reported: {report:?}")),
+            | Report::Unreadable(_)
+            | Report::NotRetired(_)
+            | Report::NoGuids => return Err(format!("{t} reported: {report:?}")),
         }
     }
     // The other way: a publish recorded done with its snapshot gone is
@@ -1227,12 +1229,13 @@ fn a_refused_report_is_made_however_the_agent_stops_after_the_end() {
                 reports.contains(&(t.clone(), Report::Refused(skyzfs_control::Code::Rewound))),
                 "{back:?}, stopped at {stop}: {reports:?}"
             );
-            // Given up once, by one process or the other (a stop after
-            // the save leaves the outcome to the record alone).
+            // Given up and told at least once, by one process or the
+            // other, and twice only where the first stopped between the
+            // save at `Abandoning` and the one at `Abandon` (M2.7b-2).
             let mut outcomes = first.outcomes().to_vec();
             outcomes.extend(second.outcomes().iter().cloned());
             assert!(
-                outcomes.len() <= 1
+                (1..=2).contains(&outcomes.len())
                     && outcomes
                         .iter()
                         .all(|o| *o == (t.clone(), Outcome::Abandoned(why))),
@@ -2476,7 +2479,9 @@ fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
 /// The give-up's report reaches the sink at least once, whatever the
 /// stops about the give-up: after the third failed check is recorded,
 /// about the destroy of its take, about the give-up's record and about
-/// the manifest's file removed (T12 of #153's review). Both kinds of
+/// the manifest's file removed (T12 of #153's review), and its outcome
+/// line once, or twice where the stop fell between the give-up's two
+/// saves (M2.7b-2), never lost. Both kinds of
 /// failed check: a take that is not whole is judged again by the next
 /// process, and one that is not as read before is destroyed by it
 /// unjudged, so that the give-up is made with no take
@@ -2489,6 +2494,8 @@ fn a_give_up_is_told_at_least_once_whatever_the_stop() {
     let about = [
         at(Effect::Destroy, false),
         at(Effect::Destroy, true),
+        at(Effect::Abandoning, false),
+        at(Effect::Abandoning, true),
         at(Effect::Abandon, false),
         at(Effect::Abandon, true),
         at(Effect::Unlink, false),
@@ -2536,16 +2543,19 @@ fn a_give_up_is_told_at_least_once_whatever_the_stop() {
             world.log.join("\n")
         );
         assert_eq!(run.processes, stops.len() + 1, "{case}");
-        // A stop after the give-up's record leaves no outcome to print:
-        // the next process finds the publish gone.
-        let recorded = stops
-            .last()
-            .is_some_and(|&p| p >= at(Effect::Abandon, true));
-        match run.outcomes.as_slice() {
-            [(_, outcome)] => assert_eq!(*outcome, Outcome::Abandoned(Why::NotWhole), "{case}"),
-            [] => assert!(recorded, "{case}"),
-            _ => panic!("{case}"),
-        }
+        // The give-up is told after it is recorded at `Abandoning` and
+        // before it moves to the names given up (M2.7b-2): told once,
+        // and twice only where a process stopped between the two, whose
+        // successor tells it again from the record. Never lost.
+        let twice = stops.last() == Some(&at(Effect::Abandon, false));
+        let want = if twice { 2 } else { 1 };
+        assert_eq!(run.outcomes.len(), want, "{case}");
+        assert!(
+            run.outcomes
+                .iter()
+                .all(|(_, o)| *o == Outcome::Abandoned(Why::NotWhole)),
+            "{case}"
+        );
         let [(_, Report::NotWhole(_)), ..] = run.told.as_slice() else {
             panic!("{case}");
         };
@@ -3391,10 +3401,17 @@ fn every_effect_is_in_the_list_of_all() {
             Effect::Done => 21,
             Effect::Sweep => 22,
             Effect::Forget => 23,
-            Effect::Abandon => 24,
-            Effect::Unlink => 25,
-            Effect::Stop => 26,
-            Effect::Recover => 27,
+            Effect::Abandoning => 24,
+            Effect::Abandon => 25,
+            Effect::Unlink => 26,
+            Effect::Retiring => 27,
+            Effect::Retire => 28,
+            Effect::Retired => 29,
+            Effect::LookGivenUp => 30,
+            Effect::DestroyMember => 31,
+            Effect::Retain => 32,
+            Effect::Stop => 33,
+            Effect::Recover => 34,
         }
     }
     for (at, effect) in Effect::ALL.into_iter().enumerate() {
@@ -4488,6 +4505,9 @@ impl Zfs for ThroughCli {
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         self.0.destroy(pool, t)
     }
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        self.0.destroy_one(pool, dataset, t)
+    }
     fn members(
         &mut self,
         pool: &str,
@@ -4629,6 +4649,9 @@ impl Zfs for DestroyedBetween {
     }
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {
         self.zfs.destroy(pool, t)
+    }
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        self.zfs.destroy_one(pool, dataset, t)
     }
     fn members(
         &mut self,
@@ -4853,6 +4876,53 @@ mod past {
         assert_eq!(syncs(&world), 3);
         // Nothing was written in the record's directory.
         assert!(keep.0.borrow().record.is_none());
+    }
+
+    /// A cut that opens as itself while still under the abandoned top
+    /// (4 KiB ring slots) is not clear: the agent syncs on until the
+    /// newest cut is above the daemon's rewind mark, so that no later cut
+    /// moves the mark (the lead's ruling in M2.7b-2). Mutant: "opens as
+    /// itself" alone (the syncs stop at the first such cut, at the mark).
+    #[test]
+    fn a_cut_that_opens_as_itself_at_the_mark_is_not_clear() {
+        let world = rewound(9);
+        {
+            let mut w = world.borrow_mut();
+            let pool = w.pool.as_mut().expect("the pool");
+            pool.itself_under_top = 4;
+            let top = pool.abandoned_top;
+            // The daemon has seen the abandoned groups (the volume's
+            // rings show them).
+            w.highest_written = w.highest_written.max(top);
+        }
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true).expect("synced");
+        let reply = cuts(&world);
+        let (_, itself) = reply.newest.expect("a cut");
+        assert!(itself, "{past:?}");
+        assert!(reply.count > reply.rewound, "{reply:?}");
+        // Two groups a sync, from the import's group G: the first cut
+        // that opens as itself (G + 6, over G + 9 - 4) comes with the
+        // third sync and is at the mark, as is G + 8; G + 10, of the
+        // fifth, is the first above the abandoned top G + 9.
+        assert_eq!(past, Past::Clear { synced: 5 });
+        // A publish asked now is not refused `rewound`: the next cut is
+        // above every group seen, and the mark stays.
+        world.borrow_mut().sync("after");
+        assert_eq!(cuts(&world).rewound, reply.rewound);
+    }
+
+    /// The daemon's answer to `cuts`.
+    fn cuts(world: &Rc<RefCell<World>>) -> skyzfs_control::CutsReply {
+        let w = world.borrow();
+        skyzfs_control::CutsReply {
+            attachment: w.daemon.attachment,
+            state: Some(w.daemon.state),
+            count: w.daemon.cuts.last().map_or(0, |c| c.number),
+            newest: w.daemon.cuts.last().map(|c| (c.group, c.itself)),
+            rewound: w.daemon.rewound,
+        }
     }
 
     /// With no cut, or a newest cut that opens as itself, or a daemon

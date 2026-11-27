@@ -400,6 +400,12 @@ pub trait Zfs {
     fn datasets(&mut self, pool: &str, t: &str) -> Result<Vec<Dataset>, ZfsError>;
     /// `zfs destroy -r pool@t`; no such snapshot is destroyed.
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError>;
+    /// `zfs destroy DATASET@t` of one snapshot of the pool, with no flag
+    /// (no `-r`, `-R` or `-d`): retention's destroy of a member's `@t`
+    /// once its GUID was read to match (the lead's ruling ?1 on M2.7b-2).
+    /// One that does not exist is destroyed. A held snapshot, or one
+    /// with a clone, is refused by ZFS, and that is the error.
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError>;
     /// Each member's `@t` that exists, with its GUID; `None` where
     /// `pool@t` does not.
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<Member>>, ZfsError>;

@@ -252,6 +252,10 @@ pub struct Pool {
     /// The highest group of a history a rewind abandoned: until the pool
     /// passes it, its groups do not open as themselves (`-T`).
     pub abandoned_top: u64,
+    /// How many groups at or under `abandoned_top` open as themselves
+    /// all the same: with 4 KiB ring slots the new history overwrites the
+    /// abandoned top's slot first (#175, "The rewind mark in `cuts`").
+    pub itself_under_top: u64,
     /// The datasets, the root first.
     pub datasets: Vec<Ds>,
     /// The snapshots, by `dataset@t`.
@@ -440,6 +444,9 @@ pub struct World {
     /// The highest group written to the volume, of any history: what
     /// its rings show.
     pub highest_written: u64,
+    /// The member snapshots (`dataset@t`) whose `zfs destroy` ZFS refuses,
+    /// with what it says (a clone of one, say).
+    pub destroy_refused: BTreeMap<String, String>,
     /// Each take of the agent's, by name: the manifest of the pool as it
     /// was in the take's group, which the agent must publish.
     pub programs: BTreeMap<String, Manifest>,
@@ -561,6 +568,7 @@ impl World {
             destroyer: None,
             rule: DAEMON_RULE,
             highest_written: 0,
+            destroy_refused: BTreeMap::new(),
             programs: BTreeMap::new(),
             retakes: BTreeMap::new(),
             late_take: None,
@@ -632,6 +640,7 @@ impl World {
             load_guid: world.guid(),
             txg: 4,
             abandoned_top: 0,
+            itself_under_top: 0,
             datasets,
             snaps: BTreeMap::new(),
             history: BTreeMap::from([(4, BTreeMap::new())]),
@@ -673,7 +682,7 @@ impl World {
         let txg = pool.next_txg.take().unwrap_or(pool.txg + 1);
         pool.txg = txg;
         pool.history.insert(txg, pool.snaps.clone());
-        let itself = txg > pool.abandoned_top;
+        let itself = txg > pool.abandoned_top.saturating_sub(pool.itself_under_top);
         let snaps = pool
             .snaps
             .iter()
@@ -1583,6 +1592,35 @@ impl Zfs for FakeZfs {
                 })
                 .collect()
         })
+    }
+
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        self.pool(pool, |_| ())?;
+        let mut world = self.0.borrow_mut();
+        world.zfs_call();
+        world.calls.push("destroy_one");
+        let key = format!("{dataset}@{t}");
+        if let Some(why) = world.destroy_refused.get(&key).cloned() {
+            world.log.push(format!("agent destroy {key}: refused"));
+            return Err(ZfsError::Other(why));
+        }
+        let Some(pool) = world.pool.as_mut() else {
+            return Err(ZfsError::NoPool("fake".into()));
+        };
+        let Some(snap) = pool.snaps.get(&key) else {
+            world.log.push(format!("agent destroy {key}: not there"));
+            return Ok(());
+        };
+        if !snap.holds.is_empty() {
+            world.log.push(format!("agent destroy {key}: busy"));
+            return Err(ZfsError::Other(format!(
+                "cannot destroy snapshot {key}: dataset is busy"
+            )));
+        }
+        pool.snaps.remove(&key);
+        world.log.push(format!("agent destroy {key}"));
+        world.sync("destroy one");
+        Ok(())
     }
 
     fn destroy(&mut self, pool: &str, t: &str) -> Result<(), ZfsError> {

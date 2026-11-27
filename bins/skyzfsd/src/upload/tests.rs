@@ -892,6 +892,9 @@ fn the_status_shows_the_publishes() {
             refused: 6,
             expired: 7,
             withdrawn: 8,
+            retired: 12,
+            retire_gone: 13,
+            retire_other: 14,
             last: Some((
                 "snap-b".into(),
                 skyzfs_local::inplace::CommittedCut {
@@ -925,11 +928,22 @@ fn the_status_shows_the_publishes() {
             last_group: 10,
             oldest: Text::new("snap-a"),
             last: Text::new("snap-b"),
+            retires: Some(RetiresShown {
+                retired: 12,
+                gone: 13,
+                other: 14,
+            }),
         })
     );
     let s = shown(Figures::default(), Default::default());
     assert_eq!(s.figures.not_offered, Some(0));
-    assert_eq!(s.publish, Some(PublishShown::default()));
+    assert_eq!(
+        s.publish,
+        Some(PublishShown {
+            retires: Some(RetiresShown::default()),
+            ..PublishShown::default()
+        })
+    );
 }
 
 /// Each state, lease and figure of the uploader as the status file

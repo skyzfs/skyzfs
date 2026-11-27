@@ -1515,6 +1515,37 @@ impl<H: Host> Zfs for ZfsCli<H> {
         self.destroy_r(pool, t)
     }
 
+    fn destroy_one(&mut self, pool: &str, dataset: &str, t: &str) -> Result<(), ZfsError> {
+        let snapshot = format!("{dataset}@{t}");
+        let under = dataset == pool
+            || dataset
+                .strip_prefix(pool)
+                .is_some_and(|rest| rest.starts_with('/'));
+        if !skyzfs_control::valid_name(t) || !under || dataset.contains('@') {
+            return Err(ZfsError::Other(format!(
+                "{snapshot} was not destroyed: not a snapshot of pool {pool} that the agent names"
+            )));
+        }
+        let args = ["destroy", snapshot.as_str()];
+        // As `destroy -r`: killed at its limit, the ioctl may finish in
+        // its own time.
+        let output = self
+            .exec("zfs", &args, &[], self.change_limit())
+            .map_err(|e| match e {
+                ZfsError::Other(why) => {
+                    ZfsError::Other(format!("{snapshot} may not have been destroyed: {why}"))
+                }
+                e => e,
+            })?;
+        if output.code == Some(0) {
+            return Ok(());
+        }
+        match self.failed("zfs", &args, &output, true, pool) {
+            ZfsError::NoSnapshot => Ok(()),
+            e => Err(e),
+        }
+    }
+
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<Member>>, ZfsError> {
         let returned = self.again(|zfs| {
             let limit = zfs.read_limit();

@@ -470,6 +470,17 @@ pub enum Report {
     /// is read again at a later round, until the publish is too old. One
     /// report for each error that differs, in a process.
     Unreadable(String),
+    /// A name published, or given up, not retired at this round:
+    /// `retire` refused or not answered, a `look` before the destroy of a
+    /// name a person gave up not answered, or the members' `@t` not read
+    /// or not destroyed. Tried again at each round with no limit; told
+    /// once in a process, and again when the reason changes (the lead's
+    /// ruling ?1 on M2.7b-2).
+    NotRetired(String),
+    /// A name given up with no member GUIDs recorded: its local snapshot,
+    /// if any, is not destroyed, and the name is forgotten at the bound
+    /// of `--abandoned-keep-s` (the ruling ?4). Told once in a process.
+    NoGuids,
 }
 
 /// When a publish accepted at `asked_ms` with `expiry` stops being held
@@ -504,6 +515,11 @@ pub fn snap_seen(reply: &Reply, taken: &Taken) -> Option<SnapSeen> {
 /// The next action for `publish` ([module docs](self)).
 pub fn plan(publish: &Publish, seen: &Seen) -> Action {
     let pool = &seen.pool;
+    // A give-up recorded and not yet told is told, whatever else holds:
+    // its hold was released before it was recorded (version 3).
+    if let Phase::Abandoning { why, .. } = &publish.phase {
+        return Action::Abandon(*why);
+    }
     match (publish.person, &publish.phase) {
         (_, Phase::Done { .. }) | (None, _) => {}
         (Some(Person::Stopped), _) => return Action::Stop(Stop::DoneNotSeen),
@@ -544,6 +560,7 @@ pub fn plan(publish: &Publish, seen: &Seen) -> Action {
         } => onward(publish, taken, Some((*asked_ms, *held_until_ms)), seen),
         Phase::Done { .. } if pool.hold != Held::No => Action::Release,
         Phase::Done { .. } => Action::Forget,
+        Phase::Abandoning { why, .. } => Action::Abandon(*why),
     }
 }
 

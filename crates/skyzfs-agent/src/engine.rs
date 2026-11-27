@@ -115,8 +115,8 @@ use crate::manifest::{self, Manifest, ManifestError};
 use crate::names;
 use crate::plan::{self, Action, DaemonSeen, PoolSeen, Report, Seen, SnapSeen, Stop};
 use crate::record::{
-    Corrupt, Count, Enrolled, Keep, Loaded, Person, Phase, Publish, Record, SaveError, Taken, Why,
-    UNDER_WAY_MAX,
+    Corrupt, Count, Enrolled, Keep, Left, Loaded, Person, Phase, Publish, Record, SaveError, Taken,
+    Why, UNDER_WAY_MAX,
 };
 use crate::zfs::{self, Held, Zfs, ZfsError, HOLD_TAG};
 
@@ -145,8 +145,9 @@ pub const SYNC_PAST_MAX: u32 = 128;
 /// What [`Agent::sync_past`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Past {
-    /// The daemon's newest cut opens as itself, or it holds none: nothing
-    /// is behind. `synced` is how many syncs this call ran to get there.
+    /// The daemon's newest cut opens as itself and its count is above the
+    /// rewind mark, or it holds none: nothing is behind. `synced` is how
+    /// many syncs this call ran to get there.
     Clear {
         /// The syncs run.
         synced: u32,
@@ -161,7 +162,8 @@ pub enum Past {
         /// returned.
         synced: u32,
     },
-    /// The newest cut, of `group`, still does not open as itself.
+    /// The newest cut, of `group`, still does not open as itself, or
+    /// does and its count is not above the rewind mark.
     Behind {
         /// The syncs this call ran.
         synced: u32,
@@ -352,12 +354,31 @@ effects! {
     /// `zfs release` of a hold that no publish under way names, after an
     /// import ([`Agent::settle`]).
     Sweep => "sweep",
-    /// The record saved with the publish removed.
+    /// The record saved with the publish removed from those under way
+    /// and kept among the names published.
     Forget => "forget",
+    /// The record saved at [`Phase::Abandoning`], before the give-up is
+    /// told.
+    Abandoning => "abandoning",
     /// The record saved with the publish given up.
     Abandon => "abandon",
     /// The manifest's file removed.
     Unlink => "unlink",
+    /// The record saved with names published past `--keep` marked to be
+    /// retired ([`crate::record::Retire::Ref`]).
+    Retiring => "retiring",
+    /// `retire` asked.
+    Retire => "retire",
+    /// The record saved with a retire answered: its members to destroy,
+    /// or stopped for a person.
+    Retired => "retired",
+    /// `look` asked of a name a person gave up, before its members are
+    /// destroyed (the lead's ruling ?3 on M2.7b-2).
+    LookGivenUp => "look-given-up",
+    /// `zfs destroy DATASET@t` of a member, by retention.
+    DestroyMember => "destroy-member",
+    /// The record saved with names retired or forgotten removed.
+    Retain => "retain",
     /// The record saved with the publish stopped for a person
     /// ([`Person::Stopped`]).
     Stop => "stop",
@@ -416,7 +437,9 @@ pub enum Error {
     Corrupt(Corrupt),
     /// The record is another volume's.
     Volume([u8; 16]),
-    /// [`UNDER_WAY_MAX`] publishes are under way.
+    /// No room in the record: [`UNDER_WAY_MAX`] publishes are under
+    /// way, or the names given up or published are at their bound while
+    /// retention catches up (M2.7b-2).
     Full,
     /// The pool is refused a publish.
     Premise(zfs::Refusal),
@@ -449,7 +472,11 @@ impl fmt::Display for Error {
                 write!(f, "the record is corrupt ({why}); a person must judge it")
             }
             Error::Volume(v) => write!(f, "the record is of volume {}", skyzfs_control::hex(v)),
-            Error::Full => write!(f, "{UNDER_WAY_MAX} publishes are under way"),
+            Error::Full => write!(
+                f,
+                "no room in the record: {UNDER_WAY_MAX} publishes under way, or the names \
+                 given up or published at their bound while retention catches up"
+            ),
             Error::Premise(why) => write!(f, "the pool is refused a publish: {why}"),
             Error::Daemon(why) => write!(f, "the daemon: {why}"),
             Error::Zfs(e) => write!(f, "zfs: {e}"),
@@ -492,8 +519,17 @@ pub enum Outcome {
     Published([u8; 32]),
     /// Given up.
     Abandoned(Why),
-    /// Stopped for a person to judge; it stays under way.
+    /// Stopped for a person to judge; it stays under way, or, for a
+    /// name published whose retire the daemon refused as naming another
+    /// commit, among the names published ([`crate::record::Retire::Other`]).
     Stopped(String),
+    /// A name published, or given up, retired: `snap/<t>` retired where
+    /// it was this publish's, and each member's `@t` that was this
+    /// publish's destroyed ([`Agent::retain`]).
+    Retired,
+    /// A name given up that leaves the record with its local snapshot,
+    /// for a person to destroy: why ([`Agent::retain`]).
+    Forgotten(String),
 }
 
 /// What the engine keeps of a publish between two rounds ([module
@@ -645,6 +681,9 @@ pub struct Agent<Z, D, K, C> {
     /// The watch on the volume's failure note while the engine works
     /// ([`Agent::watch_note`]). Kept across [`Agent::restart`].
     watch: Option<lost::Watch>,
+    /// Retention's settings and what it told in this process
+    /// ([`Agent::retain`]).
+    retention: retain::Retention,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -690,6 +729,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             first_device: None,
             moved: None,
             watch: None,
+            retention: retain::Retention::default(),
         })
     }
 
@@ -716,6 +756,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.stopped.clear();
         self.reported.clear();
         self.renamed.clear();
+        self.retention.told.clear();
         self.assists = 0;
         self.at.clear();
         Ok(())
@@ -738,6 +779,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.stopped.retain(|name| under_way(name));
         self.renamed
             .retain(|from, to| under_way(from) || under_way(to));
+        self.retention.told.retain(|name, _| record.names(name));
     }
 
     /// The clock (`skyzfs-agent run` paces its rounds by it).
@@ -845,8 +887,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.last_synced
     }
 
-    /// Sync the pool until the daemon's newest cut opens as itself, one
-    /// sync at a time ([module docs](self), "After a rewind import"):
+    /// Sync the pool until the daemon's newest cut opens as itself and
+    /// its count is above the daemon's rewind mark (`cuts`' `rewound`),
+    /// one sync at a time ([module docs](self), "After a rewind import"):
     /// `cuts` read before each sync, `go` asked before each and then
     /// the watch on the failure note ([`Agent::note_came`];
     /// [`Stuck::Noted`]), and the premise checked before the first
@@ -861,7 +904,20 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 Ok(Reply::Cuts(cuts)) => cuts,
                 Ok(_) | Err(_) => return Ok(Past::Unseen { synced }),
             };
+            // Clear where the daemon holds no cut, or where its newest
+            // opens as itself and is above the rewind mark: then it is
+            // above every group the daemon has seen, of any history, and
+            // so is each cut after it. A cut that opens as itself at or
+            // under the mark may still be at or under an abandoned top
+            // (with 4 KiB ring slots the new history overwrites the
+            // abandoned top's slot first), and the next cut could move
+            // the mark and have a publish refused `rewound` (the lead's
+            // ruling in M2.7b-2). After each start of the daemon the mark
+            // is its starting count, so the newest cut is not above it
+            // and one sync is made: the agent cannot tell where that cut
+            // stands.
             let group = match cuts.newest {
+                Some((group, true)) if cuts.count <= cuts.rewound => group,
                 Some((group, false)) => group,
                 Some((_, true)) | None => {
                     self.past_synced = 0;
@@ -903,7 +959,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Begin a publish: the premise, the pool enrolled at the first,
     /// the count, a name, and the record at [`Phase::Intent`]. Its name.
     pub fn begin(&mut self) -> Result<String, Error> {
-        if self.record.under_way.len() >= UNDER_WAY_MAX {
+        if !self.record.room() {
             return Err(Error::Full);
         }
         // The count first, as each round of `settle` does: it sets the
@@ -1137,7 +1193,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         if let Some(report) = plan::report(&publish, &seen, &action) {
             self.tell(name, report);
         }
-        self.act(&publish, action)
+        self.act(&publish, action, &seen)
     }
 
     /// What the planner reads, or `None` where the pool cannot be seen
@@ -1232,8 +1288,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         }
     }
 
-    /// Do `action` for `publish`.
-    fn act(&mut self, publish: &Publish, action: Action) -> Result<Moved, Error> {
+    /// Do `action` for `publish`, as `seen` showed it.
+    fn act(&mut self, publish: &Publish, action: Action, seen: &Seen) -> Result<Moved, Error> {
         let name = publish.name.clone();
         // The answer and the sight are kept across a look, which acts
         // on them, and across a release, after which the next round
@@ -1389,15 +1445,18 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 // holds nothing of it: so that a kill anywhere after has
                 // told it, and one before the save tells it again at the
                 // next run, as a report is told (S1 of #149's review).
-                // A publish done is published, whatever follows.
+                // A publish done is published, whatever follows. It is
+                // kept among the names published, for retention.
                 self.told(name.clone(), Outcome::Published(commit));
-                self.commit(Effect::Forget, |r| r.under_way.retain(|p| p.name != name))?;
+                let now = self.clock.now_ms();
+                self.commit(Effect::Forget, |r| r.leave_published(&name, now))?;
                 self.memory.remove(&name);
                 self.unlink(&name)?;
                 Ok(Moved::Yes)
             }
             Action::Abandon(why) => {
-                self.abandon(&name, why)?;
+                let left = left_by(publish, seen.pool.snapshot.is_some());
+                self.abandon(&name, why, left)?;
                 Ok(Moved::Yes)
             }
             Action::Stop(stop) => {
@@ -1438,7 +1497,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             .is_some_and(|p| p.attempts >= plan::CHECKS_FAILED_MAX)
         {
             self.tell(name, Report::NotWhole(Vec::new()));
-            self.abandon(name, Why::NotWhole)?;
+            self.abandon(name, Why::NotWhole, Left::Unknown)?;
             return Ok(Moved::Yes);
         }
         // The pause after a take that failed its check (D1 of #153's
@@ -1549,7 +1608,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let bytes = match manifest.encode() {
             Ok(bytes) => bytes,
             Err(ManifestError::TooLarge(_)) => {
-                self.abandon(name, Why::ManifestTooLarge)?;
+                self.abandon(name, Why::ManifestTooLarge, Left::Unknown)?;
                 return Ok(Moved::Yes);
             }
             Err(e) => {
@@ -1633,7 +1692,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         } else {
             Why::ManifestLost
         };
-        self.abandon(name, why)?;
+        self.abandon(name, why, Left::Unknown)?;
         Ok(Moved::Yes)
     }
 
@@ -1653,7 +1712,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let destroyed = self.zfs.destroy(&self.pool, name);
         self.point(Effect::Destroy, true)?;
         if destroyed.is_err() {
-            self.abandon(name, Why::ManifestLost)?;
+            self.abandon(name, Why::ManifestLost, Left::Unknown)?;
             return Ok(Moved::Yes);
         }
         self.rename(name, failed)
@@ -1988,8 +2047,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let second = self.clock.now_ms() / 1000;
         for taken in 0..=u32::from(u16::MAX) {
             let name = names::name(second, taken);
-            let recorded = self.record.publish(&name).is_some()
-                || self.record.abandoned.iter().any(|a| a.name == name);
+            let recorded = self.record.names(&name);
             if recorded || self.renamed.contains_key(&name) {
                 continue;
             }
@@ -2002,20 +2060,38 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         ))))
     }
 
-    /// Give the publish of `name` up for `why`, and remove its manifest.
-    fn abandon(&mut self, name: &str, why: Why) -> Result<(), Error> {
-        let now = self.clock.now_ms();
-        self.commit(Effect::Abandon, |r| r.abandon(name, why, now))?;
-        // Told before the next effect. A kill before the save above
-        // leaves the publish under way, and its give-up is planned and
-        // told again. A kill between the save and this line loses the
-        // line: the record keeps the name and why among the abandoned
-        // (`skyzfs-agent record` prints them), and no later run tells
-        // it. Telling it before the save would tell a give-up that a
-        // later run might not make; closing the window needs a step of
-        // the record between the two, as a publish has (`Done`, then
-        // `Forget`).
+    /// Give the publish of `name` up for `why`, leaving `left` on the
+    /// pool, and remove its manifest. A publish recorded at
+    /// [`Phase::Abandoning`] is given up as recorded there.
+    ///
+    /// Recorded at [`Phase::Abandoning`] first, then told, then moved to
+    /// the names given up: a kill before the first save plans the give-up
+    /// again; one after it tells it again at the next run, as a publish
+    /// done is told before it leaves (D3 of #167's review). The line is
+    /// told at least once, and can be told twice.
+    fn abandon(&mut self, name: &str, why: Why, left: Left) -> Result<(), Error> {
+        let (why, left) = match self.record.publish(name).map(|p| &p.phase) {
+            Some(Phase::Abandoning { why, left }) => (*why, left.clone()),
+            _ => {
+                let phase = Phase::Abandoning {
+                    why,
+                    left: left.clone(),
+                };
+                // The hold is released before a give-up is planned; one
+                // believed placed where the pool showed none (a hold that
+                // failed) is not.
+                self.commit(Effect::Abandoning, |r| {
+                    set(r, name, |p| {
+                        p.phase = phase;
+                        p.held = false;
+                    })
+                })?;
+                (why, left)
+            }
+        };
         self.leave(name.to_string(), Outcome::Abandoned(why));
+        let now = self.clock.now_ms();
+        self.commit(Effect::Abandon, |r| r.abandon(name, why, now, left))?;
         self.unlink(name)?;
         Ok(())
     }
@@ -2130,6 +2206,19 @@ fn loaded<K: Keep>(keep: &K, volume: [u8; 16]) -> Result<Record, Error> {
     Ok(record)
 }
 
+/// What a give-up of `publish` leaves on the pool: its members as taken,
+/// from [`Phase::Taken`] on; at [`Phase::Intent`], nothing where no
+/// `pool@<t>` was seen, and otherwise a take whose members' GUIDs the
+/// record does not hold (the lead's ruling ?4 on M2.7b-2).
+fn left_by(publish: &Publish, snapshot_seen: bool) -> Left {
+    match (&publish.phase, publish.phase.taken()) {
+        (Phase::Abandoning { left, .. }, _) => left.clone(),
+        (_, Some(taken)) => Left::Members(taken.members.clone()),
+        (_, None) if snapshot_seen => Left::Unknown,
+        (_, None) => Left::Nothing,
+    }
+}
+
 fn set(record: &mut Record, name: &str, change: impl FnOnce(&mut Publish)) {
     if let Some(publish) = record.under_way.iter_mut().find(|p| p.name == name) {
         change(publish);
@@ -2153,6 +2242,8 @@ fn minor(dev: u64) -> u64 {
 
 mod lost;
 pub use lost::{Failed, Note, Step, Verdict, LOOK_EVERY, LOOK_MAX, NOTE_EVERY};
+mod retain;
+pub use retain::{ABANDONED_KEEP_DEFAULT, KEEP_DEFAULT, STEPS_MAX};
 
 #[cfg(test)]
 pub(crate) mod fake;
