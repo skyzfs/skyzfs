@@ -1362,6 +1362,80 @@ fn what_is_not_a_snapshots_name_is_not_destroyed() {
     }
 }
 
+const ONE: &str = "zfs destroy tank/db@skz-1";
+
+/// `destroy_one` destroys one member's `@t`, without `-r`, within the
+/// change limit. A `@t` already gone, or its dataset gone, is destroyed
+/// (N2 of the review of #179: as `destroy -r` reads it); any other
+/// failure is an error that names the command; killed at its limit, it
+/// may still finish and is `NotRun`. A dataset not under the pool, one
+/// with an `@`, or a name that is not a snapshot's is not destroyed and
+/// nothing runs. The review's test (T1), with the failures added.
+/// Mutants: `NotRun` rewrapped as `Other`, a member gone read as an
+/// error, a failure read as destroyed, the guard's `||` made `&&`.
+#[test]
+fn the_destroy_of_one_member_is_zfs_destroy_without_r() {
+    for (code, stderr) in [
+        (0, ""),
+        (
+            1,
+            "could not find any snapshots to destroy; check snapshot names.\n",
+        ),
+        (1, "cannot open 'tank/db': dataset does not exist\n"),
+    ] {
+        let mut fake = Fake::default();
+        if code == 0 {
+            fake.ok(ONE, "");
+        } else {
+            fake.fails(ONE, code, stderr);
+        }
+        let mut zfs = cli(fake);
+        assert_eq!(
+            zfs.destroy_one("tank", "tank/db", "skz-1"),
+            Ok(()),
+            "{stderr}"
+        );
+        assert_eq!(zfs.host().words(), [ONE]);
+        assert_eq!(zfs.host().ran[0].limit, Limits::default().change);
+    }
+    let mut fake = Fake::default();
+    fake.fails(
+        ONE,
+        1,
+        "cannot destroy snapshot tank/db@skz-1: pool I/O is currently suspended\n",
+    );
+    assert!(matches!(
+        cli(fake).destroy_one("tank", "tank/db", "skz-1"),
+        Err(ZfsError::Other(why)) if why.contains(ONE) && why.contains("suspended")
+    ));
+    let mut fake = Fake::default();
+    fake.give(ONE, Err(std::io::ErrorKind::TimedOut));
+    assert!(matches!(
+        cli(fake).destroy_one("tank", "tank/db", "skz-1"),
+        Err(ZfsError::NotRun(why))
+            if why.starts_with("tank/db@skz-1 may not have been destroyed: ") && why.contains(ONE)
+    ));
+    let mut fake = Fake::default();
+    fake.ok("zfs destroy tank@skz-1", "");
+    assert_eq!(cli(fake).destroy_one("tank", "tank", "skz-1"), Ok(()));
+    for (dataset, t) in [
+        ("other/db", "skz-1"),
+        ("tankx", "skz-1"),
+        ("tank@x", "skz-1"),
+        ("tank/db@x", "skz-1"),
+        ("tank/db", "skz-1%skz-9"),
+        ("tank/db", "a,b"),
+        ("tank/db", ""),
+    ] {
+        let mut zfs = cli(Fake::default());
+        let Err(ZfsError::Other(why)) = zfs.destroy_one("tank", dataset, t) else {
+            panic!("{dataset}@{t}");
+        };
+        assert!(why.contains("was not destroyed"), "{dataset}@{t}: {why}");
+        assert!(zfs.host().words().is_empty(), "{dataset}@{t}");
+    }
+}
+
 /// A message is read after the line's last `": "`, so that a name
 /// holding `": "` and the words looked for cannot say them (NL-T3).
 /// Mutant: the first `": "` taken.

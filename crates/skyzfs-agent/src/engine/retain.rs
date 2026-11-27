@@ -4,8 +4,11 @@
 //! on the pool.
 //!
 //! The rulings cited as ?1 to ?4 are the lead's answers to the
-//! questions so numbered in this work package's plan; the description
-//! of skyzfs/skyzfs#179 lists them.
+//! questions so numbered in this work package's plan, listed in the
+//! description of skyzfs/skyzfs#179: ?1 a member's `@t` destroyed by
+//! itself, by GUID; ?2 `snap/<t>` naming another commit left for a
+//! person; ?3 a name a person gave up looked up first; ?4 a name with
+//! no member GUIDs forgotten and nothing destroyed.
 //!
 //! **A name published** is kept while it is among the newest
 //! [`Retention::keep`] ([`KEEP_DEFAULT`], at most

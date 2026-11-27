@@ -282,11 +282,13 @@
 //! small file and makes no I/O on the pool. A note that makes the volume
 //! lost, and is not the one the round read at its start, stops the engine
 //! where it asks whether to go on (before a sync after a rewind import,
-//! before a begin after syncs, before each pass of the settle) and ends
-//! the wait: the round's line follows, and the next round begins at once,
-//! early for its tick (`early_ms`), and takes the step. Rounds stay
-//! `--every-s` apart otherwise, but for the quick retries above. A step of the engine under way is not cut, so the note is
-//! seen after at most about a second plus that step.
+//! before a begin after syncs, before each pass of the settle, and in
+//! retention before each ask of the daemon and each read or destroy of a
+//! name's members) and ends the wait: the round's line follows, and the
+//! next round begins at once, early for its tick (`early_ms`), and takes
+//! the step. Rounds stay `--every-s` apart otherwise, but for the quick
+//! retries above. A step of the engine under way is not cut, so the note
+//! is seen after at most about a second plus that step.
 //!
 //! `publish` and `settle` read the note too, before anything else, and
 //! touch no pool: a lost volume is refused with 11, one that failed with
@@ -981,7 +983,8 @@ pub fn report_line(name: &str, report: &Report) -> String {
             one_line(why)
         ),
         Report::NoGuids => "no-guids: given up with no member GUIDs recorded; its @t is not \
-             destroyed, and the name is forgotten after --abandoned-keep-s"
+             destroyed, and the name is forgotten after --abandoned-keep-s, or sooner when \
+             the names given up alone fill the room"
             .to_string(),
     };
     format!("skyzfs-agent: report {name} {what}\n")
