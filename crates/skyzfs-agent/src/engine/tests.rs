@@ -4792,8 +4792,35 @@ mod past {
         let world = rewound(5);
         world.borrow_mut().away_until = u64::MAX;
         let mut agent = super::agent(&world, &keep);
-        assert_eq!(agent.sync_past(&mut || true).expect("unseen"), Past::Unseen);
+        assert_eq!(
+        agent.sync_past(&mut || true).expect("unseen"),
+        Past::Unseen { synced: 0 }
+    );
         assert_eq!(syncs(&world), 0);
+    }
+
+    /// A daemon that goes away between two syncs ends the syncs as
+    /// `Unseen`, which counts the syncs that returned before it (L3 of
+    /// the review of #172). Mutant: `Unseen` with no count.
+    #[test]
+    fn a_daemon_gone_between_syncs_is_unseen_after_the_syncs_it_saw() {
+        let keep = MemKeep::default();
+        let world = rewound(5);
+        let mut agent = super::agent(&world, &keep);
+        let watched = world.clone();
+        let mut asked = 0u32;
+        let mut go = move || {
+            asked += 1;
+            if asked == 2 {
+                // Before the second sync: the daemon goes away while it
+                // runs.
+                watched.borrow_mut().away_until = u64::MAX;
+            }
+            true
+        };
+        let past = agent.sync_past(&mut go).expect("unseen");
+        assert_eq!(past, Past::Unseen { synced: 2 });
+        assert_eq!(syncs(&world), 2);
     }
 
     /// Where the abandoned groups are more than one ring holds, the

@@ -86,22 +86,27 @@
 //! - `synced`: the syncs the round ran, and that returned, to pass the
 //!   groups of an abandoned history (below); 0 in a round that found
 //!   none.
-//! - `bound`: 1 where the round's syncs had met their bound with the
-//!   daemon's newest cut still behind (below), else 0. Such a round is
-//!   `ok`, and so is every round after it until a cut opens as itself,
-//!   but none of them publishes: a monitor that watches `run` watches
-//!   this field as well as `failed` (the lead's ruling 3 on #170).
+//! - `bound`: 1 where the round found the syncs at their bound with the
+//!   daemon's newest cut still behind (below), else 0. The round whose
+//!   last sync met the bound reads 0 where that sync made no cut (it
+//!   stopped for that), and the rounds after it read 1. Such a round
+//!   begins no publish, and nor does any round after it until a cut
+//!   opens as itself or the daemon holds no cut; each is `ok` unless
+//!   another call of it failed (its settle). A monitor that watches
+//!   `run` watches this field as well as `failed` (the lead's ruling 3
+//!   on #170).
 //! - `ok`: no engine call of the round returned an error. It does not
 //!   say that anything moved: a round that waited on the daemon
 //!   throughout is `ok`.
 //! - `failed`: an engine call of the round failed, the two refusals of
 //!   a begin included (8 under way, the pool's premise); each error is
 //!   on standard error as `skyzfs-agent: round <n>: <error>`, and the
-//!   next tick tries again. After an error that may leave the process
-//!   unlike its record (any but those two refusals), the engine reads
-//!   the record again, as a new process would: at once after a begin's
-//!   error, before the round settles; at the next round after a
-//!   settle's error. A reading that fails is tried again at the next
+//!   next tick tries again. A sync after a rewind import that fails
+//!   fails its round too (below). After an error that may leave the
+//!   process unlike its record (any but those two refusals), the engine
+//!   reads the record again, as a new process would: at once after an
+//!   error of the syncs or of a begin, before the round settles; at the
+//!   next round after a settle's error. A reading that fails is tried again at the next
 //!   round, which begins and settles nothing until it succeeds: its
 //!   `begun=-` then says that no begin ran, and its `under_way` is the
 //!   count the process had before. So `begun=-` can also follow a
@@ -232,8 +237,12 @@
 //! while the engine works ends `run` once its step is done (a sync after
 //! a rewind import, a begin, or a pass over the publishes under way),
 //! before the count and the sweep that would open the next, and before
-//! the next sync or a begin after syncs: a ZFS call is not cut, and the step's other
-//! calls run first, each within its own time limit. A second signal ends
+//! the next sync or a begin after syncs: a ZFS call is not cut, and the
+//! step's other calls run first, each within its own time limit. Two
+//! windows count as part of the step that follows them: a signal during
+//! the round's first reading of `cuts`, where it finds no cut behind,
+//! lets the begin run; one during the premise's reading before the
+//! first sync lets that sync run. A second signal ends
 //! it at once with 1. It ends with 6 after the round line of a round that
 //! met a record that is corrupt or another volume's, or holds it would
 //! release with no agent's marker: a person judges those. It ends with
@@ -1111,10 +1120,10 @@ fn ends_run(e: &Error) -> bool {
 /// Whether `run` starts the engine again after `e` ([`Agent::restart`]):
 /// at once after an error of the syncs after a rewind import or of a
 /// begin, before the round settles, and at the next round after a
-/// settle's error ([`schedule`]); after any error but
-/// the two refusals that [`Agent::begin`] makes before it changes
-/// anything, 8 publishes under way ([`Error::Full`]) and the pool's
-/// premise ([`Error::Premise`]).
+/// settle's error ([`schedule`]); after any error but the two refusals
+/// that [`Agent::begin`] makes before it changes anything, 8 publishes
+/// under way ([`Error::Full`]) and the pool's premise
+/// ([`Error::Premise`]).
 /// Before this package an engine call that failed ended the program,
 /// and the next one started from the record; within one process the
 /// engine goes on from such an error only by the same way, so that no
@@ -1183,9 +1192,9 @@ pub fn round_line(round: &Round) -> String {
 /// a publish ([`Agent::begin`]) where that left nothing behind, then
 /// settles every publish under way ([`Agent::settle_while`]) until the
 /// next tick, and at least one round of the engine: what is still under
-/// way then is settled by the rounds after. A begin that fails (8 under way, the
-/// pool's premise refused, no cuts from the daemon, ZFS) does not keep
-/// the round from settling. The round's line follows on `out`
+/// way then is settled by the rounds after. A begin that fails (8 under
+/// way, the pool's premise refused, no cuts from the daemon, ZFS) does
+/// not keep the round from settling. The round's line follows on `out`
 /// ([`round_line`]), each error of the round on `err`.
 ///
 /// - **No overlap.** A round that runs past the next tick is not cut
@@ -1309,7 +1318,15 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
                     synced = k;
                     clear = k == 0 || go();
                 }
-                Ok(Past::Unseen) => clear = true,
+                Ok(Past::Unseen { synced: k }) => {
+                    // The daemon went unread, perhaps after syncs that
+                    // returned (L3 of the review of #172): the line
+                    // counts them, and an end asked during the last
+                    // begins nothing, as above. A round that synced
+                    // nothing begins, and its begin says what is wrong.
+                    synced = k;
+                    clear = k == 0 || go();
+                }
                 Ok(Past::Behind {
                     synced: k,
                     group,

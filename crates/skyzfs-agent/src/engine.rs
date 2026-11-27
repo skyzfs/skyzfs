@@ -91,8 +91,11 @@
 //! (it may have written nothing), and it ends the call with its error:
 //! where every sync fails, one is tried at each call, so `run` tries one
 //! a round for as long as the newest cut stays behind, each round
-//! `failed` with the error. Only there can the syncs go on without end
-//! (about two groups a round, where each one writes before it fails).
+//! `failed` with the error. The bound does not hold there, nor where
+//! the daemon's state starts over holding no cut (which starts the
+//! count again), nor across a supervisor's restarts of `run` (the count
+//! is not saved): in each the syncs can go on without end, about two
+//! groups a sync.
 //!
 //! # Crash points
 //!
@@ -149,9 +152,15 @@ pub enum Past {
         synced: u32,
     },
     /// The daemon did not answer `cuts`, or answered something else:
-    /// the agent cannot tell, and syncs nothing ([`Agent::begin`] then
-    /// says what is wrong).
-    Unseen,
+    /// the agent cannot tell, and syncs no more ([`Agent::begin`] then
+    /// says what is wrong). That can come after syncs that returned,
+    /// where the daemon went away between two of them (L3 of the review
+    /// of #172).
+    Unseen {
+        /// The syncs run before the daemon went unread, and that
+        /// returned.
+        synced: u32,
+    },
     /// The newest cut, of `group`, still does not open as itself.
     Behind {
         /// The syncs this call ran.
@@ -615,8 +624,9 @@ pub struct Agent<Z, D, K, C> {
     /// again ([`Agent::fresh_name`]), so they make chains and no cycle.
     renamed: BTreeMap<String, String>,
     /// The syncs [`Agent::sync_past`] has run, and that returned, since
-    /// it last saw no cut behind (a cut that opens as itself, or none). Kept across [`Agent::restart`]: it bounds what the
-    /// process writes, not what the record says.
+    /// it last saw no cut behind (a cut that opens as itself, or none).
+    /// Kept across [`Agent::restart`]: it bounds what the process
+    /// writes, not what the record says.
     past_synced: u32,
     /// The syncs that the last call of [`Agent::sync_past`] ran and that
     /// returned, whatever the call returned ([`Agent::last_synced`]).
@@ -839,7 +849,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         loop {
             let cuts = match self.ask_cuts() {
                 Ok(Reply::Cuts(cuts)) => cuts,
-                Ok(_) | Err(_) => return Ok(Past::Unseen),
+                Ok(_) | Err(_) => return Ok(Past::Unseen { synced }),
             };
             let group = match cuts.newest {
                 Some((group, false)) => group,
