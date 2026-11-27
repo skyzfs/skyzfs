@@ -1,0 +1,16 @@
+diff --git a/crates/skyzfs-agent/src/program.rs b/crates/skyzfs-agent/src/program.rs
+index cd4c1b4..cc4107b 100644
+--- a/crates/skyzfs-agent/src/program.rs
++++ b/crates/skyzfs-agent/src/program.rs
+@@ -1549,7 +1549,10 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
+             return exit::MOVED;
+         }
+         agent.forget();
+-        tick = tick.saturating_add(passed.max(1));
++        // A round that news began before its slot does not take it: the
++        // round after it comes at that slot (a scratch alternative to D1).
++        let early = began < due;
++        tick = tick.saturating_add(if early { passed } else { passed.max(1) });
+         let due = start.saturating_add(tick.saturating_mul(every_ms));
+         // News on the note begins the next round at once, early for its
+         // tick: the tick after it is the next one due.

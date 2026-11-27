@@ -1,0 +1,3 @@
+# The agent's lib tests at e3fe645 with d1-alt-e3fe645.diff and N1 to N4 appended (scratch-tests.rs); then N1's figure with it
+test result: ok. 306 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.45s
+N1: the second reopen 55000 ms after the failure; reopens 2

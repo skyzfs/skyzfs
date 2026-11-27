@@ -1,0 +1,22 @@
+diff --git a/crates/skyzfs-agent/src/program.rs b/crates/skyzfs-agent/src/program.rs
+index e48d8a1..26113d6 100644
+--- a/crates/skyzfs-agent/src/program.rs
++++ b/crates/skyzfs-agent/src/program.rs
+@@ -1425,7 +1425,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
+                         // begin would be a new step after it (Astra's P2 on
+                         // #170). The settle below then ends at once.
+                         synced = k;
+-                        clear = k == 0 || go();
++                        clear = k == 0 || (go() && !agent.note_came());
+                     }
+                     Ok(Past::Unseen { synced: k }) => {
+                         // The daemon went unread, perhaps after syncs that
+@@ -1434,7 +1434,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
+                         // begins nothing, as above. A round that synced
+                         // nothing begins, and its begin says what is wrong.
+                         synced = k;
+-                        clear = k == 0 || go();
++                        clear = k == 0 || (go() && !agent.note_came());
+                     }
+                     Ok(Past::Behind {
+                         synced: k,

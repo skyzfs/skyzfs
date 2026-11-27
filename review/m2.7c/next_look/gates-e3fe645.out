@@ -1,0 +1,12 @@
+head e3fe645902f83c8dd3d240015c9c4ba5dcc558ab
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy agent crates plain rc=0
+test agent, agent-cli, control plain rc=0 333 passed 0 failed 0 ignored
+doc agent crates plain rc=0
+clippy agent crates skyzfs-agent-cli_test-hooks rc=0
+test agent, agent-cli, control skyzfs-agent-cli_test-hooks rc=0 333 passed 0 failed 0 ignored
+doc agent crates skyzfs-agent-cli_test-hooks rc=0
+agent lib tests x10: 0 failed runs (last: 302 passed 0 failed)
+test workspace plain rc=0 2067 passed 0 failed 16 ignored
+done

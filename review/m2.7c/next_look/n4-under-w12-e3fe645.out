@@ -1,0 +1,4 @@
+# N4 at e3fe645 with the plant W12 (the watch set only at round 1); at the head itself N4 passes (scratch-tests-e3fe645.out: 4 reopens in 300 s)
+N4: 30 reopens in 300 s
+thread 'program::tests::review_next_look::n4_the_rounds_after_an_early_retry_keep_to_the_ticks' panicked at crates/skyzfs-agent/src/program/tests.rs:3260:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 305 filtered out; finished in 0.09s

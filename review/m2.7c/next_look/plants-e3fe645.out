@@ -1,0 +1,41 @@
+BASE: SURVIVED (302 passed)
+E1 the extra ask before the begin removed (P1): KILLED by 1: a_volume_lost_during_the_syncs_begins_no_publish
+E2 the unheld gate removed (P2): KILLED by 1: a_volume_failed_with_no_client_touches_no_pool
+E2b the unheld gate only before the begin: KILLED by 1: a_volume_failed_with_no_client_touches_no_pool
+E2c an unheld round failed: KILLED by 1: a_volume_failed_with_no_client_touches_no_pool
+P5 a lost round goes on to the engine: KILLED by 10: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on, a_note_that_cannot_be_read_fails_the_round, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_refused_reopen_of_a_pool_zed_suspended_is_lost ...
+P5b a retry round goes on to the engine: KILLED by 2: a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+P5c a failed-verdict round goes on to the engine: KILLED by 1: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on
+P6 an unread-note round goes on: KILLED by 1: a_note_that_cannot_be_read_fails_the_round
+W12 the watch set only at the first round: SURVIVED (302 passed)
+P7 an unread-note round not failed: KILLED by 1: a_note_that_cannot_be_read_fails_the_round
+P8 the lost line after the round line: KILLED by 9: a_note_that_cannot_be_read_fails_the_round, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_refused_reopen_of_a_pool_zed_suspended_is_lost, a_state_that_cannot_be_read_is_tried_again_at_the_next_round ...
+P9 the retry words left out: KILLED by 1: a_pool_not_shown_suspended_is_tried_again_at_the_next_round
+P10 the failed words left out: KILLED by 1: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on
+P11 the reopen error not said: KILLED by 1: a_refused_reopen_of_a_pool_zed_suspended_is_lost
+P12 the look error not said: KILLED by 1: a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+P13 LOST back at 9: KILLED by 1: the_codes_of_a_lost_volume_and_a_move_are_not_the_daemons
+P14 MOVED back at 10: KILLED by 1: the_codes_of_a_lost_volume_and_a_move_are_not_the_daemons
+P15 unread written as -: KILLED by 2: a_state_that_cannot_be_read_is_tried_again_at_the_next_round, the_lost_line
+P16 a begin before the step (A-P5): KILLED by 3: a_note_that_cannot_be_read_fails_the_round, a_volume_lost_during_the_syncs_begins_no_publish, run_on_a_lost_volume_makes_the_pool_read_and_ends_with_11
+P17 a settle in the lost round: SURVIVED (302 passed)
+P18 a restart in the lost round: SURVIVED (302 passed)
+P19 bound set by a Noted stop: SURVIVED (302 passed)
+P20 synced zeroed by a Noted stop: SURVIVED (302 passed)
+P21 the step error ends nothing but is not said: KILLED by 1: a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+X1 a look error after the reopen is the step error (F3 back): KILLED by 2: a_look_that_fails_after_the_reopen_keeps_the_reopen, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+X2 the reopen outcome dropped at a look error: KILLED by 1: a_look_that_fails_after_the_reopen_keeps_the_reopen
+X3 the look error dropped (unread none): KILLED by 2: a_look_that_fails_after_the_reopen_keeps_the_reopen, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+X4 a state error before the reopen read as not imported (R-L5): KILLED by 2: a_look_that_fails_before_the_reopen_is_the_error, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+X5 the kstat read error as not imported (A-C6b): KILLED by 1: the_pool_state_is_the_kstat_word
+X6 the note read error as no note (R-D1): KILLED by 1: a_note_that_cannot_be_read_is_an_error
+X7 the boot id read error as no note: KILLED by 2: a_note_that_cannot_be_read_is_an_error, a_note_whose_boot_cannot_be_told_is_an_error
+X8 publish and settle take an unread note as none (R-P3): KILLED by 1: publish_and_settle_refuse_a_note_that_cannot_be_read
+X9 a reopen ended by a signal read as done (R-C2): KILLED by 1: the_reopen_is_zpool_reopen_within_its_limit
+X10 a pool gone during the look not the end (R-L1): SURVIVED (302 passed)
+X11 LOOK_MAX 60 s (R-L2): KILLED by 1: a_pool_not_shown_suspended_is_tried_again_at_the_next_round
+L1 the Clear arm asks no go before a begin: KILLED by 2: an_end_during_the_syncs_begins_no_publish, a_volume_lost_during_the_syncs_begins_no_publish
+L2 the Unseen arm asks no go before a begin: KILLED by 1: a_round_whose_daemon_went_away_after_syncs_counts_them_and_begins_nothing_after_an_end
+L3 the Unseen arm count lost in run: KILLED by 1: a_round_whose_daemon_went_away_after_syncs_counts_them_and_begins_nothing_after_an_end
+L4 the engine Unseen count zeroed: KILLED by 2: a_daemon_gone_between_syncs_is_unseen_after_the_syncs_it_saw, a_round_whose_daemon_went_away_after_syncs_counts_them_and_begins_nothing_after_an_end
+L5 the syncs error arm count zeroed: KILLED by 2: a_refusal_after_a_failed_sync_counts_no_syncs, a_round_whose_sync_failed_counts_the_syncs_before_it

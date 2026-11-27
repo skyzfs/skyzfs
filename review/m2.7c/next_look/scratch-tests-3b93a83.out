@@ -1,0 +1,58 @@
+# N1 to N3 at 3b93a83 (the first run; N4 was added later, see scratch-tests-3b93a83-n4.out)
+
+running 3 tests
+test program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick ... N1 out:
+snap/skz-20261125T010000Z 0300000000000000739ecbdab87fa2da00000000000000000000000000000000
+round 1 ok took_ms=4000 late_ms=0 skipped=0 begun=skz-20261125T010000Z under_way=0 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=ONLINE looked_ms=10000 verdict=retry
+round 2 failed took_ms=10000 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost
+round 3 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+N1 err:
+skyzfs-agent: round 2: the volume is lost for this boot (note=whole reason=image-failed held=yes), and the pool was not shown suspended: the next round tries again
+
+N1: the second reopen 115000 ms after the failure; reopens 2
+
+thread 'program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick' (18508) panicked at crates/skyzfs-agent/src/program/tests.rs:3108:9:
+the retry 115000 ms after the failure
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfs_agent::program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test program::tests::review_next_look::n2_news_before_a_begin_after_syncs_begins_nothing ... N2 out:
+round 1 ok took_ms=1500 late_ms=0 skipped=0 begun=skz-20261125T010001Z under_way=1 synced=3 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost
+round 2 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=1 synced=0 bound=0
+N2 err:
+
+
+thread 'program::tests::review_next_look::n2_news_before_a_begin_after_syncs_begins_nothing' (18510) panicked at crates/skyzfs-agent/src/program/tests.rs:3140:9:
+assertion `left == right` failed: a begin after the news: round 1 ok took_ms=1500 late_ms=0 skipped=0 begun=skz-20261125T010001Z under_way=1 synced=3 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost
+round 2 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=1 synced=0 bound=0
+
+  left: "skz-20261125T010001Z"
+ right: "-"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::assert_failed_inner
+   3: core::panicking::assert_failed::<&str, &str>
+   4: <skyzfs_agent::program::tests::review_next_look::n2_news_before_a_begin_after_syncs_begins_nothing::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test program::tests::review_next_look::n3_a_pool_that_never_suspends_is_reopened_at_each_round ... N3 every=60: code 0, rounds 10, failed 10, reopens 10
+N3 every=1: code 0, rounds 60, failed 60, reopens 60
+ok
+
+failures:
+
+failures:
+    program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick
+    program::tests::review_next_look::n2_news_before_a_begin_after_syncs_begins_nothing
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 301 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `-p skyzfs-agent --lib`

@@ -1,0 +1,7 @@
+# The agent's lib tests at 3b93a83 with the scratch tests and n2-fix.diff (summary lines)
+test program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick ... FAILED
+N1 out:
+N1 err:
+N1: the second reopen 115000 ms after the failure; reopens 2
+thread 'program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick' (27333) panicked at crates/skyzfs-agent/src/program/tests.rs:3108:9:
+test result: FAILED. 303 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.85s

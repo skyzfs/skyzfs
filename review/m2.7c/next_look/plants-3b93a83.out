@@ -1,0 +1,43 @@
+BASE: SURVIVED (301 passed)
+W1 the note not read in the wait for the tick: KILLED by 2: a_volume_lost_while_a_publish_settles_is_stepped_on_within_seconds, a_volume_lost_while_run_waits_is_stepped_on_within_seconds
+W2 the watch not asked in the settle: KILLED by 2: news_on_the_note_stops_the_settle, a_volume_lost_while_a_publish_settles_is_stepped_on_within_seconds
+W3 the watch not asked in the syncs: KILLED by 1: news_on_the_failure_note_stops_the_syncs
+W3b the syncs stopped by news named Told: KILLED by 1: news_on_the_failure_note_stops_the_syncs
+W3c the watch asked before go in the syncs: KILLED by 1: news_on_the_failure_note_stops_the_syncs
+W4 NOTE_EVERY 5 s: KILLED by 3: news_on_the_note_stops_the_settle, the_watch_sees_a_new_lost_note_about_every_second, news_on_the_failure_note_stops_the_syncs
+W4b NOTE_EVERY 3 s: KILLED by 2: the_watch_sees_a_new_lost_note_about_every_second, news_on_the_failure_note_stops_the_syncs
+W5 a read at each ask: KILLED by 1: the_watch_sees_a_new_lost_note_about_every_second
+W6 news not kept: KILLED by 1: the_watch_sees_a_new_lost_note_about_every_second
+W7 seen ignored (any lost note is news): KILLED by 4: the_watch_sees_a_new_lost_note_about_every_second, a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+W8 a note no client held is news: KILLED by 1: the_watch_sees_a_new_lost_note_about_every_second
+W9 a failed read is news: KILLED by 1: the_watch_sees_a_new_lost_note_about_every_second
+W10 the first read at once: KILLED by 1: the_watch_sees_a_new_lost_note_about_every_second
+W11 news kept across watch_note: KILLED by 1: the_watch_sees_a_new_lost_note_about_every_second
+W12 the watch set only at the first round: SURVIVED (301 passed)
+W13 seen none (the round read forgotten): KILLED by 3: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+W14 seen no note (the round own lost note is news): KILLED by 3: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+W15 a news round not early: the wait goes on: KILLED by 2: a_volume_lost_while_a_publish_settles_is_stepped_on_within_seconds, a_volume_lost_while_run_waits_is_stepped_on_within_seconds
+V1 not imported lost: KILLED by 3: the_verdict_of_each_step, a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on, the_lost_line
+V2 not imported retry: KILLED by 3: the_verdict_of_each_step, a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on, the_lost_line
+V3 suspended retry: KILLED by 3: the_verdict_of_each_step, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, run_started_again_on_the_same_note_ends_with_11_and_no_reopen
+V3b suspended failed: KILLED by 3: the_verdict_of_each_step, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, run_started_again_on_the_same_note_ends_with_11_and_no_reopen
+V4 unread lost: KILLED by 4: a_look_that_fails_after_the_reopen_keeps_the_reopen, the_verdict_of_each_step, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, the_lost_line
+V4b unread failed (the arm gone): KILLED by 4: a_look_that_fails_after_the_reopen_keeps_the_reopen, the_verdict_of_each_step, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, the_lost_line
+V5 reopened SUSPENDED retry: KILLED by 8: the_verdict_of_each_step, a_note_that_cannot_be_read_fails_the_round, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_refused_reopen_of_a_pool_zed_suspended_is_lost ...
+V5b reopened SUSPENDED failed: KILLED by 6: the_verdict_of_each_step, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_refused_reopen_of_a_pool_zed_suspended_is_lost, a_state_that_cannot_be_read_is_tried_again_at_the_next_round ...
+V6 reopened another state lost: KILLED by 3: the_verdict_of_each_step, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, the_lost_line
+V6b reopened another state failed: KILLED by 3: the_verdict_of_each_step, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, the_lost_line
+V7 reopened gone lost: KILLED by 1: the_verdict_of_each_step
+V7b reopened gone retry: KILLED by 1: the_verdict_of_each_step
+V8 step failed lost: KILLED by 3: the_verdict_of_each_step, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, the_lost_line
+V8b step failed failed: KILLED by 3: the_verdict_of_each_step, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, the_lost_line
+V9 word of retry: KILLED by 4: the_verdict_of_each_step, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, the_lost_line
+P1 a retry round not failed: KILLED by 2: a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+P2 a failed-verdict round failed: KILLED by 1: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on
+P2b a lost round failed: KILLED by 5: a_note_that_cannot_be_read_fails_the_round, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round, a_volume_lost_while_a_publish_settles_is_stepped_on_within_seconds ...
+P3 an end on retry: KILLED by 2: a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+P4 an end on failed: KILLED by 1: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on
+P5 a lost round goes on to the engine: KILLED by 9: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on, a_note_that_cannot_be_read_fails_the_round, a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_refused_reopen_of_a_pool_zed_suspended_is_lost ...
+P5b a retry round goes on to the engine: KILLED by 2: a_pool_not_shown_suspended_is_tried_again_at_the_next_round, a_state_that_cannot_be_read_is_tried_again_at_the_next_round
+P5c a failed-verdict round goes on to the engine: KILLED by 1: a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on
+stopped here at 04:26 UTC: the head moved to e3fe645; P6 and the rest were run there (plants-e3fe645.out)

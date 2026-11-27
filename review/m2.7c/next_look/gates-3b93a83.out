@@ -1,0 +1,10 @@
+head 3b93a8395a7be9c8508eb7f85fa5a20c7058c2d3
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy plain rc=0
+test plain rc=0 2066 passed 0 failed 16 ignored
+doc workspace plain rc=0
+agent, agent-cli and control tests x20: 0 failed runs (last: 332 passed 0 failed)
+/dev/vda        252G   30G  8.6G  78% /
+clippy skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+stopped here at 04:26 UTC: the head moved to e3fe645 (the test-hooks set's tests and docs, and the control-test-program and agent-cli sets, were not run at 3b93a83; see gates-e3fe645.out)

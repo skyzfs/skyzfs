@@ -1,0 +1,20 @@
+# N1 to N4 (scratch-tests.rs) at e3fe645, nothing else changed
+test program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick ... N1 out:
+round 1 ok took_ms=4000 late_ms=0 skipped=0 begun=skz-20261125T010000Z under_way=0 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=ONLINE looked_ms=10000 verdict=retry
+round 2 failed took_ms=10000 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost
+round 3 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+N1 err:
+N1: the second reopen 115000 ms after the failure; reopens 2
+thread 'program::tests::review_next_look::n1_a_retry_after_an_early_step_comes_within_a_tick' (32565) panicked at crates/skyzfs-agent/src/program/tests.rs:3165:9:
+test program::tests::review_next_look::n2_news_before_a_begin_after_syncs_begins_nothing ... N2 out:
+round 1 ok took_ms=1500 late_ms=0 skipped=0 begun=- under_way=0 synced=3 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost
+round 2 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+N2 err:
+test program::tests::review_next_look::n3_a_pool_that_never_suspends_is_reopened_at_each_round ... N3 every=60: code 0, rounds 10, failed 10, reopens 10
+N3 every=1: code 0, rounds 60, failed 60, reopens 60
+test program::tests::review_next_look::n4_the_rounds_after_an_early_retry_keep_to_the_ticks ... N4: 4 reopens in 300 s
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 302 filtered out; finished in 0.08s
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
