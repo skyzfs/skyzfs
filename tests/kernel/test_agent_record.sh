@@ -1503,7 +1503,7 @@ is "rt_after: the rig's hold, the names, the agent's hold" "$(rtafter skzcut/c1@
     "zfs release skz-rig skzcut/c1@t1;adump record-after;snaps snaps-after;status status-after;snaprow t1 row-t1.txt;snaprow t2 row-t2.txt;snaprow t3 row-t3.txt;snaprow t4 row-t4.txt;zfs release skyzfs-publish skzcut@t1; hold= [t1 t2 t3 t4 ] [skzcut@t1] [K	keep	-	0	-] [the rig's hold on skzcut/c1@t1 released]"
 is "rt_after: no hold of the rig's" "$(rtafter "" | cut -d';' -f1)" "adump record-after"
 # The scenarios with stand-ins: the calls in order.
-rtscen() { # SCENARIO ROUND1/ROUND3 NAME [ARG...] -> the calls (a round's await: 0 came, 1 not)
+rtscen() { # SCENARIO ROUND1/ROUND4 NAME [ARG...] -> the calls (a round's await: 0 came, 1 not)
     (
         CDIR=$T/rs; rm -rf "$CDIR"; mkdir -p "$CDIR"; : > "$CDIR/publish.err"
         POOL=skzcut RUN_EVERY=10 RIG_TAG=skz-rig RIG_HOLD=""
@@ -1511,7 +1511,8 @@ rtscen() { # SCENARIO ROUND1/ROUND3 NAME [ARG...] -> the calls (a round's await:
         c() { echo "$*" >> "$CDIR/calls"; }
         abg() { c abg "$*"; [ -z "$name" ] || printf 'snap/%s ab\n' "$name" > "$CDIR/$1.out"; }
         acmd() { c acmd "$*"; }
-        await_rounds() { c await_rounds "$*"; if [ "$2" = 3 ]; then return "${ok#*/}"; fi; return "${ok%/*}"; }
+        await_rounds() { c await_rounds "$*"; if [ "$2" = 4 ]; then return "${ok#*/}"; fi; return "${ok%/*}"; }
+        astamp() { c astamp "$*"; }
         await_agent() { c await_agent "$*"; }
         run_rounds_then_term() { c rrtt "$*"; }
         rt_rounds() { c rt_rounds "$1"; echo 1; }
@@ -1534,16 +1535,16 @@ is "K: no name in round 1 is the rig's error, and nothing is made" "$(rtscen kee
     "abg publish run --every-s 10 --keep 2 --trace-points x;await_rounds publish 1 120;case_error round 1 published no name: ; hold="
 is "K: no round 1" "$(rtscen keep 1/0 t1 --trace-points x)" \
     "abg publish run --every-s 10 --keep 2 --trace-points x;await_rounds publish 1 120;case_error round 1 published no name: ; hold="
-is "S: the hold after round 1, the looks after round 3, the release, six rounds" "$(rtscen stuck 0/0 s1 --trace-points x)" \
-    "abg publish run --every-s 10 --keep 1 --trace-points x;await_rounds publish 1 120;zfs hold skz-rig skzcut/c1@s1;rt_rounds publish;await_rounds publish 3 240;adump stuck-dump;snaps stuck-snaps;snaprow s1 stuck-row.txt;zfs release skz-rig skzcut/c1@s1;rt_rounds publish;rrtt publish 6; hold="
-is "S: no round 3 is a verdict, the hold left to rt_after" "$(rtscen stuck 0/1 s1 --trace-points x)" \
-    "abg publish run --every-s 10 --keep 1 --trace-points x;await_rounds publish 1 120;zfs hold skz-rig skzcut/c1@s1;rt_rounds publish;await_rounds publish 3 240;rt_rounds publish;verdict rounds; hold=skzcut/c1@s1"
+is "S: the hold after round 1, the looks after round 4, the release, seven rounds" "$(rtscen stuck 0/0 s1 --trace-points x)" \
+    "abg publish run --every-s 10 --keep 1 --trace-points x;await_rounds publish 1 120;zfs hold skz-rig skzcut/c1@s1;rt_rounds publish;await_rounds publish 4 240;adump stuck-dump;snaps stuck-snaps;snaprow s1 stuck-row.txt;zfs release skz-rig skzcut/c1@s1;rt_rounds publish;rrtt publish 7; hold="
+is "S: no round 4 is a verdict, the hold left to rt_after" "$(rtscen stuck 0/1 s1 --trace-points x)" \
+    "abg publish run --every-s 10 --keep 1 --trace-points x;await_rounds publish 1 120;zfs hold skz-rig skzcut/c1@s1;rt_rounds publish;await_rounds publish 4 240;rt_rounds publish;verdict rounds; hold=skzcut/c1@s1"
 is "X: killed, the snapshots, run2 two rounds" "$(rtscen retkill 0/0 "" --trace-points x --kill-at retire:after:1)" \
     "abg publish run --every-s 10 --keep 1 --trace-points x --kill-at retire:after:1;await_agent publish 120;snaps killed-snaps;abg run2 run --every-s 10 --keep 1;rrtt run2 2; hold="
 is "B: keep 60 ten rounds, then keep 1 three" "$(rtscen backlog 0/0 "" --trace-points x)" \
     "abg publish run --every-s 10 --keep 60 --trace-points x;rrtt publish 10;abg run2 run --every-s 10 --keep 1;rrtt run2 3; hold="
-is "A-old: frozen, too old at 8 s, the dump and the thaw after round 1, four rounds" "$(rtscen aold 0/0 "" --trace-points x)" \
-    "freeze;abg publish run --every-s 10 --age-max-s 8 --abandoned-keep-s 5 --trace-points x;await_rounds publish 1 120;adump given-up;thaw;rrtt publish 4; hold="
+is "A-old: frozen, too old at 8 s, the thaw after round 1, the dump after the give-up, four rounds" "$(rtscen aold 0/0 "" --trace-points x)" \
+    "freeze;abg publish run --every-s 10 --age-max-s 8 --abandoned-keep-s 5 --trace-points x;await_rounds publish 1 120;thaw;astamp publish 60 ^abandoned ;adump given-up;rrtt publish 4; hold="
 is "A-old: no round 1, no thaw (recover thaws)" "$(rtscen aold 1/0 "" --trace-points x)" \
     "freeze;abg publish run --every-s 10 --age-max-s 8 --abandoned-keep-s 5 --trace-points x;await_rounds publish 1 120;rrtt publish 4; hold="
 is "A-*: killed, given up, the dump, the run three rounds" "$(rtscen aperson 0/0 n1 --trace-points x --kill-at intent:after:1)" \

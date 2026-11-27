@@ -1374,20 +1374,23 @@ rec_afail() {
 #   under the name); others.rounds is the round lines printed by then.
 # - S (stuck): `run --keep 1`; after round 1 the rig holds POOL/c1@t1
 #   (tag skz-rig; held.rounds), so that t1's destroy fails at c1 once its
-#   ref is retired; after round 3 the record is dumped (stuck-dump.*),
-#   the snapshots listed (stuck-snaps.txt) and node B asked
-#   (stuck-row.txt); then the hold is released (released.rounds) and the
-#   run goes on to round 6.
+#   ref is retired (round 3: a round retires before it settles, so t2
+#   counts from round 3 on); after round 4, in which t2 is retired while
+#   t1 is still stuck, the record is dumped (stuck-dump.*), the
+#   snapshots listed (stuck-snaps.txt) and node B asked (stuck-row.txt);
+#   then the hold is released (released.rounds) and the run goes on to
+#   round 7.
 # - X-retire, X-retain, X-destroy (retkill): `run --keep 1` killed at
-#   retire:after:1, retain:before:1 or destroy-member:after:1 (round 2's
+#   retire:after:1, retain:before:1 or destroy-member:after:1 (round 3's
 #   retire of t1); killed-snaps.txt after the kill; then run2, two
 #   rounds, then SIGTERM.
 # - B (backlog): `run --keep 60`, ten rounds, SIGTERM; then run2 `--keep
 #   1`, three rounds: nine names or more to retire at once, at most
 #   eight a round.
 # - A-old (aold): the store frozen; `run --age-max-s 8
-#   --abandoned-keep-s 5`: round 1's publish is given up as too old
-#   (given-up.* dumped after round 1), the store thaws, four rounds.
+#   --abandoned-keep-s 5`: the store thaws after round 1, round 1's
+#   publish is given up as too old in the round after (given-up.* dumped
+#   once its `abandoned` line is out), four rounds.
 # - A-nothing, A-members (aperson): `publish` killed at intent:after:1
 #   or taken:after:1, then `recover --name T --give-up` (giveup.*,
 #   given-up.*), then `run --abandoned-keep-s 5` (run.*), three rounds.
@@ -1467,7 +1470,7 @@ ret_keep() {
     rt_rounds publish > "$CDIR/others.rounds"
     run_rounds_then_term publish 7
 }
-# S: t1's destroy fails at c1, held by the rig, until round 3 is over.
+# S: t1's destroy fails at c1, held by the rig, until round 4 is over.
 ret_stuck() {
     local t1
     abg publish run --every-s "$RUN_EVERY" --keep 1 "$@"
@@ -1478,8 +1481,8 @@ ret_stuck() {
     zfs hold "$RIG_TAG" "$POOL/c1@$t1" || rig_error "zfs hold $RIG_TAG $POOL/c1@$t1 failed"
     RIG_HOLD=$POOL/c1@$t1
     rt_rounds publish > "$CDIR/held.rounds"
-    if ! await_rounds publish 3 240; then
-        verdict rounds "the run printed $(rt_rounds publish) round lines, not 3: $(tail -n 2 "$CDIR/publish.err")"
+    if ! await_rounds publish 4 240; then
+        verdict rounds "the run printed $(rt_rounds publish) round lines, not 4: $(tail -n 2 "$CDIR/publish.err")"
         return 0
     fi
     adump stuck-dump
@@ -1488,9 +1491,9 @@ ret_stuck() {
     zfs release "$RIG_TAG" "$RIG_HOLD" || rig_error "zfs release $RIG_TAG $RIG_HOLD failed"
     RIG_HOLD=""
     rt_rounds publish > "$CDIR/released.rounds"
-    run_rounds_then_term publish 6
+    run_rounds_then_term publish 7
 }
-# X-*: the run killed at the case's point in round 2's retire of t1,
+# X-*: the run killed at the case's point in round 3's retire of t1,
 # then the next run.
 ret_retkill() {
     abg publish run --every-s "$RUN_EVERY" --keep 1 "$@"
@@ -1511,8 +1514,12 @@ ret_aold() {
     freeze
     abg publish run --every-s "$RUN_EVERY" --age-max-s 8 --abandoned-keep-s 5 "$@"
     if await_rounds publish 1 120; then
-        adump given-up
         thaw
+        # The give-up comes in the round after the one whose settle
+        # outlived the age (round 1's settle waits for its tick): the
+        # record is read once its line is out.
+        astamp publish 60 '^abandoned ' || true
+        adump given-up
     fi
     run_rounds_then_term publish 4
 }

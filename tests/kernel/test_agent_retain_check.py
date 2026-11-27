@@ -42,22 +42,27 @@ def snaps_text(names, extra=(), less=()):
 
 def out_text(rounds):
     """[[item]] -> a run's stdout: each round's items, then its line. An
-    item is ('snap', t), ('retired', t), ('abandoned', t, why) or
-    ('forgotten', t, why); a round whose last item is CUT was cut by a
-    kill (no round line)."""
+    item is ('snap', t), ('retired', t), ('abandoned', t, why),
+    ('forgotten', t, why), or ('begun', t), which names the round line's
+    begun= and prints nothing (by default the round's last snap, or -);
+    a round whose last item is CUT was cut by a kill (no round line)."""
     out = []
     for n, items in enumerate(rounds, 1):
+        begun = '-'
         for it in items:
             if it == CUT:
                 continue
-            if it[0] == 'snap':
+            if it[0] == 'begun':
+                begun = it[1]
+            elif it[0] == 'snap':
+                begun = it[1]
                 out.append(f'snap/{it[1]} {commit_of(it[1])}')
             elif it[0] == 'retired':
                 out.append(f'retired {it[1]}')
             else:
                 out.append(f'{it[0]} {it[1]} {it[2]}')
         if not items or items[-1] != CUT:
-            out.append(f'round {n} ok took_ms=1200 late_ms=0 skipped=0 published=1')
+            out.append(f'round {n} ok took_ms=1200 late_ms=0 skipped=0 begun={begun} under_way=0 synced=0 bound=0')
     return ''.join(ln + '\n' for ln in out)
 
 
@@ -67,51 +72,53 @@ def model():
     bs = [f'b{i}' for i in range(1, 14)]
     m = {}
     m['K'] = {
-        'runs': {'publish': [[('snap', ks[0])], [('snap', ks[1])]]
-                 + [[('snap', ks[i]), ('retired', ks[i - 2])] for i in range(2, 7)]},
-        'kept': ks[5:], 'retired': ks[:5], 'retires': [(t, 'retired') for t in ks[:5]],
+        'runs': {'publish': [[('snap', ks[0])], [('snap', ks[1])], [('snap', ks[2])]]
+                 + [[('retired', ks[i - 3]), ('snap', ks[i])] for i in range(3, 7)]},
+        'kept': ks[4:], 'retired': ks[:4], 'retires': [(t, 'retired') for t in ks[:4]],
         'extra_snaps': [(f'{POOL}/late@k1', '501'), (f'{POOL}/c2@k1', '301')],
         'files': {'others.tsv': f'late\t{POOL}/late@k1\t-\t501\nremade\t{POOL}/c2@k1\t300\t301\n',
                   'others.rounds': '1\n'},
     }
     m['S'] = {
-        'runs': {'publish': [[('snap', 's1')], [('snap', 's2')], [('snap', 's3'), ('retired', 's2')],
-                             [('snap', 's4'), ('retired', 's1'), ('retired', 's3')],
-                             [('snap', 's5'), ('retired', 's4')], [('snap', 's6'), ('retired', 's5')]]},
+        'runs': {'publish': [[('snap', 's1')], [('snap', 's2')], [('snap', 's3')],
+                             [('retired', 's2'), ('snap', 's4')],
+                             [('retired', 's1'), ('retired', 's3'), ('snap', 's5')],
+                             [('retired', 's4'), ('snap', 's6')]]},
         'err': {'publish': STUCK_SAID + '\n'},
-        'kept': ['s6'], 'retired': ['s1', 's2', 's3', 's4', 's5'],
-        'retires': [('s1', 'retired'), ('s2', 'retired'), ('s3', 'retired'), ('s4', 'retired'), ('s5', 'retired')],
-        'files': {'held.rounds': '1\n', 'released.rounds': '3\n',
+        'kept': ['s5', 's6'], 'retired': ['s1', 's2', 's3', 's4'],
+        'retires': [('s1', 'retired'), ('s2', 'retired'), ('s3', 'retired'), ('s4', 'retired')],
+        'files': {'held.rounds': '1\n', 'released.rounds': '4\n',
                   'stuck-dump.txt': 'volume ab\nenrolled skzcut pool_guid=1 leaf_guid=2\n'
                                     f'published s3 commit={commit_of("s3")} group=9 members=4 at_ms=3 retire=-\n'
+                                    f'published s4 commit={commit_of("s4")} group=9 members=4 at_ms=3 retire=-\n'
                                     'stuck s1 members=4 at_ms=2\n',
                   'stuck-row.txt': 'ref\tnone\nsnaprow\tnone\n',
-                  'stuck-snaps.txt': snaps_text(['s3'], [(f'{POOL}@s1', '11'), (f'{POOL}/c1@s1', '12')])},
+                  'stuck-snaps.txt': snaps_text(['s3', 's4'], [(f'{POOL}@s1', '11'), (f'{POOL}/c1@s1', '12')])},
     }
     for cid, x in (('X-retire', 'x'), ('X-retain', 'y'), ('X-destroy', 'z')):
         effect, side, n = rc.KILLS[cid].split(':')
-        first = [[('snap', f'{x}1')],
-                 [('snap', f'{x}2')] + ([('retired', f'{x}1')] if cid == 'X-retain' else []) + [CUT]]
+        first = [[('snap', f'{x}1')], [('snap', f'{x}2')],
+                 ([('retired', f'{x}1')] if cid == 'X-retain' else []) + [CUT]]
         less = (f'{POOL}/c1/g@{x}1',) if cid == 'X-destroy' else ()
         m[cid] = {
             'runs': {'publish': first,
-                     'run2': [[('snap', f'{x}3'), ('retired', f'{x}1'), ('retired', f'{x}2')],
-                              [('snap', f'{x}4'), ('retired', f'{x}3')]]},
+                     'run2': [[('retired', f'{x}1'), ('snap', f'{x}3'), ('snap', f'{x}4')],
+                              [('retired', f'{x}2'), ('retired', f'{x}3'), ('snap', f'{x}5')]]},
             'err': {'publish': KILLED.format(effect, side, n) + '\n'}, 'rc': {'publish': '137'},
-            'kept': [f'{x}4'], 'retired': [f'{x}1', f'{x}2', f'{x}3'],
+            'kept': [f'{x}4', f'{x}5'], 'retired': [f'{x}1', f'{x}2', f'{x}3'],
             'retires': [(f'{x}1', a) for a in rc.X_WANT[cid][0]] + [(f'{x}2', 'retired'), (f'{x}3', 'retired')],
             'files': {'killed-snaps.txt': snaps_text([f'{x}1', f'{x}2'], less=less)},
         }
     m['B'] = {
         'runs': {'publish': [[('snap', t)] for t in bs[:10]],
-                 'run2': [[('snap', bs[10])] + [('retired', t) for t in bs[:8]],
-                          [('snap', bs[11])] + [('retired', t) for t in bs[8:11]],
-                          [('snap', bs[12]), ('retired', bs[11])]]},
-        'kept': bs[12:], 'retired': bs[:12], 'retires': [(t, 'retired') for t in bs[:12]],
+                 'run2': [[('retired', t) for t in bs[:8]] + [('snap', bs[10])],
+                          [('retired', t) for t in bs[8:10]] + [('snap', bs[11])],
+                          [('retired', bs[10]), ('snap', bs[12])]]},
+        'kept': bs[11:], 'retired': bs[:11], 'retires': [(t, 'retired') for t in bs[:11]],
     }
     m['A-old'] = {
-        'runs': {'publish': [[('abandoned', 'a1', 'too-old')], [('snap', 'a2')], [('snap', 'a3'), ('retired', 'a1')],
-                             [('snap', 'a4')]]},
+        'runs': {'publish': [[('begun', 'a1')], [('abandoned', 'a1', 'too-old'), ('snap', 'a2')],
+                             [('retired', 'a1'), ('snap', 'a3')], [('snap', 'a4')]]},
         'kept': ['a2', 'a3', 'a4'], 'retired': ['a1'], 'retires': [],
         'files': {'given-up.txt': 'volume ab\nabandoned a1 why=too-old at_ms=5 left=members:4\n'},
     }
@@ -315,10 +322,10 @@ class Common(unittest.TestCase):
 
     def test_the_status_counts_one_retire_less(self):
         def ch(m):
-            m['K']['files']['status-after.txt'] = ('publish_retired 11\npublish_retire_gone 2\n'
+            m['K']['files']['status-after.txt'] = ('publish_retired 10\npublish_retire_gone 2\n'
                                                    'publish_retire_other 0\n')
         _, d = fails(self, ch, 'pin_K_status')
-        self.assertIn('publish_retired counted 4 over the case, the request log has 5', d['pin_K_status'])
+        self.assertIn('publish_retired counted 3 over the case, the request log has 4', d['pin_K_status'])
 
     def test_the_status_counts_a_gone(self):
         def ch(m):
@@ -371,8 +378,9 @@ class Common(unittest.TestCase):
             write(d, model())
             k = rc.read_case(rc.Case(d, 'X-retire'), [])
         self.assertEqual([(ln['run'], ln['kind'], ln['round']) for ln in k['lines'] if ln['kind'] != 'round'],
-                         [('publish', 'snap', 1), ('publish', 'snap', 2), ('run2', 'snap', 2),
-                          ('run2', 'retired', 2), ('run2', 'retired', 2), ('run2', 'snap', 3), ('run2', 'retired', 3)])
+                         [('publish', 'snap', 1), ('publish', 'snap', 2), ('run2', 'retired', 3),
+                          ('run2', 'snap', 3), ('run2', 'snap', 3), ('run2', 'retired', 4), ('run2', 'retired', 4),
+                          ('run2', 'snap', 4)])
 
 
 class Keep(unittest.TestCase):
@@ -384,15 +392,15 @@ class Keep(unittest.TestCase):
 
     def test_retired_a_round_late(self):
         def ch(m):
-            set_round(m, 'K', 'publish', 3, [('snap', 'k3')])
-            set_round(m, 'K', 'publish', 4, [('snap', 'k4'), ('retired', 'k1'), ('retired', 'k2')])
+            set_round(m, 'K', 'publish', 4, [('snap', 'k4')])
+            set_round(m, 'K', 'publish', 5, [('retired', 'k1'), ('retired', 'k2'), ('snap', 'k5')])
         _, d = fails(self, ch, 'pin_K_retired_in_round')
-        self.assertIn('k1 said retired in round 4, not in round 3', d['pin_K_retired_in_round'])
+        self.assertIn('k1 said retired in round 5, not in round 4', d['pin_K_retired_in_round'])
 
     def test_late_where_a_report_names_it(self):
         def ch(m):
-            set_round(m, 'K', 'publish', 3, [('snap', 'k3')])
-            set_round(m, 'K', 'publish', 4, [('snap', 'k4'), ('retired', 'k1'), ('retired', 'k2')])
+            set_round(m, 'K', 'publish', 4, [('snap', 'k4')])
+            set_round(m, 'K', 'publish', 5, [('retired', 'k1'), ('retired', 'k2'), ('snap', 'k5')])
             m['K']['err'] = {'publish': 'skyzfs-agent: report k1 not-retired: tried again at the next round: '
                                         'retire not answered: timed out\n'}
         st, v, _ = run(ch)
@@ -469,10 +477,32 @@ class Keep(unittest.TestCase):
             r[0], r[1] = r[1], r[0]
         fails(self, ch, 'pin_K_request_log')
 
+    def test_retired_in_the_round_that_published_the_keepth_after_it(self):
+        def ch(m):
+            set_round(m, 'K', 'publish', 3, [('retired', 'k1'), ('snap', 'k3')])
+            set_round(m, 'K', 'publish', 4, [('snap', 'k4')])
+        _, d = fails(self, ch, 'pin_K_keep')
+        self.assertIn('k1 said retired in round 3, not after k3 was published (round 3)', d['pin_K_keep'])
+
+    def test_the_newest_two_alone_kept_after_the_last_round(self):
+        def ch(m):
+            set_round(m, 'K', 'publish', 7, [('retired', 'k4'), ('retired', 'k5'), ('snap', 'k7')])
+            m['K']['kept'], m['K']['retired'] = ['k6', 'k7'], ['k1', 'k2', 'k3', 'k4', 'k5']
+            m['K']['retires'].append(('k5', 'retired'))
+        v, d = fails(self, ch, 'pin_K_retired')
+        self.assertEqual(v['pin_K_keep'], 'FAILED')
+
+    def test_due_retired(self):
+        lines = rc.read_out(out_text([[('snap', 'a')], [('snap', 'b')], [('snap', 'c'), ('snap', 'd')], [('snap', 'e')],
+                                      [CUT]]))
+        self.assertEqual((rc.due_retired(lines, 1), rc.due_retired(lines, 3), rc.due_retired(lines, 9)),
+                         (['a', 'b', 'c'], ['a'], []))
+        self.assertEqual(rc.due_retired([], 1), [])
+
     def test_judge_keep(self):
         lines = rc.read_out(out_text(model()['K']['runs']['publish']))
         self.assertEqual(rc.judge_keep(lines, 2), [])
-        self.assertEqual(len(rc.judge_keep(lines, 3)), 5)
+        self.assertEqual(len(rc.judge_keep(lines, 3)), 4)
         self.assertEqual(len(rc.judge_keep(lines, 1)), 0)
 
 
@@ -525,8 +555,8 @@ class Stuck(unittest.TestCase):
 
     def test_the_others_wait(self):
         def ch(m):
-            set_round(m, 'S', 'publish', 3, [('snap', 's3')])
-            set_round(m, 'S', 'publish', 4, [('snap', 's4'), ('retired', 's2'), ('retired', 's1'), ('retired', 's3')])
+            set_round(m, 'S', 'publish', 4, [('snap', 's4')])
+            set_round(m, 'S', 'publish', 5, [('retired', 's1'), ('retired', 's2'), ('retired', 's3'), ('snap', 's5')])
         fails(self, ch, 'pin_S_others_go_on')
 
     def test_retired_while_held(self):
@@ -543,7 +573,7 @@ class Stuck(unittest.TestCase):
 
     def test_retired_twice(self):
         def ch(m):
-            set_round(m, 'S', 'publish', 5, [('snap', 's5'), ('retired', 's4'), ('retired', 's1')])
+            set_round(m, 'S', 'publish', 6, [('retired', 's4'), ('retired', 's1'), ('snap', 's6')])
         fails(self, ch, 'pin_S_released')
 
     def test_asked_again_while_stuck(self):
@@ -673,9 +703,9 @@ class Abandoned(unittest.TestCase):
             m['A-old']['files']['given-up.txt'] = 'abandoned a1 why=too-old at_ms=5 left=unknown\n'
         fails(self, ch, 'pin_A-old_left')
 
-    def test_too_old_retired_in_round_one(self):
+    def test_too_old_retired_in_the_round_that_gave_it_up(self):
         def ch(m):
-            set_round(m, 'A-old', 'publish', 1, [('abandoned', 'a1', 'too-old'), ('retired', 'a1')])
+            set_round(m, 'A-old', 'publish', 2, [('abandoned', 'a1', 'too-old'), ('retired', 'a1'), ('snap', 'a2')])
             set_round(m, 'A-old', 'publish', 3, [('snap', 'a3')])
         fails(self, ch, 'pin_A-old_retired')
 
@@ -685,11 +715,17 @@ class Abandoned(unittest.TestCase):
             m['A-old']['retired'] = []
         fails(self, ch, 'pin_A-old_retired')
 
-    def test_too_old_in_round_two(self):
+    def test_given_up_not_the_one_round_one_began(self):
         def ch(m):
-            set_round(m, 'A-old', 'publish', 1, [])
-            set_round(m, 'A-old', 'publish', 2, [('abandoned', 'a1', 'too-old'), ('snap', 'a2')])
+            set_round(m, 'A-old', 'publish', 1, [('begun', 'a0')])
         fails(self, ch, 'premise_A-old_given_up', 'ERROR', 2)
+
+    def test_given_up_in_round_one(self):
+        def ch(m):
+            set_round(m, 'A-old', 'publish', 1, [('abandoned', 'a1', 'too-old'), ('begun', 'a1')])
+            set_round(m, 'A-old', 'publish', 2, [('snap', 'a2')])
+        st, v, _ = run(ch)
+        self.assertEqual((v['premise_A-old_given_up'], v['pin_A-old_retired'], st), ('ok', 'ok', 0))
 
     def test_too_old_forgotten_as_well(self):
         def ch(m):

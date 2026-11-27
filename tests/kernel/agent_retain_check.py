@@ -18,7 +18,11 @@ The agent's lines: on standard output `snap/<t> <commit>`, `retired
 <t>`, `forgotten <t> (<why>)`, `abandoned <t> <why>` and the round
 lines; on standard error `skyzfs-agent: report <t> not-retired: tried
 again at the next round: <why>`. A line belongs to the round whose line
-comes next after it (a round's line ends the round). The record's dump
+comes next after it (a round's line ends the round). A round retires
+before it settles (program::schedule: the begin, retention, then the
+settle), so a name published in round r counts for retention from round
+r + 1 on: with --keep N, N + 1 names published are kept between two
+rounds. The record's dump
 (`skyzfs-agent record`): `published <t> commit=H group=G members=N
 at_ms=M retire=-|ref|members|other`, `abandoned <t> why=W at_ms=M
 left=nothing|unknown|members:N` and `stuck <t> members=N at_ms=M`.
@@ -43,13 +47,14 @@ In every case:
 
 K (--keep 2; two snapshots under t1 that are not the agent's):
 - premise_K_names: four names or more published.
-- pin_K_retired: the `retired` lines are every name but the newest two,
-  once each, in the order published; the record keeps the newest two
-  and nothing else (no stuck, no given up).
-- pin_K_keep: no name is said retired in a round before the one in
-  which the second name after it was published (the newest --keep are
-  kept); pin_K_retired_in_round: and none later, unless a not-retired
-  report named it (the round's steps are within STEPS_MAX).
+- pin_K_retired: the `retired` lines are, once each and in the order
+  published, every name published before the last round but the newest
+  two of those; the record keeps the rest and nothing else (no stuck, no
+  given up).
+- pin_K_keep: no name is said retired in a round before the one after
+  the round in which the second name after it was published (the newest
+  --keep are kept); pin_K_retired_in_round: and none later, unless a
+  not-retired report named it (the round's steps are within STEPS_MAX).
 - pin_K_others_kept (kernel and server): POOL/late@t1 (a dataset made
   after t1 was taken) and POOL/c2@t1 (destroyed and taken again by the
   rig) are still there, with their GUIDs: an @t of a GUID the record
@@ -61,10 +66,11 @@ K (--keep 2; two snapshots under t1 that are not the agent's):
   own lines; ctl_K_left: pin_ID_retired_gone's with POOL/c1@t1 added to
   the pool must catch it.
 
-S (--keep 1; POOL/c1@t1 held by the rig from round 1 to round 3):
+S (--keep 1; POOL/c1@t1 held by the rig from round 1 to round 4: t1 is
+retired in round 3, when t2 is published, and t2 in round 4):
 - premise_S_held: the hold was placed before round 2's line, and let go
-  after round 3's.
-- pin_S_stuck: after round 3 the record has t1 among the names stuck
+  after round 4's or later.
+- pin_S_stuck: after round 4 the record has t1 among the names stuck
   and not among those published; node B has no ref and no row of t1
   (its ref was retired before the destroy failed).
 - pin_S_children_first (kernel and server): then POOL@t1 and POOL/c1@t1
@@ -98,19 +104,21 @@ retire of t1; then the next run, run2):
 B (--keep 60, ten rounds; then run2 --keep 1):
 - premise_B_names: ten names or more published by the first run.
 - pin_B_kept_60: the first run said nothing retired.
-- pin_B_retired: every name but the newest is said retired once, in
-  the order published.
+- pin_B_retired: every name published before the last round but the
+  newest of those is said retired once, in the order published.
 - pin_B_steps: no round of run2 says more than STEPS_MAX names retired,
-  and its first says min(STEPS_MAX, the names past --keep) where no
-  not-retired report came (premise_B_backlog otherwise).
+  and its first says min(STEPS_MAX, the first run's names past --keep)
+  where no not-retired report came (premise_B_backlog otherwise).
 - obs_B_rounds: run2's retired count and took_ms by round.
 
 A-old (store frozen; --age-max-s 8 --abandoned-keep-s 5):
-- premise_A-old_given_up: round 1 said `abandoned t1 too-old`.
+- premise_A-old_given_up: the first `abandoned` line is `abandoned t1
+  too-old`, t1 the name round 1 began (the give-up comes in the round
+  after the one whose settle outlived the age: round 1's or round 2's).
 - pin_A-old_left: the record had t1 given up as too-old, left with its
   members (left=members:N, N >= 1).
-- pin_A-old_retired: `retired t1` once, in a round after round 1, and
-  no `forgotten t1`; the record keeps no t1.
+- pin_A-old_retired: `retired t1` once, in a round after the one that
+  gave it up, and no `forgotten t1`; the record keeps no t1.
 
 A-nothing, A-members (`publish` killed at intent:after:1 or
 taken:after:1, `recover --give-up`, then `run --abandoned-keep-s 5`):
@@ -173,8 +181,9 @@ def read_out(text):
         f = ln.split(' ')
         m = ROUND.match(ln)
         if m:
+            begun = [x[len('begun='):] for x in f if x.startswith('begun=')]
             lines.append({'kind': 'round', 'name': None, 'round': k, 'n': int(m.group(1)),
-                          'took_ms': int(m.group(3))})
+                          'took_ms': int(m.group(3)), 'begun': begun[0] if begun else None})
             k += 1
         elif f[0].startswith('snap/') and len(f) == 2:
             lines.append({'kind': 'snap', 'name': f[0][len('snap/'):], 'round': k, 'commit': f[1]})
@@ -193,6 +202,19 @@ def named(lines, kind, name=None):
 
 def published_names(lines):
     return [ln['name'] for ln in named(lines, 'snap')]
+
+
+def last_round(lines):
+    return max([ln['round'] for ln in named(lines, 'round')], default=0)
+
+
+def due_retired(lines, keep):
+    """-> the names the last round's retention had past --keep: those
+    published before the last round, but the newest KEEP of them (a
+    round retires before it settles)."""
+    last = last_round(lines)
+    seen = [ln['name'] for ln in named(lines, 'snap') if ln['round'] < last]
+    return seen[:max(0, len(seen) - keep)]
 
 
 def read_dump(text):
@@ -289,9 +311,9 @@ def judge_kept(names, printed, snaps, rows, dump):
 
 
 def judge_keep(lines, keep):
-    """-> each name said retired in a round before the one in which the
-    keep-th name after it was published (lines: the runs' lines in
-    order, rounds counted on across runs)."""
+    """-> each name said retired in a round before the one after the
+    round in which the keep-th name after it was published (lines: the
+    runs' lines in order, rounds counted on across runs)."""
     names = published_names(lines)
     when = {ln['name']: ln['round'] for ln in named(lines, 'snap')}
     bad = []
@@ -302,15 +324,16 @@ def judge_keep(lines, keep):
         i = names.index(t)
         if i + keep >= len(names):
             bad.append(f'{t} said retired with fewer than {keep} names published after it')
-        elif ln['round'] < when[names[i + keep]]:
-            bad.append(f"{t} said retired in round {ln['round']}, before {names[i + keep]} was published "
+        elif ln['round'] <= when[names[i + keep]]:
+            bad.append(f"{t} said retired in round {ln['round']}, not after {names[i + keep]} was published "
                        f'(round {when[names[i + keep]]})')
     return bad
 
 
 def judge_in_round(lines, keep, reported):
-    """-> each name said retired after the round in which the keep-th
-    name after it was published, where no not-retired report named it."""
+    """-> each name said retired later than the round after the one in
+    which the keep-th name after it was published, where no not-retired
+    report named it."""
     names = published_names(lines)
     when = {ln['name']: ln['round'] for ln in named(lines, 'snap')}
     bad = []
@@ -318,7 +341,7 @@ def judge_in_round(lines, keep, reported):
         t = ln['name']
         if t not in when or t in reported or names.index(t) + keep >= len(names):
             continue
-        due = when[names[names.index(t) + keep]]
+        due = when[names[names.index(t) + keep]] + 1
         if ln['round'] > due:
             bad.append(f"{t} said retired in round {ln['round']}, not in round {due}")
     return bad
@@ -453,17 +476,18 @@ def judge_k(c, k, j):
         return
     allowed = [(o[1], o[3]) for o in others]
     judge_common('K', k, j, allowed)
-    want = names[:-2]
+    want = due_retired(k['lines'], 2)
     bad = judge_retired_once(k['lines'], want)
     d = k['dump']
-    if sorted(d['published']) != sorted(names[-2:]) or d['stuck'] or d['abandoned']:
+    if sorted(d['published']) != sorted(set(names) - set(want)) or d['stuck'] or d['abandoned']:
         bad.append(f"the record keeps published {' '.join(d['order']) or 'none'}, stuck "
                    f"{' '.join(d['stuck']) or 'none'}, given up {' '.join(d['abandoned']) or 'none'}")
-    j.holds('pin_K_retired', bad, 'server', f'{len(want)} names retired in order; the newest 2 kept')
-    j.holds('pin_K_keep', judge_keep(k['lines'], 2), 'server', 'no name retired before 2 newer were published')
+    j.holds('pin_K_retired', bad, 'server', f'{len(want)} names retired in order; {len(names) - len(want)} kept')
+    j.holds('pin_K_keep', judge_keep(k['lines'], 2), 'server',
+            'no name retired before the round after 2 newer were published')
     reported = {t for t, _ in k['reports']}
     j.holds('pin_K_retired_in_round', judge_in_round(k['lines'], 2, reported), 'server',
-            'each retired in the round the second name after it was published'
+            'each retired in the round after the one that published the second name after it'
             + (f" (reported: {' '.join(sorted(reported))})" if reported else ''))
     j.holds('pin_K_others_kept', [f'{s} with GUID {g} is not on the pool' + (
         f' (GUID {k["snaps"][s]} there)' if s in k['snaps'] else '') for _, s, _, g in others
@@ -482,8 +506,8 @@ def judge_s(c, k, j):
     names = published_names(k['lines'])
     held, released = c.text('held.rounds').strip(), c.text('released.rounds').strip()
     sbad = [] if held == '1' else [f'the hold placed after {held} round lines, not 1']
-    if not released.isdigit() or int(released) < 3:
-        sbad.append(f'the hold let go after {released or "no"} round lines, not 3 or more')
+    if not released.isdigit() or int(released) < 4:
+        sbad.append(f'the hold let go after {released or "no"} round lines, not 4 or more')
     if len(names) < 2:
         sbad.append(f'{len(names)} names published, not 2 or more')
     if not j.premise('premise_S_held', sbad, f'held after round 1, let go after round {released}'):
@@ -493,7 +517,7 @@ def judge_s(c, k, j):
     sd = read_dump(c.text('stuck-dump.txt'))
     bad = []
     if t1 not in sd['stuck'] or t1 in sd['published']:
-        bad.append(f"after round 3 the record has stuck {' '.join(sd['stuck']) or 'none'}, published "
+        bad.append(f"after round 4 the record has stuck {' '.join(sd['stuck']) or 'none'}, published "
                    f"{' '.join(sd['order']) or 'none'}")
     row = publish_check.read_snap_row(c.text('stuck-row.txt'))
     if row['ref'] is not None or row['row'] is not None:
@@ -563,13 +587,13 @@ def judge_b(c, k, j):
     names = published_names(k['lines'])
     j.holds('pin_B_kept_60', [f"the first run said {ln['name']} retired" for ln in
                               named(k['out']['publish'], 'retired')], 'server', 'nothing retired at --keep 60')
-    j.holds('pin_B_retired', judge_retired_once(k['lines'], names[:-1]), 'server',
-            f'{len(names) - 1} names retired in order, the newest kept')
+    want = due_retired(k['lines'], 1)
+    j.holds('pin_B_retired', judge_retired_once(k['lines'], want), 'server',
+            f'{len(want)} names retired in order, {len(names) - len(want)} kept')
     run2 = k['out'].get('run2', [])
     rounds = [ln['round'] for ln in named(run2, 'round')]
     per = [(r, len([ln for ln in named(run2, 'retired') if ln['round'] == r])) for r in rounds]
-    first = len([ln for ln in named(run2, 'snap') if ln['round'] == 1])
-    due = min(STEPS_MAX, len(n1) + first - 1)
+    due = min(STEPS_MAX, len(n1) - 1)
     bad = [f'round {r} of run2 said {n} retired' for r, n in per if n > STEPS_MAX]
     j.info('obs_B_rounds', 'server', '; '.join(
         f"round {ln['round']}: {dict(per).get(ln['round'], 0)} retired, took_ms={ln['took_ms']}"
@@ -583,10 +607,13 @@ def judge_b(c, k, j):
 
 
 def judge_a_old(c, k, j):
-    ab = named(k['out'].get('publish', []), 'abandoned')
-    if not j.premise('premise_A-old_given_up', [] if ab and ab[0]['round'] == 1 and ab[0]['why'] == 'too-old' else
-                     [f"round 1 did not say abandoned ... too-old: {[(a['name'], a['why'], a['round']) for a in ab]}"],
-                     f"{ab[0]['name'] if ab else ''} given up as too old in round 1"):
+    out = k['out'].get('publish', [])
+    ab = named(out, 'abandoned')
+    r1 = [ln.get('begun') for ln in named(out, 'round') if ln['round'] == 1]
+    if not j.premise('premise_A-old_given_up', [] if ab and r1 and ab[0]['name'] == r1[0] and ab[0]['why'] == 'too-old'
+                     else [f"the first abandoned line is not `abandoned {r1[0] if r1 else '?'} too-old` (round 1's "
+                           f"begun): {[(a['name'], a['why'], a['round']) for a in ab]}"],
+                     f"{ab[0]['name'] if ab else ''} given up as too old in round {ab[0]['round'] if ab else '-'}"):
         return
     judge_common('A-old', k, j)
     t1 = ab[0]['name']
@@ -596,7 +623,7 @@ def judge_a_old(c, k, j):
             [f'the record had {t1} given up why={g.get("why", "-")} left={left or "-"}'], 'server',
             f'{t1} given up why=too-old left={left}')
     r = named(k['lines'], 'retired', t1)
-    bad = [] if len(r) == 1 and r[0]['round'] > 1 else \
+    bad = [] if len(r) == 1 and r[0]['round'] > ab[0]['round'] else \
         [f"`retired {t1}` in rounds {', '.join(str(ln['round']) for ln in r) or 'none'}"]
     bad += [f'forgotten {t1} ({ln["why"]})' for ln in named(k['lines'], 'forgotten', t1)]
     j.holds('pin_A-old_retired', bad, 'server', f"{t1} retired in round {r[0]['round'] if r else '-'}")
