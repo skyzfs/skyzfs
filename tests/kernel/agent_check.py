@@ -334,9 +334,25 @@ def not_reached(kill, rc, err, trace):
     return n > 1 and rc != '137' and not KILL_LINE.findall(err) and reach < n
 
 
-# `synced=K` at the end is #170's (M2.7d): read where it is there.
+# After `under_way`, fields NAME=VALUE that later packages add, read by
+# name and in any order: `synced=K` (#170, M2.7d), and `bound=0|1`
+# (M2.7d-2) after it. Each name once, with a value.
 ROUND_LINE = re.compile(r'round ([1-9][0-9]*) (ok|failed) took_ms=([0-9]+) late_ms=([0-9]+) skipped=([0-9]+) '
-                        r'begun=(\S+) under_way=([0-9]+)(?: synced=([0-9]+))?')
+                        r'begun=(\S+) under_way=([0-9]+)((?: [a-z][a-z_]*=[^ =]+)*)')
+
+
+def round_fields(more, line):
+    """ROUND_LINE's group 8 -> {name: value}; a name twice, or a
+    `synced` that is not a count, is the rig's error."""
+    out = {}
+    for f in more.split():
+        k, _, v = f.partition('=')
+        if k in out:
+            raise RigError(f'a round line with {k}= twice: {line!r}')
+        out[k] = v
+    if 'synced' in out and not out['synced'].isdigit():
+        raise RigError(f'a round line whose synced= is not a count: {line!r}')
+    return out
 
 
 def read_outputs(text):
@@ -344,15 +360,18 @@ def read_outputs(text):
     'unsettled': [t], 'rounds': [round]}: `run`'s round lines are its
     fifth kind, each {'n', 'ok', 'took_ms', 'late_ms', 'skipped',
     'begun' (None for -), 'under_way', 'synced' (None where the line
-    has none)}, in order."""
+    has none)}, in order; other fields after `under_way` are read and
+    left (round_fields)."""
     out = {'published': {}, 'abandoned': {}, 'stopped': {}, 'unsettled': [], 'rounds': []}
     for ln in text.splitlines():
         f = ln.split()
         r = ROUND_LINE.fullmatch(ln)
         if r:
+            more = round_fields(r[8], ln)
             out['rounds'].append({'n': int(r[1]), 'ok': r[2] == 'ok', 'took_ms': int(r[3]), 'late_ms': int(r[4]),
                                   'skipped': int(r[5]), 'begun': None if r[6] == '-' else r[6],
-                                  'under_way': int(r[7]), 'synced': None if r[8] is None else int(r[8])})
+                                  'under_way': int(r[7]),
+                                  'synced': int(more['synced']) if 'synced' in more else None})
         elif len(f) == 2 and f[0].startswith('snap/'):
             out['published'][f[0][len('snap/'):]] = f[1]
         elif len(f) == 3 and f[0] == 'abandoned':

@@ -355,11 +355,20 @@ class Parts(unittest.TestCase):
              'synced': None},
             {'n': 2, 'ok': False, 'took_ms': 7, 'late_ms': 12, 'skipped': 3, 'begun': None, 'under_way': 1,
              'synced': None}])
-        # With #170's synced=K at the end.
-        o = ac.read_outputs('round 3 ok took_ms=5 late_ms=0 skipped=0 begun=r3 under_way=0 synced=2\n')
-        self.assertEqual((o['rounds'][0]['n'], o['rounds'][0]['synced']), (3, 2))
+        # With #170's synced=K, and fields after it (M2.7d-2's bound=),
+        # by name in any order.
+        head = 'round 3 ok took_ms=5 late_ms=0 skipped=0 begun=r3 under_way=0'
+        for more in (' synced=2', ' synced=2 bound=1', ' bound=0 synced=2', ' synced=2 bound=1 next_one=x'):
+            o = ac.read_outputs(head + more + '\n')
+            self.assertEqual((o['rounds'][0]['n'], o['rounds'][0]['synced']), (3, 2), more)
+        self.assertIsNone(ac.read_outputs(head + ' bound=1\n')['rounds'][0]['synced'])
         for bad in ('round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=\n',
-                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=2 more\n','round 0 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=2 more\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=x\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=2 bound=\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=2 synced=3\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0  synced=2\n',
+                    'round 0 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0',
                     'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x',
                     'round 1 done took_ms=1 late_ms=0 skipped=0 begun=x under_way=0'):
             with self.assertRaises(RigError):
