@@ -28,6 +28,9 @@ pub(crate) struct Fake {
     pub(crate) commands: BTreeMap<String, Vec<Given>>,
     pub(crate) files: BTreeMap<PathBuf, Vec<u8>>,
     pub(crate) nodes: BTreeMap<PathBuf, Node>,
+    /// Paths whose read fails with that kind of error (the review of
+    /// #173: an error that is not `NotFound`).
+    pub(crate) read_errors: BTreeMap<PathBuf, io::ErrorKind>,
     pub(crate) ran: Vec<Ran>,
 }
 
@@ -92,6 +95,12 @@ impl Host for Fake {
     }
 
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        if let Some(kind) = self.read_errors.get(path) {
+            return Err(io::Error::new(
+                *kind,
+                format!("{}: refused", path.display()),
+            ));
+        }
         self.files
             .get(path)
             .cloned()

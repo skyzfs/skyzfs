@@ -2982,6 +2982,10 @@ impl Daemon for Blind {
     fn device(&mut self) -> io::Result<u64> {
         self.0.device()
     }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        self.0.failure()
+    }
 }
 
 /// A publish stopped for a person by a `done` that `look` did not see,
@@ -3893,6 +3897,10 @@ impl Daemon for LostAnswer {
     fn device(&mut self) -> io::Result<u64> {
         FakeDaemon(self.world.clone()).device()
     }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        FakeDaemon(self.world.clone()).failure()
+    }
 }
 
 /// An ask sent in this process whose answer is lost (`Err` or
@@ -4001,6 +4009,10 @@ impl Daemon for LoseNth {
 
     fn device(&mut self) -> io::Result<u64> {
         FakeDaemon(self.world.clone()).device()
+    }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        FakeDaemon(self.world.clone()).failure()
     }
 }
 
@@ -4463,6 +4475,14 @@ impl Zfs for ThroughCli {
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.0.assist(pool, value)
     }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
+        self.0.reopen(pool)
+    }
+
+    fn pool_state(&mut self, pool: &str) -> Result<Option<crate::zfs::PoolState>, ZfsError> {
+        self.0.pool_state(pool)
+    }
 }
 
 /// A publish on a pool with a snapshot limit, read through the CLI, with
@@ -4627,6 +4647,14 @@ impl Zfs for DestroyedBetween {
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.zfs.assist(pool, value)
     }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
+        self.zfs.reopen(pool)
+    }
+
+    fn pool_state(&mut self, pool: &str) -> Result<Option<crate::zfs::PoolState>, ZfsError> {
+        self.zfs.pool_state(pool)
+    }
 }
 
 /// A person destroys `pool@t` while its publish is asked, between the
@@ -4707,6 +4735,49 @@ mod past {
         world
     }
 
+    /// News on the failure note stops the syncs before the next sync, as
+    /// an end would (F1 of the review of #173), and the line names it.
+    /// Mutant: the watch not asked before a sync.
+    #[test]
+    fn news_on_the_failure_note_stops_the_syncs() {
+        use skyzfs_control::failure::{Failure, Held, Reason};
+        let keep = MemKeep::default();
+        let world = rewound(5);
+        let mut agent = super::agent(&world, &keep);
+        agent.watch_note(Some(Failed::No));
+        let watched = world.clone();
+        let mut asked = 0u32;
+        let mut go = move || {
+            asked += 1;
+            if asked == 2 {
+                // Before the second sync: the daemon failed a second
+                // ago, while a client held its device.
+                let mut w = watched.borrow_mut();
+                w.noted = Some(Noted::Failed(Failure {
+                    held: Held::Yes,
+                    reason: Reason::ImageFailed,
+                    identity: [7; 16],
+                }));
+                w.advance(Duration::from_secs(1));
+            }
+            true
+        };
+        let past = agent.sync_past(&mut go).expect("the syncs");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 1,
+                    why: Stuck::Noted,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        assert_eq!(syncs(&world), 1);
+        assert_eq!(Stuck::Noted.to_string(), "the volume's failure note came");
+    }
+
     /// The daemon's newest cut: its group, and whether it opens as itself.
     fn newest(world: &Rc<RefCell<World>>) -> Option<(u64, bool)> {
         world
@@ -4764,8 +4835,35 @@ mod past {
         let world = rewound(5);
         world.borrow_mut().away_until = u64::MAX;
         let mut agent = super::agent(&world, &keep);
-        assert_eq!(agent.sync_past(&mut || true).expect("unseen"), Past::Unseen);
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("unseen"),
+            Past::Unseen { synced: 0 }
+        );
         assert_eq!(syncs(&world), 0);
+    }
+
+    /// A daemon that goes away between two syncs ends the syncs as
+    /// `Unseen`, which counts the syncs that returned before it (L3 of
+    /// the review of #172). Mutant: `Unseen` with no count.
+    #[test]
+    fn a_daemon_gone_between_syncs_is_unseen_after_the_syncs_it_saw() {
+        let keep = MemKeep::default();
+        let world = rewound(5);
+        let mut agent = super::agent(&world, &keep);
+        let watched = world.clone();
+        let mut asked = 0u32;
+        let mut go = move || {
+            asked += 1;
+            if asked == 2 {
+                // Before the second sync: the daemon goes away while it
+                // runs.
+                watched.borrow_mut().away_until = u64::MAX;
+            }
+            true
+        };
+        let past = agent.sync_past(&mut go).expect("unseen");
+        assert_eq!(past, Past::Unseen { synced: 2 });
+        assert_eq!(syncs(&world), 2);
     }
 
     /// Where the abandoned groups are more than one ring holds, the

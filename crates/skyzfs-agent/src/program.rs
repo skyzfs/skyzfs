@@ -86,22 +86,27 @@
 //! - `synced`: the syncs the round ran, and that returned, to pass the
 //!   groups of an abandoned history (below); 0 in a round that found
 //!   none.
-//! - `bound`: 1 where the round's syncs had met their bound with the
-//!   daemon's newest cut still behind (below), else 0. Such a round is
-//!   `ok`, and so is every round after it until a cut opens as itself,
-//!   but none of them publishes: a monitor that watches `run` watches
-//!   this field as well as `failed` (the lead's ruling 3 on #170).
+//! - `bound`: 1 where the round found the syncs at their bound with the
+//!   daemon's newest cut still behind (below), else 0. The round whose
+//!   last sync met the bound reads 0 where that sync made no cut (it
+//!   stopped for that), and the rounds after it read 1. Such a round
+//!   begins no publish, and nor does any round after it until a cut
+//!   opens as itself or the daemon holds no cut; each is `ok` unless
+//!   another call of it failed (its settle). A monitor that watches
+//!   `run` watches this field as well as `failed` (the lead's ruling 3
+//!   on #170).
 //! - `ok`: no engine call of the round returned an error. It does not
 //!   say that anything moved: a round that waited on the daemon
 //!   throughout is `ok`.
 //! - `failed`: an engine call of the round failed, the two refusals of
 //!   a begin included (8 under way, the pool's premise); each error is
 //!   on standard error as `skyzfs-agent: round <n>: <error>`, and the
-//!   next tick tries again. After an error that may leave the process
-//!   unlike its record (any but those two refusals), the engine reads
-//!   the record again, as a new process would: at once after a begin's
-//!   error, before the round settles; at the next round after a
-//!   settle's error. A reading that fails is tried again at the next
+//!   next tick tries again. A sync after a rewind import that fails
+//!   fails its round too (below). After an error that may leave the
+//!   process unlike its record (any but those two refusals), the engine
+//!   reads the record again, as a new process would: at once after an
+//!   error of the syncs or of a begin, before the round settles; at the
+//!   next round after a settle's error. A reading that fails is tried again at the next
 //!   round, which begins and settles nothing until it succeeds: its
 //!   `begun=-` then says that no begin ran, and its `under_way` is the
 //!   count the process had before. So `begun=-` can also follow a
@@ -159,6 +164,104 @@
 //!   where every sync fails, only the tick limits them, one a round, each
 //!   round `failed` with the error.
 //!
+//! **A volume that failed in this boot** (M2.7c; [`crate::engine::Failed`]).
+//! Each round first reads the volume's failure note, which a daemon
+//! leaves beside its socket when its volume fails or a start refuses it.
+//! - **No note of this boot**: the round goes on.
+//! - **The note says no client held the device**: the round says so on
+//!   standard error, touches no pool (no sync, begin or settle: Codex's P2
+//!   on #173), is not failed, and `run` goes on at its ticks. A start with
+//!   `--acknowledge-failure` serves the volume afresh and removes the
+//!   note; the next round then reads none, and `run` ends with 12
+//!   (below).
+//! - **The note says a client held it, or may have, or the note is torn**
+//!   (a file there that is not a whole note, which the daemon's start
+//!   counts as held too): the volume is lost for this boot, and so is a
+//!   pool on it. A pool that only writes never suspends by itself, so
+//!   the round makes the agent's pool read ([`Agent::lose`]): `zpool
+//!   reopen` within 10 s, then a look at the pool's state every 250 ms
+//!   for at most 10 s, until it reads SUSPENDED. **The look, not the
+//!   reopen's status, is the signal**: the reopen returns with status 0
+//!   before the pool suspends, and is refused where zed suspended it
+//!   first; its error is on standard error and changes nothing. No
+//!   reopen is made of a pool that is not imported or reads SUSPENDED
+//!   already. The round begins and settles nothing, prints
+//!
+//!   ```text
+//!   lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
+//!     step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-|unread>
+//!     looked_ms=<ms|-> verdict=lost|failed|retry
+//!   ```
+//!
+//!   on one line ([`lost_line`]), then its round line. A torn note reads
+//!   `note=torn reason=- held=yes`. `state` is the pool's state at the
+//!   last look, `-` where it is not imported, and `unread` where a look
+//!   after the reopen failed (its error on standard error; the reopen's
+//!   outcome is still said). What follows is the `verdict` (the lead's
+//!   rulings on F2 and F4 of the review of #173):
+//!   - `lost`: the pool reads SUSPENDED. `run` ends with 11
+//!     ([`exit::LOST`]). A service manager must not start it again on
+//!     11: the volume is not served again before a reboot, and a `run`
+//!     started again on the same note finds the pool suspended, makes no
+//!     second reopen, and ends with 11 again.
+//!   - `failed`: the pool is not imported, before the reopen or after
+//!     it, whatever the note says it held: nothing is suspended, and
+//!     nothing can be. The round says the volume failed on standard
+//!     error, as for a note that no client held, is not failed, and
+//!     `run` goes on; a later start of the daemon may serve the volume.
+//!   - `retry`: the step showed neither. The pool's state could not be
+//!     read (`step=failed`, or `state=unread`), or the pool did not read
+//!     SUSPENDED at the last look (the reopen refused or not). The round
+//!     is failed, and the next round takes the step again.
+//!
+//!   A round that reads such a note touches nothing but the step, whatever
+//!   its verdict: no sync, no begin and no settle of what is under way,
+//!   which stays in the record. That is this program's reading (the
+//!   rulings say what the verdicts end in, not what else the round does):
+//!   a pool whose volume is gone is given no more ZFS calls than the step
+//!   needs.
+//!
+//! - **A note that cannot be read** (an error other than its absence,
+//!   or a boot id that cannot be read): the round says the error, is
+//!   failed, and touches nothing; the next round reads it again. The note
+//!   may be a lost volume's, so no publish is begun beside it, as
+//!   `publish` refuses with 1.
+//!
+//! **The note is watched between rounds** (F1 of the review of #173; the
+//! lead's ruling). A pool that only writes goes on acknowledging
+//! synchronous writes into a lost device, so the exposure grows with each
+//! second until the step. While a round's engine works, and while `run`
+//! waits for the next tick, the note is read about every second
+//! ([`crate::engine::NOTE_EVERY`]; [`Agent::watch_note`]); a read is of a
+//! small file and makes no I/O on the pool. A note that makes the volume
+//! lost, and is not the one the round read at its start, stops the engine
+//! where it asks whether to go on (before a sync after a rewind import,
+//! before a begin after syncs, before each pass of the settle) and ends
+//! the wait: the round's line follows, and the next round begins at once,
+//! early for its tick, and takes the step. Rounds stay `--every-s` apart
+//! otherwise. A step of the engine under way is not cut, so the note is
+//! seen after at most about a second plus that step.
+//!
+//! `publish` and `settle` read the note too, before anything else, and
+//! touch no pool: a lost volume is refused with 11, one that failed with
+//! no client holding its device with 1 (its daemon is gone), with words
+//! on standard error. They do not look at the pool, so they refuse a
+//! lost note whether or not its pool is imported. `recover` and `record`
+//! do not read it.
+//!
+//! **A new device, or a new attachment** (the lead's D4 on #167). `run`
+//! ends with 12 ([`exit::MOVED`]) after the round line of the round in
+//! which it saw the daemon's attachment change (a new attach of the
+//! volume's device, at each `cuts`; a take-over keeps it), or the
+//! volume's device number change (at each check of the pool's premise),
+//! from what it first saw in this process, with the change on standard
+//! error. A service manager starts it again, with `--device` as the
+//! device now is: the engine reads both afresh at its start.
+//!
+//! The codes 11 and 12 are the agent's. `skyzfsd` has codes 9 and 10 of
+//! its own, with other meanings for a service manager, so the agent uses
+//! none of them (the lead's ruling on F5 of the review of #173).
+//!
 //! `publish` does not sync before its begin: a publish asked while the
 //! pool is below the abandoned groups pends, and the planner's own syncs
 //! carry it (the case M2's criterion tests).
@@ -179,14 +282,21 @@
 //! while the engine works ends `run` once its step is done (a sync after
 //! a rewind import, a begin, or a pass over the publishes under way),
 //! before the count and the sweep that would open the next, and before
-//! the next sync or a begin after syncs: a ZFS call is not cut, and the step's other
-//! calls run first, each within its own time limit. A second signal ends
+//! the next sync or a begin after syncs: a ZFS call is not cut, and the
+//! step's other calls run first, each within its own time limit. Two
+//! windows count as part of the step that follows them: a signal during
+//! the round's first reading of `cuts`, where it finds no cut behind,
+//! lets the begin run; one during the premise's reading before the
+//! first sync lets that sync run. A second signal ends
 //! it at once with 1. It ends with 6 after the round line of a round that
 //! met a record that is corrupt or another volume's, or holds it would
 //! release with no agent's marker: a person judges those. It ends with
 //! 1 or 8 where it cannot start (the record unread, or the directory
 //! held), and with 6 where the record it starts on is one a person
-//! judges. `recover` of a volume whose `run` holds its directory exits 8:
+//! judges. It ends with 11 after the round that showed a lost volume's
+//! pool suspended, and with 12 after
+//! the round that saw its device or the daemon's attachment change
+//! (above). `recover` of a volume whose `run` holds its directory exits 8:
 //! a person stops `run`, recovers, and starts it again.
 //!
 //! # What it prints
@@ -213,7 +323,9 @@
 //! failed on another, prints its `snap/` line and exits 1. 5 comes only
 //! from `publish`, where the pool's premise refuses the publish it
 //! begins; a publish under way whose premise is refused later is given
-//! up (`abandoned <t> premise`, 3), under any command.
+//! up (`abandoned <t> premise`, 3), under any command. 11 and 12 are
+//! `run`'s ends above; `publish` and `settle` also refuse a lost volume
+//! with 11 ([`exit`]).
 //!
 //! `record` of a directory with no record prints `absent` and exits 0;
 //! of a path that is not a directory it exits 1.
@@ -254,7 +366,8 @@ use std::time::Duration;
 use skyzfs_control::{hex, EXPIRY_MAX};
 
 use crate::engine::{
-    Agent, Choice, Clock, Daemon, Effect, Error, Outcome, Past, Point, Points, Stuck,
+    Agent, Choice, Clock, Daemon, Effect, Error, Failed, Note, Outcome, Past, Point, Points, Step,
+    Stuck, Verdict,
 };
 use crate::plan::Report;
 use crate::record::{Keep, Loaded, Person, Phase, Why};
@@ -299,6 +412,19 @@ pub mod exit {
     pub const UNSETTLED: i32 = 7;
     /// Another agent holds the record's directory.
     pub const HELD: i32 = 8;
+    /// The volume is lost for this boot: its daemon failed, or refused
+    /// it, while a client held its device, and `run` shows the pool
+    /// SUSPENDED (`lost` line, `verdict=lost`). Not to be started again
+    /// before a reboot: a restart on the same note ends with 11 again,
+    /// with no second reopen. `publish` and `settle` refuse with it
+    /// where the note is there. 11 and not 9: `skyzfsd`'s exit codes 9
+    /// and 10 are another program's, with other meanings (the lead's
+    /// ruling on F5 of the review of #173).
+    pub const LOST: i32 = 11;
+    /// `run` saw the daemon's attachment or the volume's device change:
+    /// to be started again, on the device as it is now (the lead's D4
+    /// on #167). 12 and not 10, as for [`LOST`].
+    pub const MOVED: i32 = 12;
 }
 
 /// What the program is asked to do.
@@ -415,7 +541,11 @@ exit: 0 published, 1 error, 2 usage, 3 abandoned, 4 stopped for a person,
       or no agent's marker where holds would be released,
       7 unsettled at the limit, 8 another agent holds the record;
       run: 0 told to end (SIGTERM, SIGINT), 6 as above, 1 another error
-      at its start, 8 as above";
+      at its start, 8 as above, 11 the volume lost and its pool shown
+      suspended (not to be started again before a reboot), 12 the device
+      or the daemon's attachment changed (to be started again);
+      publish, settle: 11 the volume lost (the agent's 11 and 12 are not
+      skyzfsd's codes)";
 
 /// Parse the arguments after the program's name. `hooks` says whether
 /// the build takes the test hooks.
@@ -857,6 +987,11 @@ pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    if matches!(task, Task::Publish | Task::Settle) {
+        if let Some(code) = refused_failed(agent, err) {
+            return code;
+        }
+    }
     let mine = match task {
         Task::Publish => match agent.begin() {
             Ok(name) => Some(name),
@@ -896,6 +1031,146 @@ pub fn execute<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         }
         None => worst(agent.outcomes(), !unsettled.is_empty()),
     }
+}
+
+/// Whether `publish` or `settle` refuses for the volume's failure note
+/// of this boot, and with what code, the words on `err`: [`exit::LOST`]
+/// where the volume is lost, [`exit::ERROR`] where it failed with no
+/// client holding its device, and the note's error where it cannot be
+/// read. Neither touches the pool: only `run` does (the lead's answer
+/// to Q5 of the plan of M2.7c). A daemon whose volume failed is gone, so
+/// neither could publish; a start that acknowledges a failure no client
+/// held removes the note.
+fn refused_failed<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
+    agent: &mut Agent<Z, D, K, C>,
+    err: &mut dyn Write,
+) -> Option<i32> {
+    match agent.failure() {
+        Ok(Failed::No) => None,
+        Ok(Failed::Unheld(failure)) => {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: the volume failed in this boot ({}), and no client held its \
+                 device: nothing is published; a start of the daemon with \
+                 --acknowledge-failure serves it afresh",
+                failure.reason
+            );
+            Some(exit::ERROR)
+        }
+        Ok(Failed::Lost(note)) => {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: the volume is lost for this boot (note={} reason={} held={}): \
+                 nothing is published; `run` makes its pool read",
+                note_word(&note),
+                note.reason_word(),
+                note.held_word()
+            );
+            Some(exit::LOST)
+        }
+        Err(e) => Some(failed(&e, err)),
+    }
+}
+
+/// `whole` or `torn`.
+fn note_word(note: &Note) -> &'static str {
+    match note {
+        Note::Whole(_) => "whole",
+        Note::Torn => "torn",
+    }
+}
+
+/// Say on `err` what the round's step on a lost note showed, where it
+/// is not the volume lost: the error of the reopen, and what the round
+/// does next (the lead's rulings on F2 and F4 of the review of #173).
+fn lost_said(n: u64, note: &Note, step: Option<&Step>, verdict: Verdict, err: &mut dyn Write) {
+    if let Some(Step::Reopened {
+        error: Some(why), ..
+    }) = step
+    {
+        let _ = writeln!(
+            err,
+            "skyzfs-agent: round {n}: the reopen: {why} (the pool's state, not the command, \
+             says what it did)"
+        );
+    }
+    if let Some(Step::Reopened {
+        unread: Some(why), ..
+    }) = step
+    {
+        let _ = writeln!(
+            err,
+            "skyzfs-agent: round {n}: the look at the pool's state after the reopen: {why}"
+        );
+    }
+    match verdict {
+        Verdict::Lost => {}
+        Verdict::Failed => {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: round {n}: the volume failed in this boot (note={} reason={} \
+                 held={}), and the pool is not imported: nothing is suspended; run goes on",
+                note_word(note),
+                note.reason_word(),
+                note.held_word()
+            );
+        }
+        Verdict::Retry => {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: round {n}: the volume is lost for this boot (note={} reason={} \
+                 held={}), and the pool was not shown suspended: the next round tries again",
+                note_word(note),
+                note.reason_word(),
+                note.held_word()
+            );
+        }
+    }
+}
+
+/// The line of standard output for a volume lost in this boot, before
+/// the round line of the round that found it ([module docs](self),
+/// "`run`"):
+///
+/// ```text
+/// lost <pool> volume=<hex> note=whole|torn reason=<word|-> held=yes|unknown
+///   step=not-imported|suspended|reopened|failed reopen=ok|failed|- state=<STATE|-|unread>
+///   looked_ms=<ms|-> verdict=lost|failed|retry
+/// ```
+///
+/// on one line. `step` is `None` where the step failed before the
+/// reopen (its error is on standard error). `state=unread` where a look
+/// after the reopen failed; `verdict` is [`Step::verdict`].
+pub fn lost_line(pool: &str, volume: &[u8; 16], note: &Note, step: Option<&Step>) -> String {
+    let verdict = Step::verdict(step).word();
+    let (word, reopen, state, looked) = match step {
+        None => ("failed", "-", "-".to_string(), "-".to_string()),
+        Some(Step::Reopened {
+            error,
+            state,
+            unread,
+            looked_ms,
+        }) => (
+            "reopened",
+            if error.is_some() { "failed" } else { "ok" },
+            if unread.is_some() {
+                "unread".to_string()
+            } else {
+                state.as_ref().map_or("-".to_string(), ToString::to_string)
+            },
+            looked_ms.to_string(),
+        ),
+        Some(Step::Suspended) => ("suspended", "-", "SUSPENDED".to_string(), "-".to_string()),
+        Some(step) => (step.word(), "-", "-".to_string(), "-".to_string()),
+    };
+    format!(
+        "lost {pool} volume={} note={} reason={} held={} step={word} reopen={reopen} \
+         state={state} looked_ms={looked} verdict={verdict}\n",
+        hex(volume),
+        note_word(note),
+        note.reason_word(),
+        note.held_word(),
+    )
 }
 
 /// Say `e` on `err`; its exit code.
@@ -953,10 +1228,10 @@ fn ends_run(e: &Error) -> bool {
 /// Whether `run` starts the engine again after `e` ([`Agent::restart`]):
 /// at once after an error of the syncs after a rewind import or of a
 /// begin, before the round settles, and at the next round after a
-/// settle's error ([`schedule`]); after any error but
-/// the two refusals that [`Agent::begin`] makes before it changes
-/// anything, 8 publishes under way ([`Error::Full`]) and the pool's
-/// premise ([`Error::Premise`]).
+/// settle's error ([`schedule`]); after any error but the two refusals
+/// that [`Agent::begin`] makes before it changes anything, 8 publishes
+/// under way ([`Error::Full`]) and the pool's premise
+/// ([`Error::Premise`]).
 /// Before this package an engine call that failed ended the program,
 /// and the next one started from the record; within one process the
 /// engine goes on from such an error only by the same way, so that no
@@ -1025,9 +1300,9 @@ pub fn round_line(round: &Round) -> String {
 /// a publish ([`Agent::begin`]) where that left nothing behind, then
 /// settles every publish under way ([`Agent::settle_while`]) until the
 /// next tick, and at least one round of the engine: what is still under
-/// way then is settled by the rounds after. A begin that fails (8 under way, the
-/// pool's premise refused, no cuts from the daemon, ZFS) does not keep
-/// the round from settling. The round's line follows on `out`
+/// way then is settled by the rounds after. A begin that fails (8 under
+/// way, the pool's premise refused, no cuts from the daemon, ZFS) does
+/// not keep the round from settling. The round's line follows on `out`
 /// ([`round_line`]), each error of the round on `err`.
 ///
 /// - **No overlap.** A round that runs past the next tick is not cut
@@ -1050,6 +1325,13 @@ pub fn round_line(round: &Round) -> String {
 ///   within it, and every [`WAKE`] while it waits for a tick; it
 ///   ends `run` with [`exit::PUBLISHED`], with what is under way left in
 ///   the record for the next start.
+/// - **The failure note** is read at each round's start; a note that
+///   makes the volume lost has the round take the step and nothing else
+///   ([module docs](self), "A volume that failed in this boot"). Between
+///   round starts it is watched ([`Agent::watch_note`]): where an end is
+///   asked of `go` within the engine, and every [`WAKE`] while it waits,
+///   at most once a second. News ends the round there and begins the
+///   next at once.
 /// - **What it keeps** of the publishes that left the record is
 ///   forgotten after each round ([`Agent::forget`]), once their lines
 ///   are out.
@@ -1075,85 +1357,156 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         let mut ended = None;
         let mut synced = 0;
         let mut bound = false;
-        if restart {
-            match agent.restart() {
-                Ok(()) => restart = false,
-                Err(e) => failed.push(e),
+        // The volume's failure note of this boot (M2.7c), before anything
+        // else of the round. One that failed with no client holding its
+        // device is said, and the round touches nothing else (its daemon
+        // is gone, and a start that acknowledges the failure serves it
+        // afresh and removes the note). A
+        // note that makes the volume lost: the round takes the step on
+        // the pool and nothing else, and its verdict says what follows
+        // (F2 and F4 of the review of #173): its `lost` line, then its
+        // round line.
+        let mut lost = None;
+        let read = agent.failure();
+        match &read {
+            Ok(Failed::No) => {}
+            Ok(Failed::Unheld(failure)) => {
+                let _ = writeln!(
+                    err,
+                    "skyzfs-agent: round {n}: the volume failed in this boot ({}), and no \
+                     client held its device: no pool is touched; a start of the daemon with \
+                     --acknowledge-failure serves it afresh",
+                    failure.reason
+                );
             }
+            Ok(Failed::Lost(note)) => {
+                let step = match agent.lose() {
+                    Ok(step) => Some(step),
+                    Err(e) => {
+                        failed.push(e);
+                        None
+                    }
+                };
+                let verdict = Step::verdict(step.as_ref());
+                lost_said(n, note, step.as_ref(), verdict, err);
+                lost = Some((
+                    lost_line(agent.pool(), &agent.volume(), note, step.as_ref()),
+                    verdict,
+                ));
+            }
+            Err(_) => {}
         }
-        // The pool synced past the groups of a history a rewind import
-        // abandoned (M2.7d), and nothing begun while the daemon's newest
-        // cut still does not open as itself: no cut could carry it.
-        let mut clear = false;
-        if !restart {
-            match agent.sync_past(go) {
-                Ok(Past::Clear { synced: k }) => {
-                    // An end asked during the syncs begins nothing: the
-                    // begin would be a new step after it (Astra's P2 on
-                    // #170). The settle below then ends at once.
-                    synced = k;
-                    clear = k == 0 || go();
+        let lost_verdict = lost.as_ref().map(|(_, verdict)| *verdict);
+        // The watch on the note while the engine works and while `run`
+        // waits (F1 of the review of #173): news is a lost note other
+        // than this one.
+        agent.watch_note(read.as_ref().ok().copied());
+        // A note that cannot be read may be a lost volume's: the round
+        // fails and touches nothing, as `publish` refuses (a nit of the
+        // review of #173). The next round reads it again.
+        let unread = read.is_err();
+        let unheld = matches!(read, Ok(Failed::Unheld(_)));
+        if let Err(e) = read {
+            failed.push(e);
+        }
+        // The step's round touches nothing else, and nor does a round on a
+        // volume that failed with no client: no pool is touched there (the
+        // lead's answer to Q2; Codex's P2 on #173). Its next round reads the
+        // note again, which a start with `--acknowledge-failure` removes.
+        if lost.is_none() && !unread && !unheld {
+            if restart {
+                match agent.restart() {
+                    Ok(()) => restart = false,
+                    Err(e) => failed.push(e),
                 }
-                Ok(Past::Unseen) => clear = true,
-                Ok(Past::Behind {
-                    synced: k,
-                    group,
-                    why,
-                }) => {
-                    synced = k;
-                    bound = why == Stuck::Bound;
-                    let _ = writeln!(
-                        err,
-                        "skyzfs-agent: round {n}: no publish begun: the newest cut, of group \
+            }
+            // The pool synced past the groups of a history a rewind import
+            // abandoned (M2.7d), and nothing begun while the daemon's newest
+            // cut still does not open as itself: no cut could carry it.
+            let mut clear = false;
+            if !restart {
+                match agent.sync_past(go) {
+                    Ok(Past::Clear { synced: k }) => {
+                        // An end asked during the syncs begins nothing: the
+                        // begin would be a new step after it (Astra's P2 on
+                        // #170). The settle below then ends at once.
+                        synced = k;
+                        clear = k == 0 || go();
+                    }
+                    Ok(Past::Unseen { synced: k }) => {
+                        // The daemon went unread, perhaps after syncs that
+                        // returned (L3 of the review of #172): the line
+                        // counts them, and an end asked during the last
+                        // begins nothing, as above. A round that synced
+                        // nothing begins, and its begin says what is wrong.
+                        synced = k;
+                        clear = k == 0 || go();
+                    }
+                    Ok(Past::Behind {
+                        synced: k,
+                        group,
+                        why,
+                    }) => {
+                        synced = k;
+                        bound = why == Stuck::Bound;
+                        let _ = writeln!(
+                            err,
+                            "skyzfs-agent: round {n}: no publish begun: the newest cut, of group \
                          {group}, does not open as itself: {why}"
-                    );
-                }
-                Err(e) => {
-                    synced = agent.last_synced();
-                    // As a begin's error ([`restarts`]); the syncs change
-                    // nothing that the engine saves, so a restart only
-                    // costs a reading of the record.
-                    let reload = restarts(&e);
-                    failed.push(e);
-                    if reload {
-                        if let Err(again) = agent.restart() {
-                            failed.push(again);
-                            restart = true;
+                        );
+                    }
+                    Err(e) => {
+                        synced = agent.last_synced();
+                        // As a begin's error ([`restarts`]); the syncs change
+                        // nothing that the engine saves, so a restart only
+                        // costs a reading of the record.
+                        let reload = restarts(&e);
+                        failed.push(e);
+                        if reload {
+                            if let Err(again) = agent.restart() {
+                                failed.push(again);
+                                restart = true;
+                            }
                         }
                     }
                 }
             }
-        }
-        if !restart && clear {
-            match agent.begin() {
-                Ok(name) => begun = Some(name),
-                Err(e) => {
-                    // A begin that may have left the engine unlike what it
-                    // saved (a save whose rename landed) restarts at once,
-                    // before the engine settles anything: a save of the
-                    // publishes under way from its own copy would write the
-                    // new intent out of the record (P2 of Codex on #167).
-                    // A refusal (`Full`, `Premise`) changed nothing.
-                    let reload = restarts(&e);
-                    failed.push(e);
-                    if reload {
-                        if let Err(again) = agent.restart() {
-                            failed.push(again);
-                            restart = true;
+            // The watch asked once more before a begin: `sync_past` can
+            // return after a sync or an unanswered `cuts` with no look at
+            // the note, and a begin's count, sweep and reads would delay
+            // the step (Codex's P1 on #173). News leaves the settle below
+            // to end at once, and the next round begins with the step.
+            if !restart && clear && !agent.note_came() {
+                match agent.begin() {
+                    Ok(name) => begun = Some(name),
+                    Err(e) => {
+                        // A begin that may have left the engine unlike what it
+                        // saved (a save whose rename landed) restarts at once,
+                        // before the engine settles anything: a save of the
+                        // publishes under way from its own copy would write the
+                        // new intent out of the record (P2 of Codex on #167).
+                        // A refusal (`Full`, `Premise`) changed nothing.
+                        let reload = restarts(&e);
+                        failed.push(e);
+                        if reload {
+                            if let Err(again) = agent.restart() {
+                                failed.push(again);
+                                restart = true;
+                            }
                         }
                     }
                 }
             }
-        }
-        if !restart {
-            let next = due.saturating_add(every_ms);
-            let left = next.saturating_sub(agent.clock().mono_ms());
-            let limit = Duration::from_millis(left).max(crate::engine::TICK);
-            match agent.settle_while(limit, go) {
-                Ok(()) | Err(Error::Unsettled(_)) => {}
-                Err(e) => {
-                    restart = restarts(&e);
-                    failed.push(e);
+            if !restart {
+                let next = due.saturating_add(every_ms);
+                let left = next.saturating_sub(agent.clock().mono_ms());
+                let limit = Duration::from_millis(left).max(crate::engine::TICK);
+                match agent.settle_while(limit, go) {
+                    Ok(()) | Err(Error::Unsettled(_)) => {}
+                    Err(e) => {
+                        restart = restarts(&e);
+                        failed.push(e);
+                    }
                 }
             }
         }
@@ -1167,7 +1520,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         let passed = now.saturating_sub(due) / every_ms;
         let round = Round {
             n,
-            failed: !failed.is_empty(),
+            failed: !failed.is_empty() || lost_verdict == Some(Verdict::Retry),
             late_ms: began.saturating_sub(due),
             took_ms: now.saturating_sub(began),
             skipped: passed.saturating_sub(1),
@@ -1176,15 +1529,31 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             synced,
             bound,
         };
+        if let Some((line, _)) = &lost {
+            let _ = out.write_all(line.as_bytes());
+        }
         let _ = out.write_all(round_line(&round).as_bytes());
         let _ = out.flush();
+        if lost_verdict == Some(Verdict::Lost) {
+            return exit::LOST;
+        }
         if let Some(code) = ended {
             return code;
+        }
+        if let Some(why) = agent.moved() {
+            let _ = writeln!(
+                err,
+                "skyzfs-agent: round {n}: {why}: run ends, to be started again on the device \
+                 as it is now"
+            );
+            return exit::MOVED;
         }
         agent.forget();
         tick = tick.saturating_add(passed.max(1));
         let due = start.saturating_add(tick.saturating_mul(every_ms));
-        while agent.clock().mono_ms() < due {
+        // News on the note begins the next round at once, early for its
+        // tick: the tick after it is the next one due.
+        while agent.clock().mono_ms() < due && !agent.note_came() {
             if !go() {
                 return exit::PUBLISHED;
             }

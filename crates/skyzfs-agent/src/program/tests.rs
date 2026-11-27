@@ -11,6 +11,7 @@ use super::*;
 use crate::engine::fake::{
     Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, User, World, POOL, VOLUME,
 };
+use crate::engine::Noted;
 use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Record, Taken};
 
 fn args(line: &str) -> Vec<String> {
@@ -678,6 +679,10 @@ impl Daemon for Blind {
     fn device(&mut self) -> io::Result<u64> {
         self.0.device()
     }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        self.0.failure()
+    }
 }
 
 fn agent_on<D: Daemon>(
@@ -1118,6 +1123,9 @@ impl Daemon for Slow {
     fn device(&mut self) -> io::Result<u64> {
         self.daemon.device()
     }
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        self.daemon.failure()
+    }
 }
 
 /// A round that runs past the next ticks: the next round begins as it
@@ -1368,6 +1376,17 @@ impl crate::zfs::Zfs for SlowCount {
     }
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), crate::zfs::ZfsError> {
         self.zfs.assist(pool, value)
+    }
+
+    fn reopen(&mut self, pool: &str) -> Result<(), crate::zfs::ZfsError> {
+        self.zfs.reopen(pool)
+    }
+
+    fn pool_state(
+        &mut self,
+        pool: &str,
+    ) -> Result<Option<crate::zfs::PoolState>, crate::zfs::ZfsError> {
+        self.zfs.pool_state(pool)
     }
 }
 
@@ -2029,6 +2048,149 @@ fn an_outcome_is_out_before_the_record_forgets_it() {
 /// that fails; and one that finds a record a person must judge. These
 /// came from the review of #167 (its RC, RF, RI and RJ), which found
 /// that no test held them.
+/// The daemon unread after two syncs that returned, and an end asked
+/// during the second (L3 of the review of #172, its tests S1 and S1b):
+/// the round line counts both syncs, and nothing of a begin runs after
+/// the end was asked. Mutants: `Unseen` taken as a round with no syncs;
+/// a begin with no `go` asked after it.
+#[test]
+fn a_round_whose_daemon_went_away_after_syncs_counts_them_and_begins_nothing_after_an_end() {
+    let world = rewound_t(10);
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let watched = world.clone();
+    let mut asked = 0u32;
+    let ended_at = Rc::new(RefCell::new(None));
+    let at = ended_at.clone();
+    let mut go = move || {
+        asked += 1;
+        if asked == 3 {
+            // Asked before the second sync: the daemon goes away while
+            // it runs, and an end is asked during it.
+            watched.borrow_mut().away_until = u64::MAX;
+            *at.borrow_mut() = Some(watched.borrow().calls.len());
+            return true;
+        }
+        asked < 3
+    };
+    let (_code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+    let rounds = rounds(&out);
+    assert_eq!(world.borrow().synced_at.len(), 2, "{out}{err}");
+    assert_eq!(rounds.len(), 1, "{out}{err}");
+    assert_eq!(field(rounds[0], "synced"), "2", "{out}{err}");
+    assert_eq!(field(rounds[0], "begun"), "-", "{out}{err}");
+    let from = (*ended_at.borrow()).expect("asked three times");
+    let calls = world.borrow().calls.clone();
+    let after = &calls[from..];
+    // The second sync's own calls are allowed; a begin's count or sweep
+    // is not.
+    assert!(
+        !after.contains(&"count") && !after.contains(&"tagged"),
+        "calls after the end was asked: {after:?}"
+    );
+}
+
+/// A round stopped by an end before its first sync is not at the bound
+/// (the review of #172, S2). Mutant: `bound=1` for `Stuck::Told`.
+#[test]
+fn a_round_stopped_by_an_end_is_not_at_the_bound() {
+    let world = rewound_t(5);
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let mut asked = 0u32;
+    let mut go = move || {
+        asked += 1;
+        asked < 2
+    };
+    let (_code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 1, "{out}{err}");
+    assert!(err.contains("an end was asked for"), "{err}");
+    assert_eq!(field(rounds[0], "synced"), "0", "{out}");
+    assert_eq!(field(rounds[0], "bound"), "0", "{out}");
+}
+
+/// A round whose sync failed is not at the bound (the review of #172,
+/// S3). Mutant: `bound=1` for a failed sync.
+#[test]
+fn a_round_whose_sync_failed_is_not_at_the_bound() {
+    let world = rewound_t(5);
+    world.borrow_mut().assist_fails = 1;
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let mut asked = 0u32;
+    let mut go = move || {
+        asked += 1;
+        asked <= 2
+    };
+    let (_code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+    let rounds = rounds(&out);
+    assert!(rounds[0].starts_with("round 1 failed "), "{out}{err}");
+    assert_eq!(field(rounds[0], "bound"), "0", "{out}");
+}
+
+/// A round after one at the bound, where the daemon then holds no cut,
+/// is not at the bound (the review of #172, S4). Mutant: `bound` kept
+/// from the round before.
+#[test]
+fn a_round_after_the_bound_that_finds_nothing_behind_is_not_at_it() {
+    let world = rewound_t(10_000);
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let watched = world.clone();
+    let mut cleared = false;
+    let mut go = move || {
+        let now = mono(&watched);
+        if !cleared && now >= start + 60_000 {
+            cleared = true;
+            watched.borrow_mut().daemon.cuts.clear();
+        }
+        now < start + 90_000
+    };
+    let (_code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 2, "{out}{err}");
+    assert_eq!(field(rounds[0], "bound"), "1", "{out}");
+    assert_eq!(field(rounds[1], "bound"), "0", "{out}{err}");
+}
+
+/// A round whose premise is refused before any sync, after a round
+/// whose sync failed after two returned, says `synced=0`: the count is
+/// the round's, not the round before's (the review of #172, S5).
+/// Mutant: `last_synced` reset only where the syncs clear.
+#[test]
+fn a_refusal_after_a_failed_sync_counts_no_syncs() {
+    let world = rewound_t(10);
+    {
+        let mut world = world.borrow_mut();
+        world.assist_fails = 1;
+        world.assist_fails_after = 2;
+    }
+    let keep = MemKeep::default();
+    let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+    let start = mono(&world);
+    let watched = world.clone();
+    let mut attached = false;
+    let mut go = move || {
+        let now = mono(&watched);
+        if !attached && now >= start + 60_000 {
+            attached = true;
+            watched.borrow_mut().user(User::Attach, "");
+        }
+        now < start + 90_000
+    };
+    let (_code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+    let rounds = rounds(&out);
+    assert_eq!(rounds.len(), 2, "{out}{err}");
+    assert!(rounds[0].starts_with("round 1 failed "), "{out}{err}");
+    assert_eq!(field(rounds[0], "synced"), "2", "{out}");
+    assert!(rounds[1].starts_with("round 2 failed "), "{out}{err}");
+    assert!(err.contains("round 2: "), "{err}");
+    assert_eq!(field(rounds[1], "synced"), "0", "{out}{err}");
+    assert_eq!(world.borrow().synced_at.len(), 2, "{out}");
+}
+
 mod restarts {
     use std::cell::Cell;
     use std::collections::BTreeSet;
@@ -2373,5 +2535,571 @@ mod restarts {
         assert!(rounds[1].starts_with("round 2 failed "), "{out}");
         assert_eq!(field(rounds[1], "begun"), "-", "{out}");
         assert!(err.contains("round 2: the record's directory: "), "{err}");
+    }
+}
+
+/// A volume that failed in this boot (M2.7c), and the end of `run` when
+/// its device or the daemon's attachment changes (the lead's D4 on
+/// #167).
+mod failed_volume {
+    use skyzfs_control::failure::{Failure, Held, Reason};
+
+    use super::*;
+    use crate::engine::fake::Restart;
+
+    fn noted(held: Held) -> Noted {
+        Noted::Failed(Failure {
+            held,
+            reason: Reason::ImageFailed,
+            identity: [7; 16],
+        })
+    }
+
+    fn lost_world(noted: Noted) -> Rc<RefCell<World>> {
+        let world = World::new(Mode::Busy);
+        {
+            let mut w = world.borrow_mut();
+            w.noted = Some(noted);
+            w.suspends_after_ms = Some(1_050);
+        }
+        world
+    }
+
+    fn run(world: &Rc<RefCell<World>>) -> (i32, String, String) {
+        let keep = MemKeep::default();
+        let mut agent = agent_on(world, FakeDaemon(world.clone()), &keep);
+        let start = mono(world);
+        scheduled(
+            &mut agent,
+            Duration::from_secs(60),
+            &mut until(world, start + 600_000),
+        )
+    }
+
+    /// `run` on a volume lost in this boot makes the pool read, says so
+    /// on a `lost` line, then the round line, and ends with 11 once the
+    /// pool reads SUSPENDED; it begins nothing (the lead's answers to Q3
+    /// and Q4). Mutants: no reopen; the code of an end; the round line
+    /// left out; the lost line after the round line; a begin before the
+    /// step; the round line's count of what is under way taken before
+    /// the step (A-P5 of the review of #173).
+    #[test]
+    fn run_on_a_lost_volume_makes_the_pool_read_and_ends_with_11() {
+        let world = lost_world(noted(Held::Yes));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        assert_eq!(
+            lines[0],
+            format!(
+                "lost tank volume={} note=whole reason=image-failed held=yes step=reopened \
+                 reopen=ok state=SUSPENDED looked_ms=1250 verdict=lost",
+                hex(&VOLUME)
+            )
+        );
+        assert!(lines[1].starts_with("round 1 ok "), "{out}");
+        assert_eq!(field(lines[1], "begun"), "-");
+        assert_eq!(field(lines[1], "under_way"), "0");
+        assert_eq!(world.borrow().reopens, 1);
+        assert!(world.borrow().programs.is_empty(), "nothing begun");
+        assert_eq!(err, "");
+    }
+
+    /// Started again on the same note, `run` finds the pool suspended,
+    /// does not reopen it, and ends with 11 again. Mutant: a second
+    /// reopen.
+    #[test]
+    fn run_started_again_on_the_same_note_ends_with_11_and_no_reopen() {
+        let world = lost_world(noted(Held::Unknown));
+        assert_eq!(run(&world).0, exit::LOST);
+        let (code, out, _) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}");
+        let lost = out.lines().next().expect("a line");
+        assert!(lost.contains(" held=unknown step=suspended reopen=- state=SUSPENDED "));
+        assert!(lost.ends_with(" verdict=lost"), "{lost}");
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// A torn note counts as a failure while a client held the device
+    /// (the lead's ruling), and the line names it torn. Mutant: a torn
+    /// note taken as none.
+    #[test]
+    fn a_torn_note_is_a_lost_volume_named_torn() {
+        let world = lost_world(Noted::NotWhole);
+        let (code, out, _) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}");
+        assert!(out.starts_with(&format!(
+            "lost tank volume={} note=torn reason=- held=yes step=reopened",
+            hex(&VOLUME)
+        )));
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// A pool that is not imported is not reopened, and the volume is not
+    /// lost for `run`: nothing is suspended, whatever the note says it
+    /// held. Each round says the volume failed, touches nothing else, is
+    /// not failed, and `run` goes on at its ticks (the lead's ruling on
+    /// F4 of the review of #173). Mutants: a reopen of a pool not there;
+    /// an end with 11; the round failed; the round going on to a begin;
+    /// the watch taking the round's own note for news (rounds closer than
+    /// the tick).
+    #[test]
+    fn a_lost_note_with_no_pool_imported_is_reported_failed_and_run_goes_on() {
+        for noted in [noted(Held::Yes), noted(Held::Unknown), Noted::NotWhole] {
+            let world = lost_world(noted);
+            world.borrow_mut().pool = None;
+            let (code, out, err) = run(&world);
+            assert_eq!(code, exit::PUBLISHED, "{noted:?}: {out}{err}");
+            let rounds = rounds(&out);
+            assert_eq!(rounds.len(), 10, "{out}");
+            for (i, round) in rounds.iter().enumerate() {
+                assert!(round.starts_with(&format!("round {} ok ", i + 1)), "{out}");
+                assert_eq!(field(round, "begun"), "-", "{out}");
+                assert_eq!(field(round, "late_ms"), "0", "{out}");
+            }
+            let lost: Vec<&str> = out.lines().filter(|l| l.starts_with("lost ")).collect();
+            assert_eq!(lost.len(), 10, "{out}");
+            for line in lost {
+                assert!(
+                    line.ends_with(
+                        " step=not-imported reopen=- state=- looked_ms=- verdict=failed"
+                    ),
+                    "{line}"
+                );
+            }
+            assert!(
+                err.contains("round 1: the volume failed in this boot (note=")
+                    && err.contains(
+                        "and the pool is not imported: nothing is suspended; run goes on"
+                    ),
+                "{err}"
+            );
+            assert_eq!(world.borrow().reopens, 0);
+            assert!(world.borrow().programs.is_empty(), "nothing begun");
+        }
+    }
+
+    /// A pool that does not read SUSPENDED within the look is not shown
+    /// lost: the round fails, and the next round takes the step again,
+    /// until the pool suspends; then `run` ends with 11 (the lead's
+    /// ruling on F2 of the review of #173). Mutants: an end with 11 on a
+    /// pool that reads ONLINE; the round not failed; no second step.
+    #[test]
+    fn a_pool_not_shown_suspended_is_tried_again_at_the_next_round() {
+        let world = lost_world(noted(Held::Yes));
+        // The reopen does nothing at first: the pool stays ONLINE.
+        world.borrow_mut().suspends_after_ms = None;
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let mut go = until(&world, start + 600_000);
+        let mut asked = move || {
+            // From the third round, a reopen makes the pool suspend.
+            if mono(&watched) >= start + 120_000 {
+                watched.borrow_mut().suspends_after_ms = Some(1_050);
+            }
+            go()
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut asked);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 6, "{out}");
+        for i in [0, 2] {
+            assert!(
+                lines[i].ends_with(
+                    " step=reopened reopen=ok state=ONLINE looked_ms=10000 verdict=retry"
+                ),
+                "{out}"
+            );
+            assert!(
+                lines[i + 1].starts_with(&format!("round {} failed ", i / 2 + 1)),
+                "{out}"
+            );
+        }
+        assert!(
+            lines[4].ends_with(" state=SUSPENDED looked_ms=1250 verdict=lost"),
+            "{out}"
+        );
+        assert!(lines[5].starts_with("round 3 ok "), "{out}");
+        assert!(
+            err.contains(
+                "round 1: the volume is lost for this boot (note=whole reason=image-failed \
+                 held=yes), and the pool was not shown suspended: the next round tries again"
+            ),
+            "{err}"
+        );
+        assert_eq!(world.borrow().reopens, 3);
+        assert!(world.borrow().programs.is_empty(), "nothing begun");
+    }
+
+    /// A reopen refused because zed suspended the pool first is a lost
+    /// volume: the look, not the command, is the signal. The reopen's
+    /// error is on standard error. Mutant: a refused reopen taken as a
+    /// failed step.
+    #[test]
+    fn a_refused_reopen_of_a_pool_zed_suspended_is_lost() {
+        let world = lost_world(noted(Held::Yes));
+        {
+            // zed suspends the pool 100 ms after the step's first look,
+            // which reads ONLINE, and the reopen is refused.
+            let mut w = world.borrow_mut();
+            w.reopen_refused = true;
+            w.suspends_after_ms = None;
+            let at = w.now_ms + 100;
+            w.suspended_at = Some(at);
+        }
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        assert!(
+            out.lines().next().is_some_and(|l| l.contains(
+                " step=reopened reopen=failed state=SUSPENDED looked_ms=250 verdict=lost"
+            )),
+            "{out}"
+        );
+        assert!(err.contains("round 1: the reopen: "), "{err}");
+    }
+
+    /// A look at the pool's state that fails fails the round, and the
+    /// next takes the step again; a look that fails after the reopen
+    /// says the reopen's outcome and `state=unread` (F3 of the review of
+    /// #173). Mutants: an end on an unread state; `reopen=-` after a
+    /// reopen; the look's error not said.
+    #[test]
+    fn a_state_that_cannot_be_read_is_tried_again_at_the_next_round() {
+        // Before the reopen: no reopen, `step=failed`.
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().pool_state_fails = 1;
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        assert!(
+            lines[0].ends_with(" step=failed reopen=- state=- looked_ms=- verdict=retry"),
+            "{out}"
+        );
+        assert!(lines[1].starts_with("round 1 failed "), "{out}");
+        assert!(lines[2].ends_with(" verdict=lost"), "{out}");
+        assert!(lines[3].starts_with("round 2 ok "), "{out}");
+        assert!(
+            err.contains("round 1: ") && err.contains("cannot read the pool's state"),
+            "{err}"
+        );
+        assert_eq!(world.borrow().reopens, 1);
+
+        // After the reopen: the reopen is said, and the pool, which
+        // suspended meanwhile, is found SUSPENDED at the next round.
+        let world = lost_world(noted(Held::Yes));
+        {
+            let mut w = world.borrow_mut();
+            w.pool_state_fails_after = 1;
+            w.pool_state_fails = 1;
+        }
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4, "{out}");
+        assert!(
+            lines[0].ends_with(" step=reopened reopen=ok state=unread looked_ms=0 verdict=retry"),
+            "{out}"
+        );
+        assert!(lines[1].starts_with("round 1 failed "), "{out}");
+        assert!(
+            lines[2].contains(" step=suspended reopen=- state=SUSPENDED "),
+            "{out}"
+        );
+        assert!(
+            err.contains(
+                "round 1: the look at the pool's state after the reopen: \
+                 zpool list: exit 1: cannot read the pool's state"
+            ),
+            "{err}"
+        );
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// A note that cannot be read fails the round, which touches nothing
+    /// else (a nit of the review of #173); the next read that finds it
+    /// lost takes the step. Mutants: an unreadable note taken as none
+    /// (the round not failed, or a begin); as lost.
+    #[test]
+    fn a_note_that_cannot_be_read_fails_the_round() {
+        let world = lost_world(noted(Held::Yes));
+        world.borrow_mut().note_read_fails = 1;
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("round 1 failed "), "{out}");
+        assert_eq!(field(lines[0], "begun"), "-", "{out}");
+        assert!(
+            !world.borrow().calls.contains(&"count"),
+            "no ZFS call: {:?}",
+            world.borrow().calls
+        );
+        assert!(lines[1].starts_with("lost tank "), "{out}");
+        assert!(lines[2].starts_with("round 2 ok "), "{out}");
+        assert!(
+            err.contains("round 1: ") && err.contains("its failure note: "),
+            "{err}"
+        );
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// A volume that fails while `run` settles a publish, with the
+    /// default tick of a minute, is stepped on within about a second,
+    /// not at the next tick (F1 of the review of #173; the lead's
+    /// ruling). The round under way ends early, and the next begins at
+    /// once. Mutant: the note read only at a round's start (the reopen
+    /// about 55 s after the failure).
+    #[test]
+    fn a_volume_lost_while_a_publish_settles_is_stepped_on_within_seconds() {
+        let world = World::new(Mode::Busy);
+        let failed_at = world.borrow().now_ms + 5_000;
+        {
+            // The daemon fails at +5 s: it leaves its note and answers
+            // nothing more, so the publish stays under way.
+            let mut w = world.borrow_mut();
+            w.noted = Some(noted(Held::Yes));
+            w.noted_from_ms = Some(failed_at);
+            w.gone_from = Some(failed_at);
+            w.suspends_after_ms = Some(1_050);
+        }
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("round 1 ok "), "{out}");
+        assert_ne!(field(lines[0], "begun"), "-", "{out}");
+        assert!(lines[1].starts_with("lost tank "), "{out}");
+        assert!(lines[2].starts_with("round 2 ok "), "{out}");
+        assert_eq!(field(lines[2], "under_way"), "1", "{out}");
+        let reopened = world.borrow().suspended_at.expect("reopened") - 1_050;
+        let after = reopened - failed_at;
+        assert!(after <= 2_000, "the reopen {after} ms after the failure");
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// A volume lost during a rewind import's last sync, whose `cuts`
+    /// then shows the newest cut opening as itself: the watch is asked
+    /// before the begin, so no publish is begun, and the next round takes
+    /// the step at once (Codex's P1 on #173). Mutant: the begin with no
+    /// look at the watch after `sync_past`.
+    #[test]
+    fn a_volume_lost_during_the_syncs_begins_no_publish() {
+        let world = rewound_t(5);
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let watched = world.clone();
+        let mut failed = false;
+        let mut go = move || {
+            let mut w = watched.borrow_mut();
+            // The `go` after the third sync, which makes the newest cut
+            // open as itself: the volume fails two seconds later, with
+            // its note left and its daemon gone.
+            if w.synced_at.len() == 3 && !failed {
+                failed = true;
+                w.advance(Duration::from_secs(2));
+                let now = w.now_ms;
+                w.noted = Some(noted(Held::Yes));
+                w.noted_from_ms = Some(now);
+                w.gone_from = Some(now);
+                w.suspends_after_ms = Some(1_050);
+            }
+            w.now_ms - crate::engine::fake::EPOCH_MS < start + 600_000
+        };
+        let (code, out, err) = scheduled(&mut agent, Duration::from_secs(60), &mut go);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("round 1 ok "), "{out}");
+        assert_eq!(field(lines[0], "synced"), "3", "{out}");
+        assert_eq!(field(lines[0], "begun"), "-", "{out}");
+        assert!(lines[1].starts_with("lost tank "), "{out}");
+        assert!(lines[2].starts_with("round 2 ok "), "{out}");
+        assert!(world.borrow().programs.is_empty(), "{out}");
+        assert!(keep.0.borrow().record.is_none(), "{out}");
+        assert_eq!(world.borrow().reopens, 1);
+    }
+
+    /// The same while `run` waits for its tick with nothing under way.
+    /// Mutant: the note not read in the wait.
+    #[test]
+    fn a_volume_lost_while_run_waits_is_stepped_on_within_seconds() {
+        let world = World::new(Mode::Idle);
+        let failed_at = world.borrow().now_ms + 30_000;
+        {
+            let mut w = world.borrow_mut();
+            w.noted = Some(noted(Held::Unknown));
+            w.noted_from_ms = Some(failed_at);
+            w.gone_from = Some(failed_at);
+            w.suspends_after_ms = Some(1_050);
+        }
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        assert_eq!(rounds(&out).len(), 2, "{out}");
+        let reopened = world.borrow().suspended_at.expect("reopened") - 1_050;
+        let after = reopened - failed_at;
+        assert!(after <= 1_250, "the reopen {after} ms after the failure");
+    }
+
+    /// A volume that failed with no client holding its device: said on
+    /// standard error at each round, no pool touched (no ZFS call at all:
+    /// no sync, begin or settle), each round `ok` with nothing begun, and
+    /// `run` goes on (the lead's answer to Q2; Codex's P2 on #173).
+    /// Mutants: a reopen; an end with 9; the round going on to the sync,
+    /// the begin and the settle.
+    #[test]
+    fn a_volume_failed_with_no_client_touches_no_pool() {
+        let world = lost_world(noted(Held::No));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+        let rounds = rounds(&out);
+        assert!(rounds.len() > 1, "{out}");
+        for (i, round) in rounds.iter().enumerate() {
+            assert!(round.starts_with(&format!("round {} ok ", i + 1)), "{out}");
+            assert_eq!(field(round, "begun"), "-", "{out}");
+        }
+        assert!(
+            world.borrow().calls.is_empty(),
+            "no ZFS call: {:?}",
+            world.borrow().calls
+        );
+        assert!(world.borrow().programs.is_empty(), "{out}");
+        assert!(!out.contains("lost "), "{out}");
+        assert!(
+            err.contains(
+                "round 1: the volume failed in this boot (a write or sync of the \
+                 volume's image failed), and no client held its device: no pool is touched"
+            ),
+            "{err}"
+        );
+        assert_eq!(world.borrow().reopens, 0);
+    }
+
+    /// `publish` and `settle` refuse a lost volume with 11, and one that
+    /// failed with no client with 1, touching no pool and beginning
+    /// nothing (the lead's answer to Q5). Mutants: no refusal; a reopen;
+    /// one code for both.
+    #[test]
+    fn publish_and_settle_refuse_a_failed_volume() {
+        for (noted, want) in [
+            (noted(Held::Yes), exit::LOST),
+            (Noted::NotWhole, exit::LOST),
+            (noted(Held::No), exit::ERROR),
+        ] {
+            for task in [Task::Publish, Task::Settle] {
+                let world = lost_world(noted);
+                let keep = MemKeep::default();
+                let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+                let (code, out, err) = executed(&mut agent, &task, LIMIT);
+                assert_eq!(code, want, "{task:?} {noted:?}: {out}{err}");
+                assert_eq!(out, "");
+                assert!(err.contains("nothing is published"), "{err}");
+                assert_eq!(world.borrow().reopens, 0);
+                assert!(world.borrow().programs.is_empty());
+            }
+        }
+    }
+
+    /// `publish` and `settle` with a note that cannot be read refuse with
+    /// 1 and touch nothing (the review of #173). Mutant: the error taken
+    /// as no note.
+    #[test]
+    fn publish_and_settle_refuse_a_note_that_cannot_be_read() {
+        for task in [Task::Publish, Task::Settle] {
+            let world = lost_world(noted(Held::Yes));
+            world.borrow_mut().note_read_fails = 1;
+            let keep = MemKeep::default();
+            let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+            let (code, out, err) = executed(&mut agent, &task, LIMIT);
+            assert_eq!(code, exit::ERROR, "{task:?}: {out}{err}");
+            assert_eq!(out, "");
+            assert!(err.contains("its failure note: "), "{err}");
+            assert_eq!(world.borrow().reopens, 0);
+            assert!(
+                world.borrow().calls.is_empty(),
+                "{:?}",
+                world.borrow().calls
+            );
+        }
+    }
+
+    /// `run` ends with 12 after the round in which the daemon's
+    /// attachment changed (a new attach: here a power cut), and goes on
+    /// through a take-over, which keeps it. Mutants: no end; an end
+    /// before the round line; an end at a take-over.
+    #[test]
+    fn run_ends_with_12_when_the_attachment_changes() {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().restart_at_cuts = Some((3, Restart::Reboot));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::MOVED, "{out}{err}");
+        let last = out.lines().last().expect("a line");
+        assert!(last.starts_with("round "), "{out}");
+        assert!(
+            err.contains("the daemon's attachment changed from ")
+                && err.contains(": run ends, to be started again on the device as it is now"),
+            "{err}"
+        );
+
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().restart_at_cuts = Some((3, Restart::TakeOver));
+        let (code, out, err) = run(&world);
+        assert_eq!(code, exit::PUBLISHED, "{out}{err}");
+    }
+
+    /// The agent's codes for a lost volume and a move are not
+    /// `skyzfsd`'s 9 and 10 (the lead's ruling on F5 of the review of
+    /// #173). Mutant: either back at 9 or 10.
+    #[test]
+    fn the_codes_of_a_lost_volume_and_a_move_are_not_the_daemons() {
+        assert_eq!((exit::LOST, exit::MOVED), (11, 12));
+        assert!(USAGE.contains("11 the volume lost") && USAGE.contains("12 the device"));
+    }
+
+    /// The `lost` line's text. Mutant: a field left out or misnamed.
+    #[test]
+    fn the_lost_line() {
+        use crate::engine::{Note, Step};
+        use crate::zfs::PoolState;
+        let failure = Failure {
+            held: Held::Unknown,
+            reason: Reason::Marked,
+            identity: [0; 16],
+        };
+        let step = Step::Reopened {
+            error: Some("refused".into()),
+            state: Some(PoolState("ONLINE".into())),
+            unread: None,
+            looked_ms: 10_000,
+        };
+        assert_eq!(
+            lost_line("p", &[0xab; 16], &Note::Whole(failure), Some(&step)),
+            format!(
+                "lost p volume={} note=whole reason=marked held=unknown step=reopened \
+                 reopen=failed state=ONLINE looked_ms=10000 verdict=retry\n",
+                "ab".repeat(16)
+            )
+        );
+        let unread = Step::Reopened {
+            error: None,
+            state: None,
+            unread: Some("no".into()),
+            looked_ms: 250,
+        };
+        assert!(lost_line("p", &[0; 16], &Note::Torn, Some(&unread))
+            .ends_with(" step=reopened reopen=ok state=unread looked_ms=250 verdict=retry\n"));
+        assert!(
+            lost_line("p", &[0; 16], &Note::Torn, Some(&Step::NotImported))
+                .ends_with(" step=not-imported reopen=- state=- looked_ms=- verdict=failed\n")
+        );
+        assert_eq!(
+            lost_line("p", &[0; 16], &Note::Torn, None),
+            format!(
+                "lost p volume={} note=torn reason=- held=yes step=failed reopen=- state=- \
+                 looked_ms=- verdict=retry\n",
+                "00".repeat(16)
+            )
+        );
     }
 }

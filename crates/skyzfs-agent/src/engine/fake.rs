@@ -37,12 +37,12 @@ use std::time::Duration;
 
 use skyzfs_control::{Code, CutsReply, Publish as PublishRequest, Reply, Request, SnapReply};
 
-use super::{Clock, Daemon};
+use super::{Clock, Daemon, Noted};
 use crate::manifest::{self, Kind, Manifest};
 use crate::record::{self, Keep, Loaded, Record, SaveError};
 use crate::zfs::{
-    Dataset, Held, Layout, Program, Props, Snap as SnapRead, Vdev, VdevKind, Zfs, ZfsError,
-    HOLD_TAG,
+    Dataset, Held, Layout, PoolState, Program, Props, Snap as SnapRead, Vdev, VdevKind, Zfs,
+    ZfsError, HOLD_TAG,
 };
 
 /// The pool's name.
@@ -430,6 +430,9 @@ pub struct World {
     still: u32,
     /// The channel answers nothing until then (the daemon away).
     pub away_until: u64,
+    /// The channel answers nothing from then on (a daemon whose volume
+    /// failed has exited).
+    pub gone_from: Option<u64>,
     /// A person destroys `pool@t` of this name as soon as it is not held.
     pub destroyer: Option<String>,
     /// The daemon's rule (R).
@@ -493,6 +496,38 @@ pub struct World {
     /// The agent's sync tasks that land before those of `assist_fails`
     /// begin to fail.
     pub assist_fails_after: u32,
+    /// The daemon's failure note of this boot ([`Daemon::failure`]).
+    pub noted: Option<Noted>,
+    /// From when ([`World::now_ms`]) `noted` is there: before, the note
+    /// reads as none (a daemon that fails while the agent runs; F1 of
+    /// the review of #173). `None`: from the start.
+    pub noted_from_ms: Option<u64>,
+    /// The next reads of the note that fail, as a note that cannot be
+    /// read.
+    pub note_read_fails: u32,
+    /// How many times the note was read.
+    pub note_reads: u32,
+    /// The next looks at the pool's state ([`Zfs::pool_state`]) that
+    /// fail, after `pool_state_fails_after` more that do not.
+    pub pool_state_fails: u32,
+    /// The looks at the pool's state that succeed before those of
+    /// `pool_state_fails` begin to fail.
+    pub pool_state_fails_after: u32,
+    /// From when the pool reads `SUSPENDED` ([`Zfs::pool_state`]);
+    /// `None` while it reads `ONLINE`.
+    pub suspended_at: Option<u64>,
+    /// Where the pool's device is gone: how long after a reopen
+    /// ([`Zfs::reopen`]) the pool suspends (about 1.0 to 1.1 s in the
+    /// daemon rig's check f). `None`: a reopen leaves the pool as it is.
+    pub suspends_after_ms: Option<u64>,
+    /// `zpool reopen` exits 1 and says "pool I/O is currently
+    /// suspended", as where zed suspended the pool first (Ubuntu 26.04).
+    pub reopen_refused: bool,
+    /// How many times the pool was reopened.
+    pub reopens: u32,
+    /// The device's number as the daemon's adapter reads it, where it is
+    /// not [`DEVICE`] (a new device after a restart; M2.7c).
+    pub device_now: Option<u64>,
     abandon_next: bool,
     err_low_next: bool,
     erred_low: bool,
@@ -522,6 +557,7 @@ impl World {
             cuts_read: 0,
             still: 0,
             away_until: 0,
+            gone_from: None,
             destroyer: None,
             rule: DAEMON_RULE,
             highest_written: 0,
@@ -543,6 +579,17 @@ impl World {
             plain_sync: false,
             assist_fails: 0,
             assist_fails_after: 0,
+            noted: None,
+            noted_from_ms: None,
+            note_read_fails: 0,
+            note_reads: 0,
+            pool_state_fails: 0,
+            pool_state_fails_after: 0,
+            suspended_at: None,
+            suspends_after_ms: None,
+            reopen_refused: false,
+            reopens: 0,
+            device_now: None,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
             erred_low: false,
@@ -1286,7 +1333,7 @@ impl World {
                 }
             }
         }
-        if self.now_ms < self.away_until {
+        if self.now_ms < self.away_until || self.gone_from.is_some_and(|at| self.now_ms >= at) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "the daemon is away",
@@ -1644,6 +1691,42 @@ impl Zfs for FakeZfs {
         })
     }
 
+    fn reopen(&mut self, pool: &str) -> Result<(), ZfsError> {
+        self.pool(pool, |_| ())?;
+        let mut world = self.0.borrow_mut();
+        world.reopens += 1;
+        world.calls.push("reopen");
+        world.log.push(format!("zpool reopen {pool}"));
+        if world.reopen_refused {
+            return Err(ZfsError::Other(
+                "zpool reopen: exit 1: cannot reopen 'tank': pool I/O is currently suspended"
+                    .into(),
+            ));
+        }
+        if let (Some(after), None) = (world.suspends_after_ms, world.suspended_at) {
+            world.suspended_at = Some(world.now_ms + after);
+        }
+        Ok(())
+    }
+
+    fn pool_state(&mut self, pool: &str) -> Result<Option<PoolState>, ZfsError> {
+        let mut world = self.0.borrow_mut();
+        if world.pool_state_fails > 0 && world.pool_state_fails_after > 0 {
+            world.pool_state_fails_after -= 1;
+        } else if world.pool_state_fails > 0 {
+            world.pool_state_fails -= 1;
+            return Err(ZfsError::Other(
+                "zpool list: exit 1: cannot read the pool's state".into(),
+            ));
+        }
+        if world.pool.is_none() || pool != POOL {
+            return Ok(None);
+        }
+        let suspended = world.suspended_at.is_some_and(|at| at <= world.now_ms);
+        let word = if suspended { "SUSPENDED" } else { "ONLINE" };
+        Ok(Some(PoolState(word.to_string())))
+    }
+
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
@@ -1692,7 +1775,23 @@ impl Daemon for FakeDaemon {
     }
 
     fn device(&mut self) -> io::Result<u64> {
-        Ok(DEVICE)
+        Ok(self.0.borrow().device_now.unwrap_or(DEVICE))
+    }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        let mut world = self.0.borrow_mut();
+        world.note_reads += 1;
+        if world.note_read_fails > 0 {
+            world.note_read_fails -= 1;
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the failure note: permission denied",
+            ));
+        }
+        if world.noted_from_ms.is_some_and(|from| world.now_ms < from) {
+            return Ok(None);
+        }
+        Ok(world.noted)
     }
 }
 

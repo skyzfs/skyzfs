@@ -91,8 +91,11 @@
 //! (it may have written nothing), and it ends the call with its error:
 //! where every sync fails, one is tried at each call, so `run` tries one
 //! a round for as long as the newest cut stays behind, each round
-//! `failed` with the error. Only there can the syncs go on without end
-//! (about two groups a round, where each one writes before it fails).
+//! `failed` with the error. The bound does not hold there, nor where
+//! the daemon's state starts over holding no cut (which starts the
+//! count again), nor across a supervisor's restarts of `run` (the count
+//! is not saved): in each the syncs can go on without end, about two
+//! groups a sync.
 //!
 //! # Crash points
 //!
@@ -149,9 +152,15 @@ pub enum Past {
         synced: u32,
     },
     /// The daemon did not answer `cuts`, or answered something else:
-    /// the agent cannot tell, and syncs nothing ([`Agent::begin`] then
-    /// says what is wrong).
-    Unseen,
+    /// the agent cannot tell, and syncs no more ([`Agent::begin`] then
+    /// says what is wrong). That can come after syncs that returned,
+    /// where the daemon went away between two of them (L3 of the review
+    /// of #172).
+    Unseen {
+        /// The syncs run before the daemon went unread, and that
+        /// returned.
+        synced: u32,
+    },
     /// The newest cut, of `group`, still does not open as itself.
     Behind {
         /// The syncs this call ran.
@@ -172,6 +181,9 @@ pub enum Stuck {
     NoCut,
     /// An end was asked for (`go` said no).
     Told,
+    /// The watch on the failure note saw a note that makes the volume
+    /// lost ([`Agent::watch_note`]).
+    Noted,
 }
 
 impl fmt::Display for Stuck {
@@ -180,6 +192,7 @@ impl fmt::Display for Stuck {
             Stuck::Bound => "the syncs reached their bound in this process",
             Stuck::NoCut => "the daemon counted no cut after a sync",
             Stuck::Told => "an end was asked for",
+            Stuck::Noted => "the volume's failure note came",
         })
     }
 }
@@ -199,6 +212,25 @@ pub trait Daemon {
     fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply>;
     /// The device number (`st_rdev`) of the volume's block device.
     fn device(&mut self) -> io::Result<u64>;
+    /// The failure note of this boot in the volume's run directory
+    /// (`skyzfs_control::failure`): what a daemon leaves when its volume
+    /// fails, or when a start refuses the volume as failed, before it
+    /// deletes the device and exits (design §4.2). `None` where there is
+    /// none, or it is of another boot. A file there that is not a whole
+    /// note is [`Noted::NotWhole`]. An error is one of reading it.
+    fn failure(&mut self) -> io::Result<Option<Noted>>;
+}
+
+/// A failure note of this boot, as [`Daemon::failure`] reads it (M2.7c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Noted {
+    /// A whole note: whether a client held the device, why the volume
+    /// failed, and the store's identity.
+    Failed(skyzfs_control::failure::Failure),
+    /// A file there that is not a whole note, so of no known boot. The
+    /// daemon counts that as a failure while a client held the device
+    /// (`skyzfs_ublk::records`), and so does the agent.
+    NotWhole,
 }
 
 /// The wall clock, a clock that does not step, and waiting.
@@ -596,12 +628,23 @@ pub struct Agent<Z, D, K, C> {
     /// again ([`Agent::fresh_name`]), so they make chains and no cycle.
     renamed: BTreeMap<String, String>,
     /// The syncs [`Agent::sync_past`] has run, and that returned, since
-    /// it last saw no cut behind (a cut that opens as itself, or none). Kept across [`Agent::restart`]: it bounds what the
-    /// process writes, not what the record says.
+    /// it last saw no cut behind (a cut that opens as itself, or none).
+    /// Kept across [`Agent::restart`]: it bounds what the process
+    /// writes, not what the record says.
     past_synced: u32,
     /// The syncs that the last call of [`Agent::sync_past`] ran and that
     /// returned, whatever the call returned ([`Agent::last_synced`]).
     last_synced: u32,
+    /// The daemon's attachment at the first `cuts` it answered in this
+    /// process, and the device's number at the first read of it: what
+    /// [`Agent::moved`] compares with. Kept across [`Agent::restart`].
+    first_attachment: Option<[u8; 16]>,
+    first_device: Option<u64>,
+    /// What changed since: the first change seen ([`Agent::moved`]).
+    moved: Option<String>,
+    /// The watch on the volume's failure note while the engine works
+    /// ([`Agent::watch_note`]). Kept across [`Agent::restart`].
+    watch: Option<lost::Watch>,
 }
 
 impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
@@ -643,6 +686,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             at: String::new(),
             past_synced: 0,
             last_synced: 0,
+            first_attachment: None,
+            first_device: None,
+            moved: None,
+            watch: None,
         })
     }
 
@@ -742,6 +789,16 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self
     }
 
+    /// The volume's id.
+    pub fn volume(&self) -> [u8; 16] {
+        self.volume
+    }
+
+    /// The pool's name.
+    pub fn pool(&self) -> &str {
+        &self.pool
+    }
+
     /// The record as last saved.
     pub fn record(&self) -> &Record {
         &self.record
@@ -790,17 +847,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
 
     /// Sync the pool until the daemon's newest cut opens as itself, one
     /// sync at a time ([module docs](self), "After a rewind import"):
-    /// `cuts` read before each sync, `go` asked before each, and the
-    /// premise checked before the first ([`Error::Premise`]: the agent
-    /// changes nothing on a pool it would not publish).
+    /// `cuts` read before each sync, `go` asked before each and then
+    /// the watch on the failure note ([`Agent::note_came`];
+    /// [`Stuck::Noted`]), and the premise checked before the first
+    /// ([`Error::Premise`]: the agent changes nothing on a pool it would
+    /// not publish).
     pub fn sync_past(&mut self, go: &mut dyn FnMut() -> bool) -> Result<Past, Error> {
         let mut synced = 0u32;
         self.last_synced = 0;
         let mut count_before: Option<u64> = None;
         loop {
-            let cuts = match self.daemon.ask(&Request::Cuts, &[]) {
+            let cuts = match self.ask_cuts() {
                 Ok(Reply::Cuts(cuts)) => cuts,
-                Ok(_) | Err(_) => return Ok(Past::Unseen),
+                Ok(_) | Err(_) => return Ok(Past::Unseen { synced }),
             };
             let group = match cuts.newest {
                 Some((group, false)) => group,
@@ -818,6 +877,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             }
             if !go() {
                 return behind(Stuck::Told);
+            }
+            if self.note_came() {
+                return behind(Stuck::Noted);
             }
             if synced == 0 {
                 let props = self.zfs.props(&self.pool)?;
@@ -902,7 +964,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// rounds, with what is still under way ([`Error::Unsettled`]), as at
     /// the time limit. `skyzfs-agent run` asks whether it was told to
     /// end (`SIGTERM`), so that an end waits for one round and not for
-    /// the time left to the next tick.
+    /// the time left to the next tick. Where a watch on the failure note
+    /// is set, news there stops it the same way ([`Agent::note_came`],
+    /// asked after `go`).
     pub fn settle_while(
         &mut self,
         limit: Duration,
@@ -915,7 +979,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             // the count and the sweep that open it, so that an end asked
             // for during a step waits for no read after it (n1 of the
             // next look at #167; the lead's ruling).
-            if !go() {
+            if !go() || self.note_came() {
                 return self.unsettled();
             }
             // Where the count fails, the limits are the bases, and the
@@ -1102,7 +1166,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let assisted_ms = memory.assisted_ms;
         let assists = memory.assists;
         let withdrawn = memory.withdrawn;
-        let daemon = match self.daemon.ask(&Request::Cuts, &[]) {
+        let daemon = match self.ask_cuts() {
             Ok(Reply::Cuts(cuts)) => {
                 let answer = match (&publish.phase, kept) {
                     (_, Some(answer)) => Some(answer),
@@ -1811,9 +1875,58 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.ask(&publish, count)
     }
 
+    /// Ask the daemon `cuts`, and note its attachment ([`Agent::moved`]).
+    fn ask_cuts(&mut self) -> io::Result<Reply> {
+        let reply = self.daemon.ask(&Request::Cuts, &[]);
+        if let Ok(Reply::Cuts(cuts)) = &reply {
+            let now = cuts.attachment;
+            match self.first_attachment {
+                None => self.first_attachment = Some(now),
+                Some(first) if first != now && self.moved.is_none() => {
+                    self.moved = Some(format!(
+                        "the daemon's attachment changed from {} to {}",
+                        skyzfs_control::hex(&first),
+                        skyzfs_control::hex(&now)
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        reply
+    }
+
+    /// Note the device's number ([`Agent::moved`]).
+    fn saw_device(&mut self, now: u64) {
+        match self.first_device {
+            None => self.first_device = Some(now),
+            Some(first) if first != now && self.moved.is_none() => {
+                self.moved = Some(format!(
+                    "the volume's device changed from {}:{} to {}:{}",
+                    major(first),
+                    minor(first),
+                    major(now),
+                    minor(now)
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Whether the volume's device or the daemon's attachment changed
+    /// in this process, and how: the first change seen. The attachment
+    /// is a nonce that each attach of a device makes afresh and a
+    /// take-over keeps (`skyzfs_control::CutsReply`), read at each
+    /// `cuts`; the device's number is read at each check of the pool's
+    /// premise. Once set it stays set: `run` then ends with its own exit
+    /// code, so that a service manager starts it again on the device
+    /// as it is now (the lead's D4 on #167; M2.7c).
+    pub fn moved(&self) -> Option<&str> {
+        self.moved.as_deref()
+    }
+
     /// The count of cuts now, with `load_guid` read before it.
     fn count(&mut self, load_guid: u64) -> Result<Count, String> {
-        match self.daemon.ask(&Request::Cuts, &[]) {
+        match self.ask_cuts() {
             Ok(Reply::Cuts(CutsReply {
                 attachment,
                 state: Some(state),
@@ -1838,6 +1951,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         let device = match self.daemon.device() {
             Ok(device) => {
                 self.device = Some(device);
+                self.saw_device(device);
                 device
             }
             Err(e) => match self.device {
@@ -2024,6 +2138,19 @@ fn set(record: &mut Record, name: &str, change: impl FnOnce(&mut Publish)) {
 fn ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
+
+/// The major number of a device number (glibc's `gnu_dev_major`).
+fn major(dev: u64) -> u64 {
+    ((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0x0000_0fff)
+}
+
+/// The minor number of a device number (glibc's `gnu_dev_minor`).
+fn minor(dev: u64) -> u64 {
+    ((dev >> 12) & 0xffff_ff00) | (dev & 0x0000_00ff)
+}
+
+mod lost;
+pub use lost::{Failed, Note, Step, Verdict, LOOK_EVERY, LOOK_MAX, NOTE_EVERY};
 
 #[cfg(test)]
 pub(crate) mod fake;
