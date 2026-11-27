@@ -67,7 +67,8 @@
 //! whose length or magic is not exactly this version's is not a whole
 //! note, which counts as a failure while a client held the device.
 //!
-//! 64 bytes, little endian.
+//! 64 bytes, little endian. Its code is `skyzfs_control::failure`'s,
+//! so that the agent reads the note the daemon writes (M2.7c).
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
@@ -121,16 +122,12 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::lifecycle::{Attachment, Failure, Held, Reason, Records, Shape};
+use crate::lifecycle::{Attachment, Failure, Records, Shape};
+use skyzfs_control::failure::encode_failure;
+pub use skyzfs_control::failure::{boot_id, parse_boot_id, read_failure, StoredFailure, FAILED};
 
 /// The attachment record's name in the volume's directory.
 pub const ATTACHMENT: &str = "attachment";
-/// The failure note's name in the volume's directory under the run
-/// directory.
-pub const FAILED: &str = "failed";
-
-const FAILED_MAGIC: &[u8; 8] = b"SKYZFAI1";
-const FAILED_LEN: usize = 64;
 const ATTACHMENT_MAGIC: &[u8; 8] = b"SKYZATT1";
 const ATTACHMENT_LEN: usize = 64;
 const NOTE_MAGIC: &[u8; 8] = b"SKYZNOT1";
@@ -202,79 +199,6 @@ fn decode_note(bytes: &[u8], number: u32) -> Option<[u8; 16]> {
         && bytes[8..12] == number.to_le_bytes()
         && bytes[12..16] == [0; 4];
     whole.then(|| array(&bytes[16..]))
-}
-
-/// A failure note as it is on the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StoredFailure {
-    /// The boot it was written in.
-    pub boot: [u8; 16],
-    /// What it says.
-    pub failure: Failure,
-    /// When it was written, in milliseconds since boot.
-    pub written_ms: u64,
-}
-
-const REASONS: [(u8, Reason); 7] = [
-    (1, Reason::LogFailed),
-    (2, Reason::Short),
-    (3, Reason::RecoveryFailed),
-    (4, Reason::Marked),
-    (5, Reason::PositionUnreadable),
-    (6, Reason::DeviceNoteUnreadable),
-    (7, Reason::ImageFailed),
-];
-
-fn encode_failure(stored: &StoredFailure) -> [u8; FAILED_LEN] {
-    let mut bytes = [0u8; FAILED_LEN];
-    bytes[..8].copy_from_slice(FAILED_MAGIC);
-    bytes[8..24].copy_from_slice(&stored.boot);
-    bytes[24..40].copy_from_slice(&stored.failure.identity);
-    bytes[40] = match stored.failure.held {
-        Held::No => 0,
-        Held::Yes => 1,
-        Held::Unknown => 2,
-    };
-    let code = REASONS.iter().find(|(_, r)| *r == stored.failure.reason);
-    bytes[41] = code.map_or(0, |(code, _)| *code);
-    bytes[48..56].copy_from_slice(&stored.written_ms.to_le_bytes());
-    bytes
-}
-
-fn decode_failure(bytes: &[u8]) -> Option<StoredFailure> {
-    let whole = bytes.len() == FAILED_LEN
-        && &bytes[..8] == FAILED_MAGIC
-        && bytes[40] <= 2
-        && bytes[42..48] == [0; 6]
-        && bytes[56..] == [0; 8];
-    if !whole {
-        return None;
-    }
-    let (_, reason) = REASONS.iter().find(|(code, _)| *code == bytes[41])?;
-    Some(StoredFailure {
-        boot: array(&bytes[8..]),
-        failure: Failure {
-            held: match bytes[40] {
-                0 => Held::No,
-                1 => Held::Yes,
-                _ => Held::Unknown,
-            },
-            reason: *reason,
-            identity: array(&bytes[24..]),
-        },
-        written_ms: u64::from_le_bytes(array(&bytes[48..])),
-    })
-}
-
-/// Read the failure note at `path`, of whatever boot. `Ok(None)` if
-/// there is none. A file that is not a whole note is an error.
-pub fn read_failure(path: &Path) -> io::Result<Option<StoredFailure>> {
-    let Some(bytes) = read_if_there(path)? else {
-        return Ok(None);
-    };
-    decode_failure(&bytes)
-        .map(Some)
-        .ok_or_else(|| not_whole("not a failure note"))
 }
 
 fn read_if_there(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -372,26 +296,6 @@ fn read_note_with(run_dir: &Path, number: u32, mutants: Mutants) -> io::Result<O
         None if mutants.has(Mutants::TORN_IS_NONE) => Ok(None),
         None => Err(not_whole("not a note for this device")),
     }
-}
-
-/// Parse the kernel's `boot_id`: a UUID in text.
-pub fn parse_boot_id(text: &str) -> Option<[u8; 16]> {
-    let hex: Vec<u8> = text.trim().bytes().filter(|b| *b != b'-').collect();
-    if hex.len() != 32 || !hex.iter().all(u8::is_ascii_hexdigit) {
-        return None;
-    }
-    let mut boot = [0u8; 16];
-    for (byte, pair) in boot.iter_mut().zip(hex.chunks(2)) {
-        let pair = std::str::from_utf8(pair).ok()?;
-        *byte = u8::from_str_radix(pair, 16).ok()?;
-    }
-    Some(boot)
-}
-
-/// This boot, as the kernel names it.
-pub fn boot_id() -> io::Result<[u8; 16]> {
-    let text = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    parse_boot_id(&text).ok_or_else(|| not_whole("the kernel's boot id is not a UUID"))
 }
 
 /// The lifecycle's records, in a volume's directory and a run

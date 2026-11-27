@@ -208,6 +208,8 @@
 
 use std::io;
 
+pub use skyzfs_control::failure::{Failure, Held, Reason};
+
 /// What a device was created with, and reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {
@@ -251,84 +253,6 @@ pub enum AddError {
     Taken,
     /// Anything else.
     Other(io::Error),
-}
-
-/// Why a volume failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reason {
-    /// The log store's log failed: while it served the volume, or in the
-    /// checkpoint that handed the volume to the in-place store at a start.
-    /// No longer given since M1.3t removed the log store; kept so that a
-    /// note of an older daemon is read (code 1).
-    LogFailed,
-    /// A start found the log shorter than what was acknowledged. No
-    /// longer given since M1.3t (code 2).
-    Short,
-    /// The recovery of a start failed the log. No longer given since
-    /// M1.3t (code 3).
-    RecoveryFailed,
-    /// A start found the log marked as failed.
-    Marked,
-    /// A start could not read the record of what was acknowledged. No
-    /// longer given since M1.3t-b removed the record (code 5).
-    PositionUnreadable,
-    /// A start could not read the note for the volume's device.
-    DeviceNoteUnreadable,
-    /// A write or a sync of the volume's image failed: the in-place
-    /// store's failure, while it served or in its own sync at its start.
-    /// Both fail the volume (rule R11), and one reason covers both: what
-    /// a later start does with the volume is the same for either, and
-    /// the daemon's line at the failure says when it happened.
-    ImageFailed,
-}
-
-impl std::fmt::Display for Reason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Reason::LogFailed => "the log store's log failed",
-            Reason::Short => "the log is shorter than what was acknowledged",
-            Reason::RecoveryFailed => "the recovery's sync failed",
-            Reason::Marked => "the volume is marked as failed",
-            Reason::PositionUnreadable => "the record of what was acknowledged cannot be read",
-            Reason::DeviceNoteUnreadable => "the note for the volume's device cannot be read",
-            Reason::ImageFailed => "a write or sync of the volume's image failed",
-        })
-    }
-}
-
-/// Whether a client held the volume's device when the volume failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Held {
-    /// No client can have held it.
-    No,
-    /// One did, or it has to be taken that one did.
-    Yes,
-    /// It could not be told when the failure was noted. A later start
-    /// settles it by what the driver then says about the recorded
-    /// number, and writes the answer into the note.
-    Unknown,
-}
-
-impl From<bool> for Held {
-    fn from(held: bool) -> Self {
-        if held {
-            Held::Yes
-        } else {
-            Held::No
-        }
-    }
-}
-
-/// What the failure note says: see "the failure note" in the
-/// [module documentation](self).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Failure {
-    /// Whether a client held the volume's device at the failure.
-    pub held: Held,
-    /// Why the volume failed.
-    pub reason: Reason,
-    /// The store's identity, or zeros where it was not known.
-    pub identity: [u8; 16],
 }
 
 /// The steps the daemon needs of the kernel's control interface.

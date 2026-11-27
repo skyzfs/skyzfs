@@ -1,4 +1,5 @@
 use super::*;
+use crate::lifecycle::Reason;
 
 const BOOT: [u8; 16] = [7; 16];
 
@@ -197,25 +198,6 @@ fn a_record_is_replaced_whole_and_never_written_in_place() {
 }
 
 #[test]
-fn the_boot_id_is_the_kernels_uuid() {
-    assert_eq!(
-        parse_boot_id("00010203-0405-0607-0809-0a0b0c0d0e0f\n"),
-        Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-    );
-    for wrong in [
-        "",
-        "0001",
-        "00010203-0405-0607-0809-0a0b0c0d0e0g",
-        "+0010203-0405-0607-0809-0a0b0c0d0e0f",
-    ] {
-        assert_eq!(parse_boot_id(wrong), None, "{wrong:?}");
-    }
-    if cfg!(target_os = "linux") {
-        assert_eq!(boot_id().expect("boot id"), boot_id().expect("boot id"));
-    }
-}
-
-#[test]
 fn nonces_differ() {
     let dirs = dirs();
     let mut files = files(&dirs, 0);
@@ -277,69 +259,6 @@ fn failure(held: bool, reason: Reason) -> Failure {
         reason,
         identity: [3; 16],
     }
-}
-
-#[test]
-fn the_failure_note_has_the_documented_layout() {
-    let stored = StoredFailure {
-        boot: [7; 16],
-        failure: failure(true, Reason::RecoveryFailed),
-        written_ms: 0x0102_0304_0506_0708,
-    };
-    let bytes = encode_failure(&stored);
-    let mut expected = Vec::new();
-    expected.extend(b"SKYZFAI1");
-    expected.extend([7; 16]);
-    expected.extend([3; 16]);
-    expected.extend([1, 3, 0, 0, 0, 0, 0, 0]);
-    expected.extend([8, 7, 6, 5, 4, 3, 2, 1]);
-    expected.extend([0; 8]);
-    assert_eq!(bytes.to_vec(), expected);
-    assert_eq!(decode_failure(&bytes), Some(stored));
-
-    // Every reason has its own code and comes back.
-    let mut codes = Vec::new();
-    for (code, reason) in REASONS {
-        for held in [false, true] {
-            let stored = StoredFailure {
-                failure: failure(held, reason),
-                ..stored
-            };
-            let bytes = encode_failure(&stored);
-            assert_eq!((bytes[40], bytes[41]), (u8::from(held), code));
-            assert_eq!(decode_failure(&bytes), Some(stored));
-        }
-        codes.push(code);
-    }
-    codes.dedup();
-    assert_eq!(codes, [1, 2, 3, 4, 5, 6, 7]);
-    // The in-place store's reason is code 7, and the log store's keeps
-    // code 1: notes written before code 7 existed read as they did.
-    for (reason, code) in [(Reason::LogFailed, 1), (Reason::ImageFailed, 7)] {
-        let stored = StoredFailure {
-            failure: failure(false, reason),
-            ..stored
-        };
-        assert_eq!(encode_failure(&stored)[41], code, "{reason:?}");
-    }
-    // A code this version does not know is not a whole note: the start
-    // refuses the volume as failed while held, as a daemon older than
-    // code 7 does with a note of code 7.
-    let mut unknown = encode_failure(&stored);
-    unknown[41] = 8;
-    assert_eq!(decode_failure(&unknown), None);
-
-    // Not known whether a client held the device: its own value.
-    let unknown = StoredFailure {
-        failure: Failure {
-            held: Held::Unknown,
-            ..stored.failure
-        },
-        ..stored
-    };
-    let bytes = encode_failure(&unknown);
-    assert_eq!(bytes[40], 2);
-    assert_eq!(decode_failure(&bytes), Some(unknown));
 }
 
 /// The daemon's records and the agent name one channel: the socket is

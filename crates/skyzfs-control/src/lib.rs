@@ -154,6 +154,7 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 mod client;
+pub mod failure;
 #[cfg(target_os = "linux")]
 pub use client::ask;
 
