@@ -32,6 +32,7 @@ ac.EFFECTS = ac.engine_effects()
 S = 'b' * 32
 ULID = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
 POOL = 'skzcut'
+ROUND1 = 'round 1 ok took_ms=3000 late_ms=0 skipped=0 begun=r1 under_way=0'
 
 
 def commit_of(t):
@@ -342,9 +343,36 @@ class Parts(unittest.TestCase):
     def test_read_outputs(self):
         o = ac.read_outputs(f'snap/t1 {"c" * 64}\nabandoned t2 destroyed\nstopped t3 by a person\nunsettled t4\n')
         self.assertEqual(o, {'published': {'t1': 'c' * 64}, 'abandoned': {'t2': 'destroyed'},
-                             'stopped': {'t3': 'by a person'}, 'unsettled': ['t4']})
+                             'stopped': {'t3': 'by a person'}, 'unsettled': ['t4'], 'rounds': []})
         with self.assertRaises(RigError):
             ac.read_outputs('something else\n')
+        # `run`'s round lines, among its publishes' lines.
+        o = ac.read_outputs(f'{ROUND1}\nsnap/r1 {"c" * 64}\n'
+                            'round 2 failed took_ms=7 late_ms=12 skipped=3 begun=- under_way=1\n')
+        self.assertEqual(o['published'], {'r1': 'c' * 64})
+        self.assertEqual(o['rounds'], [
+            {'n': 1, 'ok': True, 'took_ms': 3000, 'late_ms': 0, 'skipped': 0, 'begun': 'r1', 'under_way': 0,
+             'synced': None},
+            {'n': 2, 'ok': False, 'took_ms': 7, 'late_ms': 12, 'skipped': 3, 'begun': None, 'under_way': 1,
+             'synced': None}])
+        # With #170's synced=K, and fields after it (M2.7d-2's bound=),
+        # by name in any order.
+        head = 'round 3 ok took_ms=5 late_ms=0 skipped=0 begun=r3 under_way=0'
+        for more in (' synced=2', ' synced=2 bound=1', ' bound=0 synced=2', ' synced=2 bound=1 next_one=x'):
+            o = ac.read_outputs(head + more + '\n')
+            self.assertEqual((o['rounds'][0]['n'], o['rounds'][0]['synced']), (3, 2), more)
+        self.assertIsNone(ac.read_outputs(head + ' bound=1\n')['rounds'][0]['synced'])
+        for bad in ('round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=2 more\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=x\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=2 bound=\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0 synced=2 synced=3\n',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0  synced=2\n',
+                    'round 0 ok took_ms=1 late_ms=0 skipped=0 begun=x under_way=0',
+                    'round 1 ok took_ms=1 late_ms=0 skipped=0 begun=x',
+                    'round 1 done took_ms=1 late_ms=0 skipped=0 begun=x under_way=0'):
+            with self.assertRaises(RigError):
+                ac.read_outputs(bad + '\n')
 
     def test_outcome(self):
         outs = [ac.read_outputs('abandoned t destroyed\n')]
@@ -637,7 +665,7 @@ class Main(unittest.TestCase):
         rc, lines = run_course(change=case_file('trace', 'publish.out', 'what\n'))
         self.assertEqual(rc, 2)
         self.assertEqual(lines['premise_trace_rig'][0], 'ERROR')
-        self.assertIn('not one of its four', lines['premise_trace_rig'][1])
+        self.assertIn('not one of its five', lines['premise_trace_rig'][1])
         self.assertNotIn('pin_trace_criterion', lines)
         for k in ('pin_gone_criterion', 'pin_unmarked_refused', 'pin_A-asked-after-1_clean', 'ctl_manifest'):
             self.assertIn(lines[k][0], ('ok', 'CAUGHT'), k)
@@ -1193,7 +1221,8 @@ class Survivors(unittest.TestCase):
     def test_first_rc_names_each_scenario_judged_with_no_kill(self):
         # N20, N23: gone and both always kill; unmarked has its own pin.
         self.assertEqual(set(ac.FIRST_RC), set(ac.EXPECTED) - set(ac.KILLED_ONLY) - {'unmarked'})
-        self.assertEqual({k for k, v in ac.FIRST_RC.items() if v != '0'}, {'destroy', 'tooold'})
+        self.assertEqual({k: v for k, v in ac.FIRST_RC.items() if v != '0'},
+                         {'destroy': '3', 'tooold': '3', 'runtwice': '1', 'runbad': '6'})
 
     def test_a_tooold_case_with_no_kill_ends_its_first_run_3(self):
         # N18.
@@ -1269,6 +1298,333 @@ class Survivors(unittest.TestCase):
         del c['rows']['a5']
         rc, lines = run_course(course=c)
         self.assertEqual((rc, lines['pin_d-carry-swap_carried_by_the_last_request'][0]), (1, 'FAILED'))
+
+
+def rline(n, name, took=3000, late=0, skipped=0, ok=True, synced=None):
+    return (f'round {n} {"ok" if ok else "failed"} took_ms={took} late_ms={late} skipped={skipped} '
+            f'begun={name or "-"} under_way=0' + ('' if synced is None else f' synced={synced}'))
+
+
+def rounds_of(*lines):
+    return ac.read_outputs(''.join(ln + '\n' for ln in lines))['rounds']
+
+
+def arrivals(*at):
+    return ''.join(f'{k}\t{a}\n' for k, a in enumerate(at, 1))
+
+
+# Three rounds of 3 s at ticks 1000, 1010, 1020 on the rig's clock.
+THREE = [rline(1, 'r1'), rline(2, 'r2'), rline(3, 'r3')]
+THREE_AT = (1003.0, 1013.0, 1023.0)
+
+
+def run_out(lines, names):
+    return ''.join(f'{ln}\nsnap/{n} {commit_of(n)}\n' if n else f'{ln}\n' for ln, n in zip(lines, names))
+
+
+def with_run_case(cid, scen, kill, rc, t, own, pub=(('r1', 91), ('r2', 92), ('r3', 93))):
+    """The course with a case of `run` added; PUB: the names its runs
+    published, with their groups."""
+    c = right()
+    c['cases'].append((cid, scen, kill, rc, t, own))
+    for k, (n, g) in enumerate(pub):
+        c['pub'].append((cid, n, g, 600 + k + 10 * len(c['pub']), commit_of(n)))
+        c['rows'][n] = (20 + len(c['rows']), g + 1)
+    return c
+
+
+def run_files(**more):
+    files = {'trace.tsv': trace('r3', *WHOLE), 'publish.out': run_out(THREE, ('r1', 'r2', 'r3')),
+             'publish.rounds.tsv': arrivals(*THREE_AT), 'publish.term-at': '1025.0\n',
+             'publish.ended-at': '1025.4\n'}
+    files.update(more)
+    return files
+
+
+class Rounds(unittest.TestCase):
+    def test_read_arrivals(self):
+        self.assertEqual(ac.read_arrivals(arrivals(1.5, 2.25)), [1.5, 2.25])
+        self.assertEqual(ac.read_arrivals(''), [])
+        for bad in ('2\t1.0\n', '1\t1.0\n1\t2.0\n', '1\tsoon\n', '1 1.0\n', '1\t1.0\tx\n'):
+            with self.assertRaises(RigError, msg=bad):
+                ac.read_arrivals(bad)
+
+    def test_rounds_at_their_ticks(self):
+        self.assertEqual(ac.judge_rounds(rounds_of(*THREE), list(THREE_AT), 3), [])
+        # Within TICK_SLACK of the tick on the rig's clock.
+        self.assertEqual(ac.judge_rounds(rounds_of(*THREE), [1003.0, 1013.9, 1023.4], 3), [])
+
+    def test_too_few_rounds(self):
+        self.assertTrue(ac.judge_rounds(rounds_of(*THREE[:2]), list(THREE_AT[:2]), 3))
+        self.assertTrue(ac.judge_rounds([], [], 1))
+
+    def test_numbering(self):
+        r = rounds_of(rline(1, 'r1'), rline(3, 'r2'), rline(4, 'r3'))
+        self.assertTrue(any('numbered' in b for b in ac.judge_rounds(r, list(THREE_AT), 3)))
+        r = rounds_of(rline(2, 'r1'), rline(3, 'r2'), rline(4, 'r3'))
+        self.assertTrue(any('numbered' in b for b in ac.judge_rounds(r, list(THREE_AT), 3)))
+
+    def test_a_failed_round(self):
+        r = rounds_of(rline(1, 'r1'), rline(2, 'r2', ok=False), rline(3, 'r3'))
+        self.assertTrue(any('failed' in b for b in ac.judge_rounds(r, list(THREE_AT), 3)))
+
+    def test_no_publish_begun_or_a_name_twice(self):
+        r = rounds_of(rline(1, 'r1'), rline(2, None), rline(3, 'r3'))
+        self.assertTrue(any('began no publish' in b for b in ac.judge_rounds(r, list(THREE_AT), 3)))
+        r = rounds_of(rline(1, 'r1'), rline(2, 'r1'), rline(3, 'r3'))
+        self.assertTrue(any('twice' in b for b in ac.judge_rounds(r, list(THREE_AT), 3)))
+
+    def test_lines_the_rig_did_not_see_come(self):
+        self.assertTrue(any('saw 2' in b for b in ac.judge_rounds(rounds_of(*THREE), list(THREE_AT[:2]), 3)))
+
+    def test_a_round_past_its_tick_skips_it(self):
+        # Round 2 took 12 s: tick 1020 is skipped, round 3 begins at 1030.
+        r = rounds_of(rline(1, 'r1'), rline(2, 'r2', took=12000, skipped=1), rline(3, 'r3'))
+        self.assertEqual(ac.judge_rounds(r, [1003.0, 1022.0, 1033.0], 3), [])
+        # Not skipped: round 3 at 1020 would have been late by 2 s.
+        r = rounds_of(rline(1, 'r1'), rline(2, 'r2', took=12000), rline(3, 'r3', late=2000))
+        self.assertEqual(ac.judge_rounds(r, [1003.0, 1022.0, 1025.0], 3), [])
+
+    def test_a_round_ended_in_time_skips_none(self):
+        r = rounds_of(rline(1, 'r1'), rline(2, 'r2', skipped=1), rline(3, 'r3'))
+        self.assertTrue(any('skipped 1' in b for b in ac.judge_rounds(r, [1003.0, 1013.0, 1033.0], 3)))
+
+    def test_a_late_round_after_one_ended_in_time(self):
+        r = rounds_of(rline(1, 'r1'), rline(2, 'r2', late=1500), rline(3, 'r3'))
+        self.assertTrue(any('1500 ms after its tick' in b
+                            for b in ac.judge_rounds(r, [1003.0, 1014.5, 1023.0], 3)))
+        r = rounds_of(rline(1, 'r1'), rline(2, 'r2', late=900), rline(3, 'r3'))
+        self.assertEqual(ac.judge_rounds(r, [1003.0, 1013.9, 1023.0], 3), [])
+
+    def test_a_round_off_its_tick_on_the_rig_clock(self):
+        # Round 2 says it began on its tick; the rig saw it 2 s later.
+        self.assertTrue(any("rig's clock" in b
+                            for b in ac.judge_rounds(rounds_of(*THREE), [1003.0, 1015.0, 1023.0], 3)))
+        # Or a round every 5 s with every 10.
+        self.assertTrue(ac.judge_rounds(rounds_of(*THREE), [1003.0, 1008.0, 1013.0], 3))
+        self.assertEqual(ac.judge_rounds(rounds_of(*THREE), [1003.0, 1008.0, 1013.0], 3, every=5), [])
+
+    def test_rounds_after(self):
+        self.assertEqual(ac.rounds_after([1003.0, 1013.0], '1014.0\n'), [])
+        self.assertEqual(ac.rounds_after([], '1014.0'), [])
+        self.assertTrue(any('[3]' in b for b in ac.rounds_after([1003.0, 1013.0, 1014.5], '1014.0')))
+        with self.assertRaises(RigError):
+            ac.rounds_after([1.0], 'soon')
+
+    def test_ended_within(self):
+        self.assertEqual(ac.ended_within('10.0', '11.9'), [])
+        self.assertTrue(ac.ended_within('10.0', '12.5'))
+        with self.assertRaises(RigError):
+            ac.ended_within('10.0', '')
+
+
+class Run(unittest.TestCase):
+    def judged(self, c, cid):
+        rc, lines = run_course(course=c, name='arun')
+        return rc, {k: v for k, v in lines.items() if cid in k}
+
+    def test_run(self):
+        rc, lines = self.judged(with_run_case('R-run', 'run', '-', '0', 'r3', run_files()), 'R-run')
+        for k in ('pin_R-run_rounds', 'pin_R-run_ended_on_sigterm', 'pin_R-run_no_round_after_sigterm',
+                  'pin_R-run_first_run', 'pin_R-run_outcome'):
+            self.assertEqual(lines[k][0], 'ok', (k, lines))
+        self.assertEqual(rc, 0, lines)
+
+    def test_run_fails(self):
+        for change, key in [
+                ({'publish.out': run_out([rline(1, 'r1'), rline(2, 'r2', ok=False), rline(3, 'r3')],
+                                         ('r1', 'r2', 'r3'))}, 'rounds'),
+                ({'publish.out': run_out(THREE[:2], ('r1', 'r2'))}, 'rounds'),
+                ({'publish.rounds.tsv': arrivals(1003.0, 1013.0, 1029.0)}, 'rounds'),
+                ({'publish.ended-at': '1028.0\n'}, 'ended_on_sigterm'),
+                ({'publish.term-at': '1022.0\n', 'publish.ended-at': '1023.5\n'}, 'no_round_after_sigterm')]:
+            rc, lines = self.judged(with_run_case('R-run', 'run', '-', '0', 'r3', run_files(**change)), 'R-run')
+            self.assertEqual(lines[f'pin_R-run_{key}'][0], 'FAILED', (change, lines))
+            self.assertEqual(rc, 1, (change, lines))
+        rc, lines = self.judged(with_run_case('R-run', 'run', '-', '1', 'r3', run_files()), 'R-run')
+        self.assertEqual(lines['pin_R-run_first_run'][0], 'FAILED', lines)
+
+    def test_runheld(self):
+        held = {'held.rounds': '1\n', 'held.rc': '8\n', 'held-settle.rc': '8\n', 'held.out': '',
+                'held.err': 'skyzfs-agent: another agent holds the directory\n'}
+        rc, lines = self.judged(with_run_case('R-held', 'runheld', '-', '0', 'r3', run_files(**held)), 'R-held')
+        for k in ('pin_R-held_rounds', 'pin_R-held_held', 'pin_R-held_ended_on_sigterm', 'pin_R-held_first_run'):
+            self.assertEqual(lines[k][0], 'ok', (k, lines))
+        for change in ({'held.rc': '0\n'}, {'held-settle.rc': '1\n'}, {'held.rc': ''},
+                       {'held.out': 'snap/r1 x\n'}, {'held.rounds': '3\n'}, {'held.rounds': ''}):
+            rc, lines = self.judged(with_run_case('R-held', 'runheld', '-', '0', 'r3',
+                                                  run_files(**dict(held, **change))), 'R-held')
+            self.assertEqual(lines['pin_R-held_held'][0], 'FAILED', (change, lines))
+
+    def run2(self, **change):
+        files = {'trace.tsv': trace('r2', *WHOLE, *upto('intent', 'after')),
+                 'publish.out': run_out(THREE[:1], ('r1',)),
+                 'publish.err': 'skyzfs-agent: test hook --kill-at: killed at intent after (2)\n',
+                 'run2.out': run_out([rline(1, 'r4'), rline(2, 'r5')], ('r4', 'r5')), 'run2.rc': '0\n',
+                 'run2.rounds.tsv': arrivals(2003.0, 2013.0), 'run2.term-at': '2014.0\n',
+                 'run2.ended-at': '2014.2\n', 'settle.out': f'snap/r2 {commit_of("r2")}\n'}
+        files.update(change)
+        return with_run_case('R-kill', 'runkill', 'intent:after:2', '137', 'r2', files,
+                             pub=(('r1', 91), ('r2', 92), ('r4', 94), ('r5', 95)))
+
+    def test_runkill(self):
+        rc, lines = self.judged(self.run2(), 'R-kill')
+        for k in ('premise_R-kill_killed', 'pin_R-kill_restarted', 'pin_R-kill_ended_on_sigterm',
+                  'pin_R-kill_no_round_after_sigterm', 'pin_R-kill_outcome'):
+            self.assertEqual(lines[k][0], 'ok', (k, lines))
+        for change in ({'run2.rc': '1\n'}, {'run2.out': run_out([rline(1, 'r4')], ('r4',))},
+                       {'run2.rounds.tsv': arrivals(2003.0, 2020.0)}):
+            rc, lines = self.judged(self.run2(**change), 'R-kill')
+            self.assertEqual(lines['pin_R-kill_restarted'][0], 'FAILED', (change, lines))
+        rc, lines = self.judged(self.run2(**{'run2.ended-at': '2020.0\n'}), 'R-kill')
+        self.assertEqual(lines['pin_R-kill_ended_on_sigterm'][0], 'FAILED', lines)
+        rc, lines = self.judged(self.run2(**{'run2.term-at': '2012.0\n'}), 'R-kill')
+        self.assertEqual(lines['pin_R-kill_no_round_after_sigterm'][0], 'FAILED', lines)
+
+    def twice(self, rc='1', **change):
+        files = {'trace.tsv': trace('r1', *upto('asked', 'after')), 'publish.out': '',
+                 'publish.term-at': '1001.0\n', 'publish.ended-at': '1001.3\n',
+                 'settle.out': f'snap/r1 {commit_of("r1")}\n'}
+        files.update(change)
+        return with_run_case('R-twice', 'runtwice', '-', rc, 'r1', files, pub=(('r1', 91),))
+
+    def test_runtwice(self):
+        rc, lines = self.judged(self.twice(), 'R-twice')
+        for k in ('pin_R-twice_ended_on_second_signal', 'pin_R-twice_first_run', 'pin_R-twice_outcome'):
+            self.assertEqual(lines[k][0], 'ok', (k, lines))
+        rc, lines = self.judged(self.twice(**{'publish.ended-at': '1004.0\n'}), 'R-twice')
+        self.assertEqual(lines['pin_R-twice_ended_on_second_signal'][0], 'FAILED', lines)
+        rc, lines = self.judged(self.twice(rc='0'), 'R-twice')
+        self.assertEqual(lines['pin_R-twice_first_run'][0], 'FAILED', lines)
+
+    def bad(self, kind, rc='6', **change):
+        words = {'corrupt': 'the record is corrupt (line 1); a person must judge it',
+                 'volume': f'the record is of volume {"b" * 64}'}[kind]
+        files = {'trace.tsv': trace('r1', *WHOLE), 'bad.kind': kind + '\n', 'bad.rounds': '1\n',
+                 'publish.out': run_out([rline(1, 'r1'), rline(2, None, took=8, ok=False)], ('r1', None)),
+                 'publish.err': f'skyzfs-agent: round 2: {words}\n'}
+        if kind == 'volume':
+            files['other.rc'] = '1\n'
+        files.update(change)
+        return with_run_case(f'R-{kind}', 'runbad', '-', rc, 'r1', files, pub=(('r1', 91),))
+
+    def test_runbad(self):
+        for kind in ('corrupt', 'volume'):
+            rc, lines = self.judged(self.bad(kind), f'R-{kind}')
+            keys = [f'pin_R-{kind}_record_judged', f'pin_R-{kind}_first_run', f'pin_R-{kind}_outcome']
+            keys += ['premise_R-volume_other_record'] if kind == 'volume' else []
+            for k in keys:
+                self.assertEqual(lines[k][0], 'ok', (k, lines))
+            self.assertEqual(rc, 0, lines)
+
+    def test_runbad_fails(self):
+        # Round 2's line, last, says ok; or round 2 ended with a publish.
+        ok_out = run_out([rline(1, 'r1'), rline(2, 'r2')], ('r1', None))
+        for kind, change in [
+                ('corrupt', {'publish.out': ok_out}),
+                ('corrupt', {'publish.out': run_out([rline(1, 'r1'), rline(2, 'r2')], ('r1', 'r2'))}),
+                ('corrupt', {'publish.err': f'skyzfs-agent: round 2: the record is of volume {"b" * 64}\n'}),
+                ('corrupt', {'bad.rounds': '2\n'}),
+                ('corrupt', {'publish.err': 'skyzfs-agent: round 2: the daemon: gone\n'}),
+                ('corrupt', {'publish.err': 'skyzfs-agent: round 3: the record is corrupt (x)\n'}),
+                ('volume', {'publish.err': 'skyzfs-agent: round 2: the record is corrupt (x)\n'}),
+                ('corrupt', {'publish.out': run_out([rline(1, 'r1'), rline(2, None, ok=False)], ('r1', None))
+                             + 'snap/r9 x\n'})]:
+            rc, lines = self.judged(self.bad(kind, **change), f'R-{kind}')
+            self.assertEqual(lines[f'pin_R-{kind}_record_judged'][0], 'FAILED', (kind, change, lines))
+        rc, lines = self.judged(self.bad('corrupt', rc='1'), 'R-corrupt')
+        self.assertEqual(lines['pin_R-corrupt_first_run'][0], 'FAILED', lines)
+        rc, lines = self.judged(self.bad('volume', **{'other.rc': '0\n'}), 'R-volume')
+        self.assertEqual(lines['premise_R-volume_other_record'][0], 'ERROR', lines)
+        self.assertEqual(rc, 2, lines)
+
+    def test_runbad_kind_and_count_are_the_rigs(self):
+        for change in ({'bad.kind': 'other\n'}, {'bad.rounds': 'one\n'}):
+            rc, lines = self.judged(self.bad('corrupt', **change), 'R-corrupt')
+            self.assertEqual(rc, 2, (change, lines))
+
+
+CUTS_TOP = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=40 group=120 opens=itself'
+CUTS_AFTER = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=42 group=114 opens=rewind'
+
+
+class Rewind(unittest.TestCase):
+    def test_read_cuts(self):
+        self.assertEqual(ac.read_cuts(CUTS_TOP + '\n'), (120, 'itself'))
+        self.assertEqual(ac.read_cuts(CUTS_AFTER), (114, 'rewind'))
+        self.assertEqual(ac.read_cuts('cuts attachment=a state=none count=0 group=none opens=none'), (None, 'none'))
+        for bad in ('', 'refused gone the daemon', 'cuts group=12', 'cuts group=12 opens=maybe',
+                    'accepted group=12 opens=rewind'):
+            with self.assertRaises(RigError, msg=bad):
+                ac.read_cuts(bad)
+
+    def test_rewind_premise(self):
+        self.assertEqual(ac.rewind_premise('112\n', CUTS_TOP, CUTS_AFTER), [])
+        self.assertTrue(ac.rewind_premise('112', CUTS_TOP, CUTS_AFTER.replace('rewind', 'itself')))
+        self.assertTrue(ac.rewind_premise('120', CUTS_TOP, CUTS_AFTER))
+        self.assertTrue(ac.rewind_premise('112', CUTS_TOP.replace('group=120 opens=itself', 'group=none opens=none'),
+                                          CUTS_AFTER))
+        with self.assertRaises(RigError):
+            ac.rewind_premise('', CUTS_TOP, CUTS_AFTER)
+
+    def test_judge_synced(self):
+        good = rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=0))
+        self.assertEqual(ac.judge_synced(good, {'r1': 'c', 'r2': 'c'}, ''), [])
+        for rounds, pub, err, what in [
+                ([], {}, '', 'no round line'),
+                (rounds_of(rline(1, 'r1'), rline(2, 'r2')), {'r1': 'c'}, '', 'no synced='),
+                (rounds_of(rline(1, 'r1', synced=0), rline(2, 'r2', synced=0)), {'r1': 'c'}, '', 'synced 0'),
+                (rounds_of(rline(1, None, synced=5)), {}, '', 'began no publish'),
+                (rounds_of(rline(1, 'r1', synced=5)), {'r2': 'c'}, '', 'not printed published'),
+                (rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=1)), {'r1': 'c'}, '', 'synced again'),
+                (good, {'r1': 'c'}, 'skyzfs-agent: round 2: no publish begun: the newest cut, of group 9, does not '
+                                    'open as itself: the daemon counted no cut after a sync\n', 'standard error')]:
+            bad = ac.judge_synced(rounds, pub, err)
+            self.assertTrue(any(what in b for b in bad), (what, bad))
+
+    def case(self, **change):
+        # Round 1's syncs and settle took 14 s: round 2 is tick 10's, 4 s late.
+        lines = [rline(1, 'r1', took=14000, synced=6), rline(2, 'r2', late=4000, synced=0)]
+        files = {'trace.tsv': trace('r2', *WHOLE), 'publish.out': run_out(lines, ('r1', 'r2')),
+                 'publish.rounds.tsv': arrivals(1014.0, 1017.0), 'publish.term-at': '1018.0\n',
+                 'publish.ended-at': '1018.3\n', 'rewind-txg': '112\n', 'rewind-top.txt': CUTS_TOP + '\n',
+                 'rewind-cuts.txt': CUTS_AFTER + '\n'}
+        files.update(change)
+        return with_run_case('R-rewind', 'runrewind', '-', '0', 'r2', files, pub=(('r1', 121), ('r2', 122)))
+
+    def judged(self, c):
+        rc, lines = run_course(course=c, name='arun')
+        return rc, {k: v for k, v in lines.items() if 'R-rewind' in k}
+
+    def test_runrewind(self):
+        rc, lines = self.judged(self.case())
+        for k in ('premise_R-rewind_rewound', 'pin_R-rewind_synced_past', 'pin_R-rewind_rounds',
+                  'pin_R-rewind_ended_on_sigterm', 'pin_R-rewind_no_round_after_sigterm', 'pin_R-rewind_first_run', 'pin_R-rewind_outcome'):
+            self.assertEqual(lines[k][0], 'ok', (k, lines))
+        self.assertEqual(rc, 0, lines)
+
+    def test_runrewind_fails(self):
+        for change, key in [
+                ({'publish.out': run_out([rline(1, 'r1', took=14000, synced=0),
+                                          rline(2, 'r2', late=4000, synced=0)], ('r1', 'r2'))}, 'synced_past'),
+                ({'publish.out': run_out([rline(1, 'r1', took=14000, skipped=1),
+                                          rline(2, 'r2', late=4000)], ('r1', 'r2'))}, 'synced_past'),
+                ({'publish.err': 'skyzfs-agent: round 1: no publish begun: x\n'}, 'synced_past'),
+                ({'publish.out': run_out([rline(1, 'r1', took=14000, synced=6)], ('r1',))}, 'rounds'),
+                ({'publish.ended-at': '1021.0\n'}, 'ended_on_sigterm'),
+                ({'publish.rounds.tsv': arrivals(1014.0, 1023.0)}, 'rounds')]:
+            rc, lines = self.judged(self.case(**change))
+            self.assertEqual(lines[f'pin_R-rewind_{key}'][0], 'FAILED', (change, lines))
+            self.assertEqual(rc, 1, (change, lines))
+
+    def test_runrewind_premise(self):
+        for change in ({'rewind-cuts.txt': CUTS_AFTER.replace('rewind', 'itself')}, {'rewind-txg': '120\n'}):
+            rc, lines = self.judged(self.case(**change))
+            self.assertEqual(lines['premise_R-rewind_rewound'][0], 'ERROR', (change, lines))
+            self.assertNotIn('pin_R-rewind_synced_past', lines)
+            self.assertEqual(rc, 2, (change, lines))
+        rc, lines = self.judged(self.case(**{'rewind-cuts.txt': 'refused gone x\n'}))
+        self.assertEqual(rc, 2, lines)
 
 
 if __name__ == '__main__':
