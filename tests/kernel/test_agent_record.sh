@@ -1276,6 +1276,21 @@ stamps() {
     )
 }
 is "astamp: stamps, a match, the end, the limit; a line with no newline not stamped" "$(stamps)" "0 1 2 1,2,3, 1, ended "
+# A line that arrives between astamp's stamps and its match (here, as
+# grep runs) is stamped before astamp returns.
+stamplate() {
+    (
+        CDIR=$T/al; rm -rf "$CDIR"; mkdir -p "$CDIR"
+        eval "$(fn astamp_now)"; eval "$(fn astamp)"
+        echo "snap/x a" > "$CDIR/r.out"; : > "$CDIR/r.err"
+        grep() { [ -e "$CDIR/came" ] || { echo "round 1 ok" >> "$CDIR/r.out"; touch "$CDIR/came"; }; command grep "$@"; }
+        sleep 5 & AGENT_PID=$!
+        r=0; astamp r 5 '^round 1 ' || r=$?
+        kill "$AGENT_PID"
+        echo "$r $(cut -f1 "$CDIR/r.out.tsv" | tr '\n' ,)"
+    )
+}
+is "astamp: the line matched is stamped before the return" "$(stamplate)" "0 1,2,"
 # The course's cases, in order, and a case's line.
 is "afail: zed, the begin, U, W, the end" "$(
     afail_zed() { printf 'zed;'; }; agent_begin() { printf 'begin;'; }; fcase() { printf '%s;' "$*"; }

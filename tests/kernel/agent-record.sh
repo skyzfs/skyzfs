@@ -1127,12 +1127,17 @@ astamp_now() {
 # LABEL SECONDS [ERE]: the run in the background (AGENT_PID), its lines
 # stamped every 0.05 s, until a line of its output or errors matches
 # ERE (0), it ends (1; the time it was seen to end in LABEL.ended-at),
-# or SECONDS pass (2).
+# or SECONDS pass (2). A line that came between the stamps and the
+# match is stamped before the return, so that the line matched always
+# has its stamp from before whatever the caller does next.
 astamp() {
     local t0=$SECONDS
     while :; do
         astamp_now "$1"
-        [ -z "${3:-}" ] || ! grep -Eq -- "$3" "$CDIR/$1.out" "$CDIR/$1.err" 2>/dev/null || return 0
+        if [ -n "${3:-}" ] && grep -Eq -- "$3" "$CDIR/$1.out" "$CDIR/$1.err" 2>/dev/null; then
+            astamp_now "$1"
+            return 0
+        fi
         if ! kill -0 "$AGENT_PID" 2>/dev/null; then
             echo "$EPOCHREALTIME" > "$CDIR/$1.ended-at"
             astamp_now "$1"
