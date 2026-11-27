@@ -29,7 +29,11 @@ name: skyzfs-publish-rig
 # user's peer, the channel's counts), passist (M2.T5's stage 0: on an
 # idle pool, publishes carried only by the agent's assist, a `zfs set`
 # and a sync, at the pace decided on #144; the groups, cuts and uploads
-# a minute it makes).
+# a minute it makes), pretire (M2.7b-1, control protocol 3: a published
+# snapshot retired, refused `other` with another commit, `gone` when
+# asked again or never published; node B no longer lists it), pkillret
+# (the daemon killed once a retire's transaction landed; the next
+# instance answers the same retire `gone`).
 #
 # Exit 1 is a verdict against the daemon, exit 2 the rig's own error.
 # Read the summary's table, not the colour.
@@ -44,7 +48,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04"]'
       courses:
-        description: "courses, separated by spaces (pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist); empty: all"
+        description: "courses, separated by spaces (pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist pretire pkillret); empty: all"
         default: ""
       daemon_ref:
         description: "build skyzfsd from this commit (40 hex digits) and not from the checkout, under the checkout's rig. Empty: the checkout"
@@ -179,7 +183,7 @@ jobs:
         env:
           COURSES: ${{ inputs.courses || '' }}
         run: |
-          read -r -a recs <<< "${COURSES:-pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist}"
+          read -r -a recs <<< "${COURSES:-pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist pretire pkillret}"
           for r in "${recs[@]}"; do [[ $r =~ ^p[a-z]+$ ]] || { echo "::error::not a publish course: $r"; exit 64; }; done
           sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD=0 CUT_UPLOAD=1 \
             CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_NODEB="$PWD/target/debug/skyzfs-nodeb" \

@@ -102,8 +102,8 @@
 # upload courses, below rec_failed).
 # The publish courses (the channel rig, skyzfs-publish-rig.yml; below
 # rec_ufailed) are made then too, by name only: pplain, prewind,
-# prewindf, prewindc, pkill, pkillman, pkillpub, pchannel and passist. An agent
-# (publish_agent.py) asks the daemon through its channel to publish
+# prewindf, prewindc, pkill, pkillman, pkillpub, pchannel, passist,
+# pretire and pkillret. An agent (publish_agent.py) asks the daemon through its channel to publish
 # snapshots of the pool, and
 # DIR/ends.tsv gets each answer under the course's label for it, for
 # publish_check.py (their CUT_CHECK).
@@ -186,7 +186,7 @@ UPLOAD_ONLY="umoved urow ukill ulease ulost uv1 uv1moved"
 # start, a kill inside an upload, a failed volume.
 UPLOAD_NAMED="unostore ukillput ufailed"
 # The channel rig's (skyzfs-publish-rig.yml), by name only.
-PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist"
+PUBLISH_NAMED="pplain prewind prewindf prewindc pkill pkillman pkillpub pchannel passist pretire pkillret"
 # The agent rig's (skyzfs-agent-rig.yml; agent-record.sh), by name only.
 AGENT_NAMED="aplain adaemon arare arun"
 KNOWN=$ALL
@@ -1949,6 +1949,69 @@ rec_pkillat() {
 rec_pkillman() { rec_pkillat m1; }
 rec_pkillpub() { rec_pkillat p1; }
 
+# LABEL: the commit LABEL's end in ends.tsv names (`done commit=H`), or
+# 64 zeros where it names none, so that a course asks on and its pins,
+# not the rig, say what was not published.
+pcommit() {
+    local h
+    h=$(awk -F '\t' -v l="$1" '$1 == l { v = $2 } END { print v }' "$RDIR/ends.tsv" \
+        | sed -n 's/^done commit=\([0-9a-f]\{64\}\)$/\1/p')
+    echo "${h:-$(printf '0%.0s' $(seq 1 64))}"
+}
+
+# pretire (M2.7b-1): a published snapshot retired, as the monitor
+# retires one it no longer keeps (`skyzfsd retire`). e1 and e2 are
+# published; e1 asked to be retired with e2's commit is refused `other`,
+# naming e1's own, and left as it was (a look reads its row); retired
+# with its own; then looked at (absent), listed by node B (no snap/e1,
+# snap/e2 still there: DIR/refs-after.txt), and retired again: `gone`,
+# as is e9, never published. e2 is then read by node B in full.
+rec_pretire() {
+    create_pool
+    load 1
+    pflow e1 e1 --sync --limit-s 300
+    pflow e2 e2 --sync --limit-s 300
+    pask e1-other retire e1 "$(pcommit e2)"
+    pask e1-kept look e1
+    pask e1-retire retire e1 "$(pcommit e1)"
+    pask e1-look look e1
+    nodeb refs > "$RDIR/refs-after.txt" 2> "$RDIR/refs-after.err" \
+        || rig_error "node B refs failed: $(tail -n 2 "$RDIR/refs-after.err")"
+    pask e1-again retire e1 "$(pcommit e1)"
+    pask e9 retire e9 "$(pcommit e1)"
+    load 1
+    export_pool
+}
+
+# pkillret (M2.7b-1): the daemon kills itself inside its first retire
+# (--kill-at-upload retire:1), once the transaction that deletes snap/k1
+# and its row has landed and before the uploader knew it. The agent gets
+# no answer. Node B reads snap/k1 between the kill and the take-over
+# (DIR/k1-between.txt: gone, the hook's premise). The next instance,
+# asked the same retire, answers `gone`: a retire is asked again until
+# it is answered, and one that landed is not an error.
+rec_pkillret() {
+    local h out rc=0 _i
+    create_pool
+    load 1
+    pflow k1 k1 --sync --limit-s 300
+    h=$(pcommit k1)
+    out=$(pagent ask retire k1 "$h" 2>> "$RDIR/agent.err") || rc=$?
+    pend k1-retire "${out:-none (exit $rc)}"
+    for _i in $(seq 1 1200); do kill -0 "$SERVE_PID" 2>/dev/null || break; sleep 0.25; done
+    kill -0 "$SERVE_PID" 2>/dev/null && rig_error "the daemon had not killed itself in its first retire 300 s on"
+    serve_end 5 || rig_error "the daemon's pid went away and serve_end did not see it end"
+    printf 'killed_rc\t%s\n' "$SERVE_RC" > "$RDIR/kill.tsv"
+    nodeb snap-row --snapshot k1 > "$RDIR/k1-between.txt" 2> "$RDIR/k1-between.err" \
+        || rig_error "node B snap-row failed: $(tail -n 2 "$RDIR/k1-between.err")"
+    SERVE_ARGS=()
+    serve_start 2
+    pask k1-again retire k1 "$h"
+    pask k1-look look k1
+    load 1
+    export_pool
+}
+
 # passist (M2.T5's stage 0; M2.6b2's `Zfs::assist`, #144): on an idle
 # pool, a publish carried only by the groups the agent's assist writes:
 # `zfs set skyzfs:assist=V` with a V not set before, then `zpool sync`
@@ -2080,6 +2143,7 @@ record() {
         prewind) SERVE_ARGS=(--lease-ttl-s 900) ;;
         pkillman) SERVE_ARGS=(--kill-at-upload manifest:1) ;;
         pkillpub) SERVE_ARGS=(--kill-at-upload publish:1) ;;
+        pkillret) SERVE_ARGS=(--kill-at-upload retire:1) ;;
         pchannel) PRE_SERVE=ulease_other ;;
         aplain|adaemon|arare|arun) SERVE_ARGS=("${AGENT_SERVE[@]}") ;;
         ulost) SERVE_ARGS=(--lease-ttl-s 3); DRAIN_STATE=lease_lost; DRAIN_HELD="" ;;
