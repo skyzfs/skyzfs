@@ -684,7 +684,9 @@ round_left() {
 # has its arrival (the check's pin_ID_no_round_after_sigterm); the end
 # within 60 s (await_agent). The signal's time and the end's, on the
 # rig's clock, are CDIR/LABEL.term-at and LABEL.ended-at. Fewer than N
-# lines in 120 s per line, or no line with 3 s left, is a verdict.
+# lines in 120 s per line, or a run that ended before a line with 3 s
+# left, is a verdict; a run alive with no such line in three more is the
+# rig's error.
 run_rounds_then_term() {
     local k=$2 limit=$((120 * $2)) left=0 have
     while await_rounds "$1" "$k" "$limit"; do
@@ -694,15 +696,27 @@ run_rounds_then_term() {
     done
     have=$(grep -c '^round ' "$CDIR/$1.out" 2>/dev/null) || have=0
     if [ "$have" -ge "$2" ] && [ "$left" -ge 3000 ] && kill -0 "$AGENT_PID" 2>/dev/null; then
+        # Every line read so far is stamped before the signal (a line
+        # that came after the last stamp, and before round_left read
+        # it, would otherwise be stamped after the signal).
+        await_rounds "$1" 0 0 || true
         kill -TERM "$AGENT_PID" 2>/dev/null || true
         echo "$EPOCHREALTIME" > "$CDIR/$1.term-at"
         await_rounds "$1" 1000000 60 || true
     elif [ "$have" -lt "$2" ]; then
         verdict rounds "the run printed $have round lines, not $2: $(tail -n 2 "$CDIR/$1.err")"
+    elif ! kill -0 "$AGENT_PID" 2>/dev/null; then
+        verdict rounds "the run ended after $have round lines, before one with 3 s left to its next tick: $(tail -n 2 "$CDIR/$1.err")"
     else
-        verdict rounds "no round line with 3 s left to its next tick in $have rounds: $(tail -n 2 "$CDIR/$1.err")"
+        # A run whose rounds overrun its tick again and again does what
+        # its docs allow, and the case cannot signal it between two: the
+        # rig's error, and the run ended with a SIGTERM that no pin reads.
+        case_error "no round line with 3 s left to its next tick in $have rounds at --every-s $RUN_EVERY: no time between two rounds to signal the run in"
+        kill -TERM "$AGENT_PID" 2>/dev/null || true
     fi
     await_agent "$1" 60
+    # A line printed just before the end is stamped too, after the signal.
+    await_rounds "$1" 1000000 0 || true
     echo "$EPOCHREALTIME" > "$CDIR/$1.ended-at"
 }
 # run: three rounds, then SIGTERM between two (exit 0).
@@ -809,8 +823,11 @@ scen_runbad() {
     cp -p "$CDIR/record.saved" "$ADIR/record"
 }
 # runrewind (M2.7d): `run` after a rewind import. The writer stopped and
-# the store frozen, so that the daemon holds every cut from then on
-# (none can be uploaded); groups written and synced (rewind_groups)
+# the store frozen, so that no cut is uploaded until the store thaws
+# (the daemon holds two at most, D7: the cut being uploaded, which
+# predates the rewind, and its newest; the abandoned top is replaced by
+# the import's first cut, so this case does not show design §9's
+# publish with cuts of the abandoned history still held); groups written and synced (rewind_groups)
 # until REWIND_BACK + 1 have committed since; the pool exported and
 # imported at the group REWIND_BACK from the newest (`zpool import -T`).
 # Its next groups are below those of the history it abandoned, and no

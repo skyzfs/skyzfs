@@ -27,7 +27,8 @@ name: skyzfs-agent-rig
 # no marker), r (arun: `skyzfs-agent run`, M2.7a: rounds at --every-s,
 # SIGTERM between rounds exits 0, a second signal 1, `recover` and
 # `settle` beside it 8, a run killed and started again, a record corrupt
-# or another volume's at a restart 6). A Stalled point has no daemon
+# or another volume's at a restart 6, and M2.7d's syncs past a rewind
+# import's abandoned groups before the first publish). A Stalled point has no daemon
 # hook to make it: the engine's fakes cover it (crates/skyzfs-agent),
 # and the power cut under the record is #144's model's.
 #

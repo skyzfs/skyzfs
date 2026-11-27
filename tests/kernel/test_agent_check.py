@@ -162,9 +162,10 @@ class FakeNodeB:
         return seen
 
 
-def log_text(cuts, asks=()):
+def log_text(cuts, asks=(), tail=()):
     """[(number, group, itself)], [(name, G, C)] -> a request log of one
-    instance: the asks, then the cuts."""
+    instance: the asks, then the cuts, then TAIL: ('cut', number, group,
+    opens) and ('ask', name, G, C, answer) lines, in its order."""
     out, ns = ['1000\t100\tstart\t0\t-\t-\t-\t64'], 1000
     for name, g, c in asks:
         ns += 10
@@ -172,6 +173,10 @@ def log_text(cuts, asks=()):
     for n, g, itself in cuts:
         ns += 10
         out.append(f'{ns}\t100\tcut\t-\t-\t{"itself" if itself else "rewind"}\t{n}\t{g}')
+    for t in tail:
+        ns += 10
+        out.append(f'{ns}\t100\tcut\t-\t-\t{t[3]}\t{t[1]}\t{t[2]}' if t[0] == 'cut'
+                   else f'{ns}\t100\tpublish\t-\tasked\t{t[2]}\t{t[3]}\t{t[1]} {t[4]}')
     return ''.join(ln + '\n' for ln in out)
 
 
@@ -180,7 +185,8 @@ def run_course(name='arare', change=None, fail=(), miss_files=False, miss_snap=F
     d = tempfile.mkdtemp()
     try:
         files = {'watch.log': '1000\tread cut 5\n', 'marks.tsv': '', 'published-gone.tsv': c.get('gone', ''),
-                 'requests.tsv': log_text([(n, g, True) for n, g in sorted(c['rows'].values())], c.get('asks', ())),
+                 'requests.tsv': log_text([(n, g, True) for n, g in sorted(c['rows'].values())], c.get('asks', ()),
+                                          c.get('tail', ())),
                  'published.tsv': ''.join(f'{a}\t{n}\t{t}\t{g}\t{p}\n' for a, n, t, g, p in c['pub']),
                  'cases.tsv': ''.join(f'{i}\t{s}\t{k}\t{r}\t{t}\n' for i, s, k, r, t, _ in c['cases'])}
         for _, n, _, _, _ in c['pub']:
@@ -1548,6 +1554,14 @@ CUTS_TOP = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=40 gro
 CUTS_AFTER = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=42 group=114 opens=rewind'
 
 
+# The request log of R-rewind's run: cut 17 opens only as a rewind, cut
+# 18 as itself, and round 1 asked r1 from it, refused rewound once (rule
+# R), then accepted; r2 refused once.
+REWIND_TAIL = [('cut', 17, 113, 'rewind'), ('cut', 18, 116, 'itself'), ('ask', 'r1', 116, 18, 'refused rewound'),
+               ('ask', 'r1', 116, 18, 'accepted'), ('ask', 'r2', 121, 19, 'refused rewound'),
+               ('ask', 'r2', 121, 19, 'accepted')]
+
+
 class Rewind(unittest.TestCase):
     def test_read_cuts(self):
         self.assertEqual(ac.read_cuts(CUTS_TOP + '\n'), (120, 'itself'))
@@ -1568,21 +1582,39 @@ class Rewind(unittest.TestCase):
             ac.rewind_premise('', CUTS_TOP, CUTS_AFTER)
 
     def test_judge_synced(self):
-        good = rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=0))
-        self.assertEqual(ac.judge_synced(good, {'r1': 'c', 'r2': 'c'}, ''), [])
-        for rounds, pub, err, what in [
-                ([], {}, '', 'no round line'),
-                (rounds_of(rline(1, 'r1'), rline(2, 'r2')), {'r1': 'c'}, '', 'no synced='),
-                (rounds_of(rline(1, 'r1', synced=0), rline(2, 'r2', synced=0)), {'r1': 'c'}, '', 'synced 0'),
-                (rounds_of(rline(1, None, synced=5)), {}, '', 'began no publish'),
-                (rounds_of(rline(1, 'r1', synced=5)), {'r2': 'c'}, '', 'not printed published'),
-                (rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=1)), {'r1': 'c'}, '', 'synced again'),
+        good, ask = rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=0)), (18, 'itself')
+        self.assertEqual(ac.judge_synced(good, {'r1': 'c', 'r2': 'c'}, '', ask), [])
+        for rounds, pub, err, a, what in [
+                ([], {}, '', ask, 'no round line'),
+                (rounds_of(rline(1, 'r1'), rline(2, 'r2')), {'r1': 'c'}, '', ask, 'no synced='),
+                (rounds_of(rline(1, 'r1', synced=0), rline(2, 'r2', synced=0)), {'r1': 'c'}, '', ask, 'synced 0'),
+                (rounds_of(rline(1, None, synced=5)), {}, '', None, 'began no publish'),
+                (rounds_of(rline(1, 'r1', synced=5)), {'r2': 'c'}, '', ask, 'not printed published'),
+                (rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=1)), {'r1': 'c'}, '', ask, 'synced again'),
                 (good, {'r1': 'c'}, 'skyzfs-agent: round 2: no publish begun: the newest cut, of group 9, does not '
-                                    'open as itself: the daemon counted no cut after a sync\n', 'standard error')]:
-            bad = ac.judge_synced(rounds, pub, err)
+                                    'open as itself: the daemon counted no cut after a sync\n', ask, 'standard error'),
+                (good, {'r1': 'c'}, '', None, 'no ask of r1'),
+                (good, {'r1': 'c'}, '', (17, 'rewind'), 'from cut 17, which opens rewind'),
+                (good, {'r1': 'c'}, '', (19, None), 'has no cut line before the ask')]:
+            bad = ac.judge_synced(rounds, pub, err, a)
             self.assertTrue(any(what in b for b in bad), (what, bad))
 
-    def case(self, **change):
+    def test_first_ask_cut(self):
+        inst = ac.cut_daemon_check.parse_log(log_text([], tail=REWIND_TAIL))
+        self.assertEqual(ac.first_ask_cut(inst, 'r1'), (18, 'itself'))
+        self.assertEqual(ac.first_ask_cut(inst, 'r9'), None)
+        self.assertEqual(ac.refused_rewound(inst, {'r1', 'r2'}), 2)
+        self.assertEqual(ac.refused_rewound(inst, {'r2'}), 1)
+        # A cut line numbered C after the ask, or of another number, is
+        # not the cut it was asked from; the last one before it is.
+        inst = ac.cut_daemon_check.parse_log(log_text([], tail=[
+            ('cut', 18, 116, 'rewind'), ('cut', 18, 117, 'itself'), ('ask', 'r1', 116, 18, 'accepted')]))
+        self.assertEqual(ac.first_ask_cut(inst, 'r1'), (18, 'itself'))
+        inst = ac.cut_daemon_check.parse_log(log_text([], tail=[
+            ('cut', 17, 116, 'itself'), ('ask', 'r1', 116, 18, 'accepted'), ('cut', 18, 117, 'itself')]))
+        self.assertEqual(ac.first_ask_cut(inst, 'r1'), (18, None))
+
+    def case(self, tail=None, **change):
         # Round 1's syncs and settle took 14 s: round 2 is tick 10's, 4 s late.
         lines = [rline(1, 'r1', took=14000, synced=6), rline(2, 'r2', late=4000, synced=0)]
         files = {'trace.tsv': trace('r2', *WHOLE), 'publish.out': run_out(lines, ('r1', 'r2')),
@@ -1590,7 +1622,9 @@ class Rewind(unittest.TestCase):
                  'publish.ended-at': '1018.3\n', 'rewind-txg': '112\n', 'rewind-top.txt': CUTS_TOP + '\n',
                  'rewind-cuts.txt': CUTS_AFTER + '\n'}
         files.update(change)
-        return with_run_case('R-rewind', 'runrewind', '-', '0', 'r2', files, pub=(('r1', 121), ('r2', 122)))
+        c = with_run_case('R-rewind', 'runrewind', '-', '0', 'r2', files, pub=(('r1', 121), ('r2', 122)))
+        c['tail'] = REWIND_TAIL if tail is None else tail
+        return c
 
     def judged(self, c):
         rc, lines = run_course(course=c, name='arun')
@@ -1616,6 +1650,16 @@ class Rewind(unittest.TestCase):
             rc, lines = self.judged(self.case(**change))
             self.assertEqual(lines[f'pin_R-rewind_{key}'][0], 'FAILED', (change, lines))
             self.assertEqual(rc, 1, (change, lines))
+
+    def test_runrewind_began_behind(self):
+        # Round 1 asked first from a cut that opens only as a rewind: it
+        # began while behind, though the publish landed in time (M1).
+        for tail in ([('cut', 17, 113, 'rewind'), ('ask', 'r1', 113, 17, 'refused rewound'),
+                      ('cut', 18, 116, 'itself'), ('ask', 'r1', 116, 18, 'accepted')],
+                     [('ask', 'r2', 116, 18, 'accepted')]):
+            rc, lines = self.judged(self.case(tail=tail))
+            self.assertEqual(lines['pin_R-rewind_synced_past'][0], 'FAILED', (tail, lines))
+            self.assertEqual(rc, 1, (tail, lines))
 
     def test_runrewind_premise(self):
         for change in ({'rewind-cuts.txt': CUTS_AFTER.replace('rewind', 'itself')}, {'rewind-txg': '120\n'}):
