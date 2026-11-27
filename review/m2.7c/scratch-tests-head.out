@@ -1,0 +1,66 @@
+   Compiling libc v0.2.187
+   Compiling rustix v1.1.4
+   Compiling getrandom v0.4.3
+   Compiling tempfile v3.27.0
+   Compiling skyzfs-control v0.0.1 (SCRATCH/pr173p/crates/skyzfs-control)
+   Compiling skyzfs-agent v0.0.1 (SCRATCH/pr173p/crates/skyzfs-agent)
+    Finished `test` profile [optimized] target(s) in 38.93s
+     Running unittests src/lib.rs (SCRATCH/t173p/debug/build/skyzfs-agent/e6bc9b579adc69c5/out/skyzfs_agent-e6bc9b579adc69c5)
+
+running 8 tests
+test program::tests::review_m27c::r1_the_step_comes_within_seconds_of_the_failure ... R1: failed at +5000 ms, reopened at +60000 ms: 55000 ms after the failure
+round 1 ok took_ms=60000 late_ms=0 skipped=0 begun=skz-20261125T010000Z under_way=1 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=SUSPENDED looked_ms=1250
+round 2 ok took_ms=1250 late_ms=0 skipped=0 begun=- under_way=1 synced=0 bound=0
+
+
+thread 'program::tests::review_m27c::r1_the_step_comes_within_seconds_of_the_failure' (29247) panicked at crates/skyzfs-agent/src/program/tests.rs:2696:9:
+the reopen came 55000 ms after the failure
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <skyzfs_agent::program::tests::review_m27c::r1_the_step_comes_within_seconds_of_the_failure::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+test program::tests::review_m27c::r1b_the_step_waits_for_the_next_tick_at_the_head ... ok
+test program::tests::review_m27c::r2_a_pool_not_shown_suspended_ends_9_and_a_restart_reopens_again ... R2:
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=ONLINE looked_ms=10000
+round 1 ok took_ms=10000 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=ok state=ONLINE looked_ms=10000
+round 1 ok took_ms=10000 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+
+ok
+test program::tests::review_m27c::r3_a_refused_reopen_on_a_pool_that_stays_online_ends_9 ... R3:
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=reopened reopen=failed state=ONLINE looked_ms=10000
+round 1 ok took_ms=10000 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+skyzfs-agent: round 1: the reopen: zpool reopen: exit 1: cannot reopen 'tank': pool I/O is currently suspended (the pool's state, not the command, says what it did)
+
+ok
+test program::tests::review_m27c::r4_an_error_of_a_look_after_the_reopen_hides_the_reopen ... R4:
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=failed reopen=- state=- looked_ms=-
+round 1 failed took_ms=0 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+skyzfs-agent: round 1: zfs: the state: EIO
+
+ok
+test program::tests::review_m27c::r5_no_state_before_the_reopen_ends_9_with_no_reopen ... R5:
+lost tank volume=0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f note=whole reason=image-failed held=yes step=failed reopen=- state=- looked_ms=-
+round 1 failed took_ms=0 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+skyzfs-agent: round 1: zfs: the state: EIO
+
+ok
+test program::tests::review_m27c::r6_a_note_that_cannot_be_read ... R6: skyzfs-agent: the daemon: its failure note: EACCES
+
+ok
+test program::tests::review_m27c::r7_recover_reads_no_note ... R7: 1
+skyzfs-agent: no publish nope is under way
+
+ok
+
+failures:
+
+failures:
+    program::tests::review_m27c::r1_the_step_comes_within_seconds_of_the_failure
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 280 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p skyzfs-agent --lib`

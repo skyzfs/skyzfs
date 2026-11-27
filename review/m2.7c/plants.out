@@ -1,0 +1,72 @@
+BASE: SURVIVED (464 passed)
+A-D1 the note read elsewhere: KILLED by daemon::tests::a_note_whose_boot_cannot_be_told_is_an_error, daemon::tests::the_failure_note_is_read_beside_the_socket_in_its_boot
+A-D2 the boot not compared: KILLED by daemon::tests::the_failure_note_is_read_beside_the_socket_in_its_boot
+A-D3 a torn note taken for none: KILLED by daemon::tests::the_failure_note_is_read_beside_the_socket_in_its_boot
+A-C1 the reopen within a change limit: KILLED by zfs::cli::tests::the_reopen_is_zpool_reopen_within_its_limit
+A-C2 the reopen error confirmed with zpool list: KILLED by zfs::cli::tests::the_reopen_is_zpool_reopen_within_its_limit
+A-C3 a failed reopen read as done: KILLED by zfs::cli::tests::the_reopen_is_zpool_reopen_within_its_limit
+A-C4 a reopen past its limit read as done: KILLED by zfs::cli::tests::the_reopen_is_zpool_reopen_within_its_limit
+A-C5 the wrong kstat path: KILLED by zfs::cli::tests::the_pool_state_is_the_kstat_word
+A-C6a no file read as an error: KILLED by zfs::cli::tests::the_pool_state_is_the_kstat_word
+A-C6b an error read as no file: SURVIVED (464 passed)
+A-C7 the word not trimmed: KILLED by zfs::cli::tests::the_pool_state_is_the_kstat_word
+A-C8 a name that leaves the directory read: KILLED by zfs::cli::tests::the_pool_state_is_the_kstat_word
+A-L1 Unknown taken as not held: KILLED by engine::lost::tests::the_note_says_what_became_of_the_volume, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-L2 a torn note taken as none: KILLED by engine::lost::tests::the_note_says_what_became_of_the_volume, program::tests::failed_volume::a_torn_note_is_a_lost_volume_named_torn, program::tests::failed_volume::publish_and_settle_refuse_a_failed_volume
+A-L3 a torn note taken as not held: KILLED by engine::lost::tests::the_note_says_what_became_of_the_volume, program::tests::failed_volume::a_torn_note_is_a_lost_volume_named_torn, program::tests::failed_volume::publish_and_settle_refuse_a_failed_volume
+A-L4 No taken as lost: KILLED by engine::lost::tests::the_note_says_what_became_of_the_volume, program::tests::failed_volume::a_volume_failed_with_no_client_touches_no_pool, program::tests::failed_volume::publish_and_settle_refuse_a_failed_volume
+A-L5 no reopen: KILLED by engine::lost::tests::a_refused_reopen_is_still_looked_after, engine::lost::tests::a_reopen_then_a_look_until_the_pool_suspends, engine::lost::tests::the_step_taken_again_does_nothing_more, program::tests::failed_volume::a_torn_note_is_a_lost_volume_named_torn, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-L6 the reopen taken for the signal (no look after a reopen that returned): KILLED by engine::lost::tests::a_reopen_then_a_look_until_the_pool_suspends, engine::lost::tests::the_look_ends_at_its_limit, engine::lost::tests::the_step_taken_again_does_nothing_more, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-L7 the look not repeated: KILLED by engine::lost::tests::a_refused_reopen_is_still_looked_after, engine::lost::tests::a_reopen_then_a_look_until_the_pool_suspends, engine::lost::tests::the_look_ends_at_its_limit, engine::lost::tests::the_step_taken_again_does_nothing_more, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-L8 the look not waited for between reads (half the wait): KILLED by engine::lost::tests::a_reopen_then_a_look_until_the_pool_suspends, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9
+A-L9 the look bounded at twice its limit: KILLED by engine::lost::tests::the_look_ends_at_its_limit
+A-L10 the step ended at the reopen error: KILLED by engine::lost::tests::a_refused_reopen_is_still_looked_after
+A-L11a a pool not imported reopened: KILLED by engine::lost::tests::no_reopen_of_a_pool_not_imported_or_suspended, program::tests::failed_volume::a_pool_not_imported_is_not_reopened
+A-L11b a suspended pool reopened: KILLED by engine::lost::tests::no_reopen_of_a_pool_not_imported_or_suspended, engine::lost::tests::the_step_taken_again_does_nothing_more, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-E1 the attachment not compared: KILLED by engine::lost::tests::a_new_attachment_is_a_move_and_a_take_over_is_not, program::tests::failed_volume::run_ends_with_10_when_the_attachment_changes
+A-E2 N3: restart clears moved only: SURVIVED (464 passed)
+A-E2b N3b: restart forgets the first attachment, device and the move: KILLED by engine::lost::tests::a_new_attachment_is_a_move_and_a_take_over_is_not
+A-E3 the move forgotten at a later read that matches the first: KILLED by engine::lost::tests::a_new_attachment_is_a_move_and_a_take_over_is_not
+A-E4 the device not compared: KILLED by engine::lost::tests::a_new_device_number_is_a_move
+A-E5 the old 8-bit split: KILLED by engine::lost::tests::a_device_number_splits_as_glibc_splits_it, engine::lost::tests::a_new_device_number_is_a_move
+A-P1 run makes no reopen: KILLED by program::tests::failed_volume::a_torn_note_is_a_lost_volume_named_torn, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-P2 run ends lost with 1: KILLED by program::tests::failed_volume::a_pool_not_imported_is_not_reopened, program::tests::failed_volume::a_torn_note_is_a_lost_volume_named_torn, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-P3 the lost round line left out: KILLED by program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9
+A-P4 the lost line after the round line: KILLED by program::tests::failed_volume::a_torn_note_is_a_lost_volume_named_torn, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9, program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen
+A-P5 a begin before the step: SURVIVED (464 passed)
+A-P6 Unheld: a reopen: KILLED by program::tests::failed_volume::a_volume_failed_with_no_client_touches_no_pool
+A-P7 Unheld: an end with 9: KILLED by program::tests::failed_volume::a_volume_failed_with_no_client_touches_no_pool
+A-P8 no refusal of the one-shots: KILLED by program::tests::failed_volume::publish_and_settle_refuse_a_failed_volume
+A-P9 one code for both refusals: KILLED by program::tests::failed_volume::publish_and_settle_refuse_a_failed_volume
+A-P10 a refusal that reopens: KILLED by program::tests::failed_volume::publish_and_settle_refuse_a_failed_volume
+A-P11 no end on a move: KILLED by program::tests::failed_volume::run_ends_with_10_when_the_attachment_changes
+A-P12 an end on a move before the round line: KILLED by program::tests::failed_volume::run_ends_with_10_when_the_attachment_changes
+A-P13 an end at a take-over (any second cuts a move): KILLED by engine::lost::tests::a_new_attachment_is_a_move_and_a_take_over_is_not, program::tests::a_begin_refused_for_eight_under_way_still_settles, program::tests::a_begin_whose_save_failed_restarts_before_the_round_settles, program::tests::a_failed_round_is_told_and_the_next_starts_again_from_the_record, program::tests::a_late_round_ends_at_its_next_tick, program::tests::a_report_is_told_once_while_its_publish_is_under_way, program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins, program::tests::a_round_at_each_tick_begins_a_publish_and_settles_it, program::tests::a_round_past_its_ticks_skips_all_but_the_last, program::tests::a_round_settles_once_however_long_the_count_took, program::tests::a_round_still_behind_begins_no_publish, program::tests::a_round_whose_sync_made_no_cut_is_not_at_the_bound, program::tests::an_end_comes_between_two_rounds_of_the_engine, program::tests::an_end_during_a_begin_makes_no_read_after_it, program::tests::an_end_during_the_syncs_begins_no_publish, program::tests::failed_volume::a_volume_failed_with_no_client_touches_no_pool, program::tests::failed_volume::run_ends_with_10_when_the_attachment_changes, program::tests::restarts::a_failed_restart_at_a_round_start_leaves_the_round_alone, program::tests::restarts::a_restart_that_fails_leaves_the_round_alone, program::tests::restarts::a_settle_whose_save_failed_restarts_at_the_next_round, program::tests::what_left_the_record_is_forgotten_after_each_round
+A-P14 a lost line field misnamed: KILLED by program::tests::failed_volume::a_pool_not_imported_is_not_reopened, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9, program::tests::failed_volume::the_lost_line
+A-F1 two reasons with one word: KILLED by failure::tests::every_reason_has_its_own_word
+R-L1 a pool gone during the look not taken as the end: SURVIVED (464 passed)
+R-L2 LOOK_MAX 60 s: SURVIVED (464 passed)
+R-L3 LOOK_EVERY 100 ms: KILLED by engine::lost::tests::a_reopen_then_a_look_until_the_pool_suspends, program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9
+R-L4 an error of a look swallowed (read as not imported): SURVIVED (464 passed)
+R-L5 the state before the reopen: an error read as not imported: SURVIVED (464 passed)
+R-P1 run: the step error dropped (round ok, nothing on stderr): SURVIVED (464 passed)
+R-P2 run: a note that cannot be read ignored: SURVIVED (464 passed)
+R-P3 one-shots: a note that cannot be read lets them through: SURVIVED (464 passed)
+R-P4 run: lost round line always failed: KILLED by program::tests::failed_volume::run_on_a_lost_volume_makes_the_pool_read_and_ends_with_9
+R-P5 run: Unheld said on no line: KILLED by program::tests::failed_volume::a_volume_failed_with_no_client_touches_no_pool
+R-P6 run: the lost check after the syncs and the begin (as a later step of the round): KILLED by program::tests::a_begin_refused_for_eight_under_way_still_settles, program::tests::a_begin_whose_save_failed_restarts_before_the_round_settles, program::tests::a_failed_round_is_told_and_the_next_starts_again_from_the_record, program::tests::a_report_is_told_once_while_its_publish_is_under_way, program::tests::a_round_after_a_rewind_import_syncs_past_it_before_it_begins, program::tests::a_round_at_each_tick_begins_a_publish_and_settles_it, program::tests::a_round_past_its_ticks_skips_all_but_the_last, program::tests::a_round_still_behind_begins_no_publish, program::tests::a_round_whose_sync_failed_counts_the_syncs_before_it, program::tests::a_round_whose_sync_made_no_cut_is_not_at_the_bound, program::tests::an_end_comes_between_two_rounds_of_the_engine, program::tests::an_end_during_a_begin_makes_no_read_after_it, program::tests::an_end_during_the_syncs_begins_no_publish, program::tests::restarts::a_failed_reading_after_an_error_of_the_syncs_settles_nothing, program::tests::restarts::a_failed_restart_at_a_round_start_leaves_the_round_alone, program::tests::restarts::a_record_found_corrupt_at_a_restart_ends_run, program::tests::restarts::a_record_of_another_volume_at_a_restart_ends_run, program::tests::restarts::a_restart_that_fails_leaves_the_round_alone, program::tests::restarts::a_settle_whose_save_failed_restarts_at_the_next_round
+R-D1 the note: a read error other than none taken as no note: SURVIVED (464 passed)
+R-D2 the note: the boot compared inverted: KILLED by daemon::tests::the_failure_note_is_read_beside_the_socket_in_its_boot
+R-D3 the note: a boot id that does not parse taken as this boot: KILLED by daemon::tests::a_note_whose_boot_cannot_be_told_is_an_error
+R-C1 a state of two words taken: KILLED by zfs::cli::tests::the_pool_state_is_the_kstat_word
+R-C2 a reopen ended by a signal read as done: SURVIVED (464 passed)
+R-C3 Limits::reopen 60 s: KILLED by zfs::cli::tests::the_reopen_is_zpool_reopen_within_its_limit
+R-F1 decode: a longer file taken: SURVIVED (465 passed)
+R-F2 decode: holding 3 taken as unknown: KILLED by failure::tests::a_note_that_is_not_whole_does_not_decode
+R-F3 decode: the padding at 42 not checked: KILLED by failure::tests::a_note_that_is_not_whole_does_not_decode
+R-F4 decode: the padding at 56 not checked: KILLED by failure::tests::a_note_that_is_not_whole_does_not_decode
+R-F5 encode: Unknown written as yes: KILLED by a_marked_volume_is_acknowledged_once_and_a_failure_while_serving_ends_the_boot, failure::tests::every_code_and_holding_reads_back, failure::tests::the_failure_note_has_the_documented_layout
+R-F6 decode: code 8 taken as image-failed: KILLED by failure::tests::a_note_that_is_not_whole_does_not_decode, failure::tests::the_failure_note_has_the_documented_layout
+R-F7 parse_boot_id: more than 32 digits taken: SURVIVED (465 passed)
+R-F8 read_failure: a torn note read as none: KILLED by failure::tests::reading_tells_none_a_note_and_one_that_is_not_whole
+R-F9 Held word unknown as no: KILLED by program::tests::failed_volume::run_started_again_on_the_same_note_ends_with_9_and_no_reopen, program::tests::failed_volume::the_lost_line
