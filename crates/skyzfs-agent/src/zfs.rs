@@ -352,6 +352,14 @@ pub enum ZfsError {
     /// and `zpool list` lists the pool): one destroyed as it was read.
     /// The command's words and message.
     Vanished(String),
+    /// The command did not run to its end, so what it did is not known:
+    /// the host did not start it (it could not, or
+    /// [`crate::host::STUCK_MAX`] commands left running past their
+    /// limits held it back), or it was killed at its limit. The command's
+    /// words and why. Not ZFS's answer: retention tries such a destroy
+    /// again and does not take it for a failed one (the lead's ruling on
+    /// decision 4 of #179's review).
+    NotRun(String),
     /// Anything else, in words.
     Other(String),
 }
@@ -363,7 +371,7 @@ impl fmt::Display for ZfsError {
             ZfsError::Vanished(what) => write!(f, "{what}"),
             ZfsError::NoSnapshot => write!(f, "no such snapshot"),
             ZfsError::Exists => write!(f, "a snapshot of that name exists"),
-            ZfsError::Other(what) => write!(f, "{what}"),
+            ZfsError::NotRun(what) | ZfsError::Other(what) => write!(f, "{what}"),
         }
     }
 }

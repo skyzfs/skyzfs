@@ -28,6 +28,13 @@
 //!    through which the rest is read again. A destroy that fails is
 //!    told, with its reason, once in a process and again only when the
 //!    reason changes, and the name moves to the names stuck (below).
+//!    Only ZFS's own answer counts as a failed destroy: a destroy, or a
+//!    read of the members, that the host does not run to its end
+//!    ([`ZfsError::NotRun`]: killed at its limit, [`Limits::change`]
+//!    for a destroy and [`Limits::read`] for the read, both scaled by
+//!    the pool's count, or held back by commands left running) is told
+//!    and tried again at the next round, and the name stays where it is
+//!    (the lead's ruling on decision 4 of #179's review).
 //! 3. The outcome `retired` is told, and then the name leaves the
 //!    record. A kill between the two tells it again: a monitor treats
 //!    `retired` as repeatable.
@@ -79,6 +86,17 @@
 //!   `forgotten <t> (no member guids; destroy by hand)`: nothing is
 //!   destroyed (the ruling ?4).
 //!
+//! **Room before its time** (the lead's ruling on M1 of #179's review):
+//! where the names given up alone keep the next begin from its room
+//! ([`Record::abandoned_over`]), as many of the oldest leave at once as
+//! if past their keep, each looked up first as one a person gave up: a
+//! `snap/<t>` that is there keeps the local snapshot and leaves the name
+//! with a `forgotten` line, for a person; one that is absent has its
+//! members destroyed by GUID. So the uploader stopped for hours, every
+//! publish given up, does not stop the publishes after it is back.
+//! [`Left::Nothing`] leaves with no line and [`Left::Unknown`] with its
+//! `forgotten` line, as past their keep.
+//!
 //! A round does at most [`STEPS_MAX`] steps (an ask of the daemon, or
 //! the destroys of one name), so that a backlog after a long stop is
 //! worked off over rounds and does not hold one round up. A `retire`
@@ -91,13 +109,37 @@
 //! lost during retention is stepped on after the call under way, not
 //! after the round's steps (M2 of #179's review, and Codex's P1).
 //!
+//! **A name stopped as [`Retire::Other`]** stays in the record, counted
+//! among those being retired, until a person settles it; it is not asked
+//! again. `snap/<t>` names a commit that this agent did not publish
+//! under the name, so a person decides which is right (the lead's ruling
+//! on decision 3 of #179's review):
+//!
+//! - the line `stopped <t> retire refused other: ...` says so, and the
+//!   daemon's request log line `<t> refused other commit=H found=H2`
+//!   names both commits;
+//! - to keep `snap/<t>` as it is, the local `pool@<t>` and its members'
+//!   `@<t>` are destroyed by hand where they are not wanted;
+//! - to drop it, `snap/<t>` is deleted with the tools of object storage;
+//! - either way the name then leaves the record with
+//!   `skyzfs-agent forget --name <t>`, which follows in a later pull
+//!   request: one-shot, refused while `run` holds the directory (exit
+//!   8), it drops the name from the record and touches neither the pool
+//!   nor the ref. Until it is there the name stays, one of the
+//!   [`RETIRING_MAX`] being retired.
+//!
+//! **Names published before the record's version 3** (an agent of
+//! version 2, upgraded) are not in the record as published, so they
+//! are never retired: a person destroys them, their refs and their
+//! snapshots, by hand; a later package may adopt them (the lead's
+//! ruling on decision 6 of #179's review).
+//!
 //! **Conservative readings** where the rulings are silent: a member's
 //! `@t` left by a person who destroyed `pool@t` by hand is not seen
-//! (the read of the members goes through `pool@t`), so it is left; a
-//! name stopped as [`Retire::Other`] stays in the record, counted
-//! among those being retired, until a person settles it; and the names
-//! published and given up are no longer dropped to make room: a publish
-//! is not begun without room for its end ([`crate::record::Record::room`]).
+//! (the read of the members goes through `pool@t`), so it is left; and
+//! the names published and given up are no longer dropped to make
+//! room: a publish is not begun without room for its end
+//! ([`crate::record::Record::room`]).
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,7 +150,9 @@ use skyzfs_control::{Code, Reply, Request, Retire as RetireRequest};
 use super::{Agent, Clock, Daemon, Effect, Error, Keep, Outcome};
 use crate::plan::Report;
 use crate::record::{Left, Member, Record, Retire, Stuck, Why, KEEP_MAX, RETIRING_MAX, STUCK_MAX};
-use crate::zfs::Zfs;
+#[cfg(doc)]
+use crate::zfs::cli::Limits;
+use crate::zfs::{Zfs, ZfsError};
 
 /// The names published kept by default (`--keep`).
 pub const KEEP_DEFAULT: usize = 60;
@@ -160,8 +204,13 @@ impl Default for Retention {
 enum Destroyed {
     /// Each member's `@t` of the name's GUIDs is gone.
     All,
-    /// A read or a destroy failed, and was told.
+    /// A read or a destroy failed, and was told: the name is stuck.
     Failed,
+    /// A read or a destroy was not run to its end ([`ZfsError::NotRun`]),
+    /// and was told: the name stays where it is and is tried again (the
+    /// lead's ruling on decision 4 of #179's review: only ZFS's own
+    /// error moves a name to the names stuck).
+    NotRun,
     /// An end was asked, or the failure note had news, before a call:
     /// nothing was told, and the next round goes on.
     Halted,
@@ -171,8 +220,14 @@ enum Destroyed {
 enum Due {
     /// It leaves, with no line.
     Drop,
-    /// Its members are destroyed (a person's give-up looked up first).
-    Destroy { members: Vec<Member>, look: bool },
+    /// Its members are destroyed, `snap/T` looked up first where `look`
+    /// (a person's give-up, or one retired early for room); `person`
+    /// says which, for the line where `snap/T` is there.
+    Destroy {
+        members: Vec<Member>,
+        look: bool,
+        person: bool,
+    },
     /// It leaves with a `forgotten` line.
     Forget,
 }
@@ -224,10 +279,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     }
 
     fn retain_steps(&mut self, go: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+        // No ask before the marks: they are a save, and each step below
+        // asks before it goes.
         self.retry_stuck(go)?;
-        if self.halt(go) {
-            return Ok(());
-        }
         self.mark_retiring()?;
         let mut steps = 0;
         let marked: Vec<(String, Retire)> = self
@@ -359,7 +413,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;
             }
             Destroyed::Failed => self.stick(name, members)?,
-            Destroyed::Halted => {}
+            Destroyed::NotRun | Destroyed::Halted => {}
         }
         Ok(())
     }
@@ -392,7 +446,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     self.told(name.clone(), Outcome::Retired);
                     self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;
                 }
-                Destroyed::Failed => self.retention.stuck_last = Some(name.clone()),
+                Destroyed::Failed | Destroyed::NotRun => {
+                    self.retention.stuck_last = Some(name.clone())
+                }
                 Destroyed::Halted => break,
             }
         }
@@ -450,7 +506,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     name,
                     Report::NotRetired(format!("the members' @{name} not read: {e}")),
                 );
-                return Ok(Destroyed::Failed);
+                return Ok(not_run_or_failed(&e));
             }
         };
         let mut doomed: Vec<Member> = read
@@ -473,7 +529,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     name,
                     Report::NotRetired(format!("zfs destroy {}@{name}: {e}", member.name)),
                 );
-                return Ok(Destroyed::Failed);
+                return Ok(not_run_or_failed(&e));
             }
         }
         Ok(Destroyed::All)
@@ -488,9 +544,33 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     ) -> Result<(), Error> {
         let now = self.clock.now_ms();
         let bound = u64::try_from(self.retention.abandoned_keep.as_millis()).unwrap_or(u64::MAX);
+        // The oldest names given up that alone keep the next begin from
+        // its room leave early, as if past their keep, with `snap/T`
+        // looked up first (the lead's ruling on M1 of #179's review): a
+        // few hours of give-ups do not stop the publishes for a day.
+        let mut oldest: Vec<(u64, usize)> = self
+            .record
+            .abandoned
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.at_ms, i))
+            .collect();
+        oldest.sort_unstable();
+        let early: BTreeSet<usize> = oldest
+            .iter()
+            .take(self.record.abandoned_over())
+            .map(|&(_, i)| i)
+            .filter(|&i| {
+                self.record
+                    .abandoned
+                    .get(i)
+                    .is_some_and(|a| now.saturating_sub(a.at_ms) < bound)
+            })
+            .collect();
         let mut due = Vec::new();
-        for a in &self.record.abandoned {
-            let past = now.saturating_sub(a.at_ms) >= bound;
+        for (i, a) in self.record.abandoned.iter().enumerate() {
+            let early = early.contains(&i);
+            let past = early || now.saturating_sub(a.at_ms) >= bound;
             match (&a.left, past) {
                 (Left::Unknown, false) => due.push((a.name.clone(), None)),
                 (_, false) => {}
@@ -499,7 +579,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     a.name.clone(),
                     Some(Due::Destroy {
                         members: members.clone(),
-                        look: a.why == Why::Person,
+                        look: early || a.why == Why::Person,
+                        person: a.why == Why::Person,
                     }),
                 )),
                 (Left::Unknown, true) => due.push((a.name.clone(), Some(Due::Forget))),
@@ -527,9 +608,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     *steps += 1;
                     self.forget_given_up(&name, "no member guids; destroy by hand")?;
                 }
-                Some(Due::Destroy { members, look }) => {
+                Some(Due::Destroy {
+                    members,
+                    look,
+                    person,
+                }) => {
                     *steps += 1;
-                    if look && !self.looked_absent(&name)? {
+                    if look && !self.looked_absent(&name, person)? {
                         continue;
                     }
                     match self.destroy_members(&name, &members, go)? {
@@ -540,6 +625,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                             })?;
                         }
                         Destroyed::Failed => self.stick(&name, members)?,
+                        Destroyed::NotRun => {}
                         Destroyed::Halted => return Ok(()),
                     }
                 }
@@ -548,22 +634,25 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         Ok(())
     }
 
-    /// Look `snap/<name>` up before the members of a name a person gave
-    /// up are destroyed: whether it is absent. Where it is there, the
-    /// name leaves with its local snapshot, for a person; where the look
-    /// is not answered, it is told and tried again.
-    fn looked_absent(&mut self, name: &str) -> Result<bool, Error> {
+    /// Look `snap/<name>` up before the members of a name given up are
+    /// destroyed, where a person gave it up (`person`) or it leaves early
+    /// for room: whether it is absent. Where it is there, the name leaves
+    /// with its local snapshot, for a person; where the look is not
+    /// answered, it is told and tried again.
+    fn looked_absent(&mut self, name: &str, person: bool) -> Result<bool, Error> {
         self.point(Effect::LookGivenUp, false)?;
         let answer = self.daemon.ask(&Request::Look(name.to_string()), &[]);
         self.point(Effect::LookGivenUp, true)?;
         match answer {
             Ok(Reply::Absent) => Ok(true),
             Ok(Reply::Snap(_) | Reply::Unreadable(_)) => {
-                self.forget_given_up(
-                    name,
+                let why = if person {
                     "snap/t exists though given up by a person; the local snapshot is kept, \
-                     judge by hand",
-                )?;
+                     judge by hand"
+                } else {
+                    "snap/t exists though given up; the local snapshot is kept, judge by hand"
+                };
+                self.forget_given_up(name, why)?;
                 Ok(false)
             }
             Ok(other) => {
@@ -633,3 +722,12 @@ fn set_retire(record: &mut Record, name: &str, retire: Retire) {
 
 #[cfg(test)]
 mod tests;
+
+/// How a destroy that met `e` ended: not run where the host did not run
+/// its command to its end, failed where ZFS answered.
+fn not_run_or_failed(e: &ZfsError) -> Destroyed {
+    match e {
+        ZfsError::NotRun(_) => Destroyed::NotRun,
+        _ => Destroyed::Failed,
+    }
+}

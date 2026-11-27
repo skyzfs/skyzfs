@@ -447,6 +447,11 @@ pub struct World {
     /// The member snapshots (`dataset@t`) whose `zfs destroy` ZFS refuses,
     /// with what it says (a clone of one, say).
     pub destroy_refused: BTreeMap<String, String>,
+    /// The member snapshots whose `zfs destroy` the host does not run to
+    /// its end ([`ZfsError::NotRun`]): killed at its limit, say.
+    pub destroy_not_run: BTreeSet<String>,
+    /// Whether a read of a snapshot's members is not run to its end.
+    pub members_not_run: bool,
     /// Each take of the agent's, by name: the manifest of the pool as it
     /// was in the take's group, which the agent must publish.
     pub programs: BTreeMap<String, Manifest>,
@@ -569,6 +574,8 @@ impl World {
             rule: DAEMON_RULE,
             highest_written: 0,
             destroy_refused: BTreeMap::new(),
+            destroy_not_run: BTreeSet::new(),
+            members_not_run: false,
             programs: BTreeMap::new(),
             retakes: BTreeMap::new(),
             late_take: None,
@@ -1600,6 +1607,12 @@ impl Zfs for FakeZfs {
         world.zfs_call();
         world.calls.push("destroy_one");
         let key = format!("{dataset}@{t}");
+        if world.destroy_not_run.contains(&key) {
+            world.log.push(format!("agent destroy {key}: not run"));
+            return Err(ZfsError::NotRun(format!(
+                "zfs destroy {key}: timed out; {key} may not have been destroyed"
+            )));
+        }
         if let Some(why) = world.destroy_refused.get(&key).cloned() {
             world.log.push(format!("agent destroy {key}: refused"));
             return Err(ZfsError::Other(why));
@@ -1644,6 +1657,11 @@ impl Zfs for FakeZfs {
     fn members(&mut self, pool: &str, t: &str) -> Result<Option<Vec<record::Member>>, ZfsError> {
         self.0.borrow_mut().zfs_call();
         self.0.borrow_mut().calls.push("members");
+        if self.0.borrow().members_not_run {
+            return Err(ZfsError::NotRun(format!(
+                "zfs program {pool} (members of @{t}): timed out"
+            )));
+        }
         let members = self.pool(pool, |p| {
             p.snaps.get(&format!("{POOL}@{t}"))?;
             let suffix = format!("@{t}");

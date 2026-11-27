@@ -2214,6 +2214,9 @@ fn loaded<K: Keep>(keep: &K, volume: [u8; 16]) -> Result<Record, Error> {
 /// from [`Phase::Taken`] on; at [`Phase::Intent`], nothing where no
 /// `pool@<t>` was seen, and otherwise a take whose members' GUIDs the
 /// record does not hold (the lead's ruling ?4 on M2.7b-2).
+/// [`Left::Nothing`] means nothing known to destroy: a take that lands
+/// after the give-up is not known to the record, so retention destroys
+/// none of it (accepted by the lead, decision 7 of #179's review).
 fn left_by(publish: &Publish, snapshot_seen: bool) -> Left {
     match (&publish.phase, publish.phase.taken()) {
         (Phase::Abandoning { left, .. }, _) => left.clone(),

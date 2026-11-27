@@ -109,8 +109,14 @@ pub const KEEP_MAX: usize = 1000;
 /// retention stopped for a person ([`Retire`]).
 pub const RETIRING_MAX: usize = 64;
 
+/// The room the record keeps for names published above the newest
+/// `--keep` and the [`RETIRING_MAX`] being retired: the names that finish
+/// before a round marks them (the lead's ruling on decision 5 of #179's
+/// review: a slack of at least 64 above `--keep`, at its bound too).
+pub const PUBLISHED_SLACK: usize = 64;
+
 /// The most names published that the record holds.
-pub const PUBLISHED_MAX: usize = KEEP_MAX + RETIRING_MAX;
+pub const PUBLISHED_MAX: usize = KEEP_MAX + RETIRING_MAX + PUBLISHED_SLACK;
 
 /// The most names whose destroy failed that the record holds
 /// ([`Record::stuck`]); past it the oldest is forgotten.
@@ -575,6 +581,19 @@ impl Record {
         self.under_way.len() < UNDER_WAY_MAX
             && self.abandoned.len() + ending <= ABANDONED_MAX
             && self.published.len() + ending <= PUBLISHED_MAX
+    }
+
+    /// How many names given up stand between the record and its
+    /// [`Record::room`] where nothing else does: none where there is
+    /// room, or where the publishes under way or the names published
+    /// are short of it too. Retention retires so many of the oldest
+    /// early (the lead's ruling on M1 of #179's review).
+    pub fn abandoned_over(&self) -> usize {
+        let ending = self.under_way.len() + 1;
+        if self.under_way.len() >= UNDER_WAY_MAX || self.published.len() + ending > PUBLISHED_MAX {
+            return 0;
+        }
+        (self.abandoned.len() + ending).saturating_sub(ABANDONED_MAX)
     }
 
     /// Whether `name` is in the record: under way, given up, published

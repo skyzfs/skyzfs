@@ -426,6 +426,53 @@ fn a_publish_is_begun_only_with_room_for_its_end() {
     assert!(!record.room(), "eight under way");
 }
 
+/// At `--keep` at its bound, with as many names being retired as there
+/// may be and none of them leaving (stopped `other`, or their retires
+/// unanswered), the record still has room for [`PUBLISHED_SLACK`] (64)
+/// publishes (the lead's ruling on decision 5 of #179's review).
+/// Mutant: no slack.
+#[test]
+fn at_the_bound_of_keep_a_slack_of_publishes_is_left() {
+    let mut record = full();
+    record.under_way.clear();
+    let one = record.published[0].clone();
+    let held = KEEP_MAX + RETIRING_MAX;
+    record.published = vec![one.clone(); held];
+    assert!(record.room());
+    record.published = vec![one.clone(); held + PUBLISHED_SLACK - 1];
+    assert!(record.room(), "the slack's last");
+    record.published.push(one);
+    assert!(!record.room());
+    assert!(PUBLISHED_SLACK >= 64);
+}
+
+/// Where the names given up alone stand between the record and its
+/// room, [`Record::abandoned_over`] counts them; where the publishes
+/// under way or the names published are short of it too, none (the
+/// lead's ruling on M1 of #179's review). Mutants: counted whatever
+/// else is short, one off.
+#[test]
+fn the_names_given_up_over_the_room_are_counted_where_alone() {
+    let mut record = full();
+    record.under_way.truncate(2);
+    let given_up = record.abandoned[0].clone();
+    record.abandoned = vec![given_up.clone(); ABANDONED_MAX - 3];
+    record.published.truncate(1);
+    assert_eq!(record.abandoned_over(), 0);
+    record.abandoned.push(given_up.clone());
+    assert_eq!(record.abandoned_over(), 1);
+    record.abandoned.push(given_up);
+    assert_eq!(record.abandoned_over(), 2);
+    let one = record.published[0].clone();
+    record.published = vec![one; PUBLISHED_MAX];
+    assert_eq!(record.abandoned_over(), 0, "the published are short too");
+    record.published.truncate(1);
+    record.under_way = (0..UNDER_WAY_MAX)
+        .map(|i| publish(&format!("skz-20261125T0200{i:02}Z"), Phase::Intent, false))
+        .collect();
+    assert_eq!(record.abandoned_over(), 0, "eight under way");
+}
+
 /// The names stuck count for no room: the most of them, beside the
 /// most published that leave room for one more, still let a publish
 /// begin. Mutant: the names stuck counted among those published.

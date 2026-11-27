@@ -1366,3 +1366,77 @@ fn names_that_cannot_be_destroyed_do_not_starve_the_rest() {
     assert!(left.is_empty(), "never retired: {left:?}");
     assert_eq!(a.record().stuck.len(), STEPS_MAX);
 }
+
+/// A destroy or a read of the members that the host does not run to its
+/// end (killed at its limit, or held back by the commands left running)
+/// is not a failed destroy: the name stays among the published, is
+/// told, and is tried again; it is never stuck (the lead's ruling on
+/// decision 4 of #179's review). Mutants: a destroy not run taken for
+/// a failed one, and so for a read.
+#[test]
+fn a_destroy_the_host_did_not_run_is_tried_again_and_never_stuck() {
+    for read in [false, true] {
+        let (world, keep, names) = published(2);
+        let t = names[0].clone();
+        let member = format!("{POOL}@{t}");
+        if read {
+            world.borrow_mut().members_not_run = true;
+        } else {
+            world.borrow_mut().destroy_not_run.insert(member.clone());
+        }
+        let mut a = agent(&world, &keep);
+        a.set_keep(1);
+        for _ in 0..3 {
+            a.retain().expect("retained");
+            assert!(
+                a.record().stuck.is_empty(),
+                "read={read}: {:?}",
+                a.record().stuck
+            );
+            assert!(
+                a.record().published.iter().any(|p| p.name == t),
+                "read={read}: the name left the published"
+            );
+            assert!(retired(a.outcomes()).is_empty(), "{:?}", a.outcomes());
+        }
+        assert!(!snaps_of(&world, &t).is_empty());
+        world.borrow_mut().members_not_run = false;
+        world.borrow_mut().destroy_not_run.clear();
+        a.retain().expect("retained again");
+        assert_eq!(retired(a.outcomes()), vec![t.clone()], "read={read}");
+        assert!(snaps_of(&world, &t).is_empty());
+        assert!(!a.record().names(&t));
+    }
+}
+
+/// The same for a name given up past its time: it stays given up and is
+/// tried again, not stuck.
+#[test]
+fn a_given_up_destroy_the_host_did_not_run_stays_given_up() {
+    let (world, keep, names) = published(1);
+    let t = names[0].clone();
+    {
+        let mut a = agent(&world, &keep);
+        let p = a.record().published[0].clone();
+        a.commit(Effect::Retain, |r| {
+            r.published.clear();
+            r.abandoned.push(crate::record::Abandoned {
+                name: p.name.clone(),
+                why: Why::ManifestLost,
+                at_ms: 0,
+                left: Left::Members(p.members.clone()),
+            });
+        })
+        .expect("saved");
+    }
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    world.borrow_mut().members_not_run = true;
+    let mut a = agent(&world, &keep);
+    a.retain().expect("retained");
+    assert!(a.record().stuck.is_empty(), "{:?}", a.record().stuck);
+    assert!(a.record().abandoned.iter().any(|g| g.name == t));
+    world.borrow_mut().members_not_run = false;
+    a.retain().expect("retained again");
+    assert_eq!(retired(a.outcomes()), vec![t.clone()]);
+    assert!(!a.record().names(&t));
+}

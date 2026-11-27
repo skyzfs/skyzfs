@@ -3690,4 +3690,60 @@ mod retention_in_rounds {
         );
         assert_eq!(asked.get(), 1, "{out}{err}");
     }
+
+    /// A few hours of give-ups do not stop the publishes (M1 of the
+    /// review of #179, its T5; the lead's ruling): the uploader stops for
+    /// 5 h, every publish is refused `stopped` and given up, a round
+    /// each, past ABANDONED_MAX (256). The oldest give-up leaves early
+    /// whenever it alone stands between the next begin and its room,
+    /// `snap/T` looked up first, so every round begins, and the first
+    /// round after the uploader is back publishes. Before the ruling,
+    /// nothing began from about round 257 until the oldest aged out,
+    /// a day after them.
+    #[test]
+    fn hours_of_give_ups_leave_room_and_the_publishes_resume_at_once() {
+        let world = World::new(Mode::Busy);
+        world.borrow_mut().refuse_every_publish = Some(Code::Stopped);
+        let keep = MemKeep::default();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let start = mono(&world);
+        let every = Duration::from_secs(60);
+        let (_, out, err) = scheduled(
+            &mut agent,
+            every,
+            &mut until(&world, start + 5 * 3600 * 1000),
+        );
+        let lines = rounds(&out);
+        assert!(lines.len() >= 290, "{} rounds in 5 h", lines.len());
+        let idle: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| field(l, "begun") == "-")
+            .collect();
+        assert!(
+            idle.is_empty(),
+            "rounds that began nothing: {idle:?}\n{err}"
+        );
+        let record = agent.record();
+        assert_eq!(
+            record.abandoned.len(),
+            crate::record::ABANDONED_MAX - 1,
+            "{err}"
+        );
+        assert!(
+            out.lines().filter(|l| l.starts_with("retired ")).count() >= 30,
+            "{out}"
+        );
+        // The uploader is back.
+        world.borrow_mut().refuse_every_publish = None;
+        let back = mono(&world);
+        let (_, out2, err2) = scheduled(&mut agent, every, &mut until(&world, back + 60_000));
+        let first = rounds(&out2);
+        assert!(!first.is_empty(), "{out2}{err2}");
+        assert_ne!(field(first[0], "begun"), "-", "{out2}{err2}");
+        assert!(
+            out2.lines().any(|l| l.starts_with("snap/")),
+            "nothing published in the first round after the uploader is back: {out2}{err2}"
+        );
+    }
 }
