@@ -122,7 +122,36 @@ C11 survives because runtwice prints no round line, so the plant
 changes nothing observable. Testing's own T01 to T08 are in the PR
 body.
 
-PLANTS_C_AR
+The rule's plants on the shell suite, `test_agent_record.sh` (`plants_c-ar.out`; C03 rerun alone in
+`c03-rerun.out`, since its first lines were the local flake):
+
+| Plant | Description | Result |
+|---|---|---|
+| C01 | the signal sent on the N-th line whatever is left | killed by "no signal after a round that overran its tick" |
+| C02 | no cap | killed by "waits for three more rounds, not four" |
+| C03 | a cap of four | killed by the same test |
+| C04 | the signal sent with no round with 3 s left | killed |
+| C05 | no stamping after the signal | killed by "a round line after the signal is stamped" |
+| C06 | `round_left` without `late_ms` | killed |
+| C07 | a 1 s margin | killed |
+
+The unplanted suite at 3b9dc1c: 187 ok, all passed.
+
+**On the runner** (run 45923974050, part r, 3b9dc1c), the rule acted in
+the very case that was at risk. R-rewind's round 1 took 11017 ms, and
+round 2 began 1017 ms late, took 6858 ms and so left 2125 ms. The rig
+did not signal: it waited for round 3, which took 664 ms and left
+9.3 s, and then signalled. The run ended 0.22 s later, with no round
+line after the SIGTERM. Every `pin_*_no_round_after_sigterm` is ok
+(R-run, R-kill, R-held, R-rewind).
+
+**A new Codex P2 on 3b9dc1c** (test_agent_record.sh:1060) is open and
+has no answer. The stand-in's `wait_point` stub assumes the Python
+stand-in starts within 0.3 s; under load the SIGTERM can come before
+its handlers are installed (`rc=143`). It is a flake of the local test,
+not of the rig, and is the same kind of flake as the recover and
+reserve ones I see under load. It does not block on its own merits,
+but the author must answer it before saying "ready to merge".
 
 ## M1 (medium; test gap; still open at 3b9dc1c). `pin_R-rewind_synced_past` does not show that the begin came after the pool had passed the abandoned groups
 
@@ -263,11 +292,11 @@ The tests kill each of these plants:
 | Low | How it is answered |
 |---|---|
 | D4 | Groups a second per round over each side's own window, with medians. The read's window holds its record's time, and its busy share is reported. |
-| P15 | The writer's default margin is pinned (Z09 and Z10 killed). |
-| P18 | The K04 fake lists `@c`, and `release_quietly` is anchored (Z11 and Z12). |
+| P15 | The writer's default margin is pinned (Z09 killed; Z10 in `plants-2.out`). |
+| P18 | The K04 fake lists `@c`, and `release_quietly` is anchored (Z11 and Z12: `plants-2.out`). |
 | Q04 | The pid is cleared before `rig_error` (plant Q04). |
 
-Cut rounds are reported as `cut` on every side (Z03, Z04 and Z13). No
+Cut rounds are reported as `cut` on every side (Z03 and Z04 killed, Z13 in `plants-2.out`). No
 recorder run has been dispatched on these commits, so there are no D4
 figures from a kernel yet. The last dispatch was 45895208967, at
 af0c183.
@@ -314,11 +343,24 @@ At 4ccc4b4 (`gates.out`):
 At 3b9dc1c:
 
 - **`test_agent_check.py`:** 107 tests OK.
-- **`test_agent_record.sh`:** AR_CONTROL_C.
+- **`test_agent_record.sh`:** 187 ok, all passed (`ar-control-3b9dc1c.out`).
 
 ## Plants at 4ccc4b4 (`plants.py`, `plants.out`)
 
-PLANTS_SUMMARY
+| Group | Plants | Result |
+|---|---|---|
+| `agent_check.py`, premise and `synced_past` | A01-A11 | all killed |
+| `agent_check.py`, round line by name | A12-A16 | all killed |
+| `agent_check.py`, run course | A17-A28 | all killed (A22 run again with its text fixed, `plants-2.out`) |
+| `agent-record.sh`, R-rewind and the run scenarios | S01, S03-S11, S13 | killed by their own tests |
+| `agent-record.sh` | S12 (a constant stamp) | survives (see Nits) |
+| `agent-record.sh` | S02 (no thaw) | its first lines were the load flake; run again in `plants-2.out` |
+| `zfs-cli-record.sh` | Z01-Z04 (rates, the read's window, cut rounds) | killed |
+| `zfs-cli-record.sh` | Z09 (the writing margin's default) | killed |
+| `cut-record.sh` | Q04 | killed by "end_daemon: unreaped after SIGKILL, its pid let go" |
+
+Further results, where they came before this was written, are in
+`plants-2.out`.
 
 ## What the rigs show
 
@@ -356,4 +398,19 @@ refusals and the 3.2 s margin.
 
 ### At 3b9dc1c
 
-AT_C_RUNS
+- **Agent rig 45923974050:** r, a1, a2 and d succeeded; k was still
+  running when I looked.
+- Part r's results are 101 ok, the three controls CAUGHT and 10 INFO,
+  with no FAILED or ERROR.
+- R-rewind on this second runner repeats the first in every figure:
+  - imported at 61, top 95;
+  - cuts up to group 84 open `rewind`, and the first to open `itself`
+    is 87;
+  - round 1 synced 6 times;
+  - three `refused rewound`, then published at group 96.
+- M1's check, which I applied by hand, holds there too: the first ask's
+  count was 77, and cut 77 (group 88) opened as itself before the
+  intent.
+- **Other runs at 3b9dc1c:** green are ci, e2e, coverage, cut-daemon,
+  nodeb, publish and skyzfs-ci. The cut rig is still running. Daemon,
+  replay and probe were cancelled; they read no changed file.
