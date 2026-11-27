@@ -341,9 +341,9 @@ Agent rig run 45918311854: all six jobs succeeded, each with worst exit
 
 Other runs at the head:
 
-- Green: cut-daemon, nodeb, publish, ci and e2e, and skyzfs-ci on the
-  push.
-- Still running when I looked: the cut rig and coverage.
+- Green: cut-daemon, nodeb, publish, ci, e2e and coverage, skyzfs-ci on
+  the push, and the cut rig (run 45918311923, four images, each job
+  success; this is the rig that runs the changed `end_daemon`).
 - Cancelled at about one minute: the daemon rig, the replay rig and the
   kernel probe. None of them reads a changed file: no workflow but the
   agent, cut, cut-daemon, nodeb, publish, zfs-cli-record and the CI
