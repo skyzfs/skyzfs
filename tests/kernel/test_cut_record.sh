@@ -609,5 +609,45 @@ is "pidle: a pool that writes a group every second is the rig's error at its lim
 # The diagnosis itself (N2): a pidle that is not there ends 127, not 124.
 is "pidle_run says how the inner bash ended" "$(pidle_fn='' pidle_run 120 2> /dev/null)" "ended with 127"
 
+# Protocol 3 or 2 (M2.7b-1): pchannel learns the daemon's version from
+# the greeting it answers `version` with, and sends the others in it.
+ch_fn=$(sed -n '/^channel_hello() {$/,/^}$/p' "$SCRIPT")
+is "channel_hello is in the script" "$([ -n "$ch_fn" ] && echo yes)" yes
+ch_of() { ( # the greeting file's text, or "-" for no file
+    eval "$ch_fn"
+    d=$(mktemp -d)
+    [ "$1" = - ] || printf '%b' "$1" > "$d/g.txt"
+    channel_hello "$d/g.txt"; rm -rf "${d:?}"
+) 2>&1; }
+is "channel_hello: version 3" "$(ch_of 'skyzfs-control 3\n')" "skyzfs-control 3"
+is "channel_hello: version 2" "$(ch_of 'skyzfs-control 2\n')" "skyzfs-control 2"
+is "channel_hello: another version offers" "$(ch_of 'skyzfs-control 4\n')" "skyzfs-control ?"
+is "channel_hello: a version 3 with more after it offers" "$(ch_of 'skyzfs-control 30\n')" "skyzfs-control ?"
+is "channel_hello: an empty file offers" "$(ch_of '')" "skyzfs-control ?"
+is "channel_hello: no file offers" "$(ch_of -)" "skyzfs-control ?"
+is "channel_hello: only the first line is read" "$(ch_of 'skyzfs-control 9\nskyzfs-control 3\n')" "skyzfs-control ?"
+praw_fn=$(sed -n '/^praw() {$/,/^}$/p' "$SCRIPT")
+# shellcheck disable=SC2034,SC2317,SC2329  # the stubs and names are praw's, run through eval
+praw_args() { ( # what praw hands publish_agent.py, with and without a greeting file
+    HERE=/h; RUN=/r; RDIR=$(mktemp -d)
+    python3() { shift; echo "args: $*" >&2; cat > /dev/null; }
+    pend() { :; }; rig_error() { echo "error $*"; }
+    eval "$praw_fn"
+    { praw "$@" 2>&1; cat "$RDIR/agent.err"; } | sed "s|$RDIR|RDIR|g"; rm -rf "${RDIR:?}"
+) }
+is "praw: no greeting file, no fourth argument" "$(praw_args cuts 'x\n')" "args: /h/publish_agent.py raw /r RDIR/agent.tsv cuts"
+is "praw: the greeting file is the fourth argument" "$(praw_args version 'x\n' /g/greeting.txt)" \
+    "args: /h/publish_agent.py raw /r RDIR/agent.tsv version /g/greeting.txt"
+is "pchannel learns the greeting from version, before the others" \
+    "$(sed -n '/^rec_pchannel() {$/,/^}$/p' "$SCRIPT" | grep -E '^    (praw|PCHANNEL_HELLO=|ppeer)' | sed 's/ *$//')" \
+    "    praw version 'skyzfs-control 9\\ncuts\\n' \"\$RDIR/channel-greeting.txt\"
+    PCHANNEL_HELLO=\$(channel_hello \"\$RDIR/channel-greeting.txt\")
+    praw malformed \"\$PCHANNEL_HELLO\\ncuts extra=1\\n\"
+    praw name \"\$PCHANNEL_HELLO\\nprogress name=a/b\\n\"
+    praw cuts \"\$PCHANNEL_HELLO\\ncuts\\n\"
+    ppeer"
+is "the peer sends in the learned greeting" \
+    "$(sed -n '/^ppeer() {$/,/^}$/p' "$SCRIPT" | grep -c "printf '%s\\\\ncuts\\\\n' \"\$PCHANNEL_HELLO\"")" 1
+
 [ "$fails" = 0 ] && echo "all passed"
 exit $((fails > 0))

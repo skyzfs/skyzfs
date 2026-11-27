@@ -3,8 +3,8 @@
 
 The agent proper is M2.6's. This stand-in follows the daemon's channel
 as `crates/skyzfs-control/src/lib.rs`'s crate documentation gives it
-(protocol version 2) and design §5.2, "A snapshot is published by a cut
-of the pool's present history":
+(protocol version 3, M2.7b, or version 2 before it) and design §5.2, "A
+snapshot is published by a cut of the pool's present history":
 
 1. `cuts`: the attachment A, the cut state S and the count C;
 2. `zfs snapshot POOL@T`, then `zfs hold` on it; G is its `createtxg`;
@@ -47,6 +47,20 @@ counted after C) is asked anew by the rig's courses with a count read
 anew (`ask cuts`), as the agent's AskAnew does; `ask look T` reads
 `snap/T` as the daemon finds it (`snap ...`, `absent`, `unreadable ...`).
 
+The versions (HELLOS). Version 3 is version 2 with `retire` and the
+store's rewind mark in the answer to `cuts` (`rewound=R`), and each
+side refuses the other version at the greeting (`version`). The
+stand-in reads the answers of either, so that one rig runs on the
+daemon before and after M2.7b: `cuts` with or without `rewound=`, and a
+raw request's answer after either greeting. Its requests through
+`skyzfsd`'s commands speak the version of that build. A raw request
+whose greeting is `skyzfs-control ?` offers version 3, and where the
+daemon refuses it `version` with the greeting of version 2, is sent
+again with that greeting on a new connection (two requests to such a
+daemon, each in AGENT.tsv); `raw`'s GREETING_OUT keeps the greeting
+the daemon answered with, so that a course can learn the daemon's
+version from one request and send the next ones in it.
+
 Every request and its answer goes to AGENT.tsv, one line each, with
 the monotonic clock (the request log's) before and after: the check
 reads what was asked and answered from it, and nothing else.
@@ -59,7 +73,8 @@ Usage:
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv cuts
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv progress|withdraw|look T
   publish_agent.py ask   SKYZFSD VOL RUN AGENT.tsv publish T A S C G MANIFEST [E]
-  publish_agent.py raw   RUN AGENT.tsv LABEL  (stdin: the bytes to send, as given)
+  publish_agent.py raw   RUN AGENT.tsv LABEL [GREETING_OUT]  (stdin: the bytes to send,
+                         as given, but for a first line `skyzfs-control ?`)
 
 `--group-plus K` asks with G+K in place of the snapshot's createtxg G
 (the rig's course on the group: no cut below G+K may be published);
@@ -84,7 +99,11 @@ import subprocess
 import sys
 import time
 
-HELLO = 'skyzfs-control 2'
+# The greetings the stand-in reads, the one it offers first.
+HELLOS = ('skyzfs-control 3', 'skyzfs-control 2')
+HELLO = HELLOS[0]
+OFFER = b'skyzfs-control ?\n'
+CUTS_FIELDS = {'attachment', 'state', 'count', 'group', 'opens'}
 ASSIST_PROP = 'skyzfs:assist'
 ASSIST_AFTER = 10
 ASSIST_BURST = 3
@@ -118,11 +137,17 @@ def parse_answer(line):
         if not sep or not k or k in fields:
             raise RigError(f'not an answer line: {line!r}')
         fields[k] = v
-    known = {'cuts': {'attachment', 'state', 'count', 'group', 'opens'}, 'accepted': set(), 'pending': set(),
+    known = {'cuts': CUTS_FIELDS, 'accepted': set(), 'pending': set(),
              'done': {'commit'}, 'expired': set(), 'withdrawn': set(), 'unknown': set(),
              'snap': {'commit', 'state', 'number', 'group', 'manifest-len', 'manifest-hash'}, 'absent': set(),
              'unreadable': {'commit', 'why'}}
-    if verb not in known or set(fields) != known[verb]:
+    # Version 3's `cuts` carries the rewind mark, version 2's does not.
+    if verb == 'cuts' and 'rewound' in fields:
+        if not fields['rewound'].isdigit():
+            raise RigError(f'a cuts answer whose rewound is not a number: {line!r}')
+        if set(fields) != CUTS_FIELDS | {'rewound'}:
+            raise RigError(f'not an answer line: {line!r}')
+    elif verb not in known or set(fields) != known[verb]:
         raise RigError(f'not an answer line: {line!r}')
     if verb in ('done', 'snap', 'unreadable') and not is_hex(fields['commit'], 64):
         raise RigError(f'a commit that is not 64 hex digits: {line!r}')
@@ -211,10 +236,15 @@ class Agent:
         return self.ask('look', '--name', name)
 
 
-def raw(run, log, label, data, clock=time.monotonic_ns, limit=60):
-    """Send `data` as given to the volume's socket (the one `control`
-    under RUN) and read the answer: for the requests that `skyzfsd`'s
-    commands would not send (another greeting, a malformed line).
+def raw(run, log, label, data, clock=time.monotonic_ns, limit=60, greeting_out=None):
+    """Send `data` to the volume's socket (the one `control` under RUN)
+    and read the answer: for the requests that `skyzfsd`'s commands would
+    not send (another greeting, a malformed line). Data whose first line
+    is `skyzfs-control ?` is sent with HELLO in its place, and once more,
+    on a new connection, with the greeting of version 2 where the daemon
+    refused it `version` with that greeting (the version it speaks). With
+    GREETING_OUT, the greeting the daemon answered the last request with
+    is written there (nothing where it wrote no whole line).
 
     A daemon that refuses before it has read the whole request (a peer
     of another user) answers and closes with the request unread. On
@@ -223,7 +253,7 @@ def raw(run, log, label, data, clock=time.monotonic_ns, limit=60):
     answer is read all the same.
 
     The answer is the whole line (ended by a newline) after the greeting
-    HELLO (`skyzfs-control 2`), as `ask` takes it: anything else the daemon wrote
+    of HELLOS (`skyzfs-control 3` or `2`), as `ask` takes it: anything else the daemon wrote
     before it closed, a line with no greeting before it among them, is
     answered `no answer line: ...`, which no course allows. Once the
     connection is made, a daemon that closes with nothing written (EOF,
@@ -233,6 +263,23 @@ def raw(run, log, label, data, clock=time.monotonic_ns, limit=60):
     verdict, whether it read the request or not (the error goes to
     stderr). The rig's error (RigError, exit 2) is a socket it cannot
     connect to, a connect that times out, and anything else."""
+    if not data.startswith(OFFER):
+        return raw_once(run, log, label, data, clock, limit, greeting_out)
+    rest = data[len(OFFER):]
+    for k, hello in enumerate(HELLOS):
+        answer = raw_once(run, log, label, hello.encode() + b'\n' + rest, clock, limit, greeting_out)
+        said = last_greeting.get('said')
+        if not (answer.startswith('refused version') and said in HELLOS[k + 1:]):
+            return answer
+    return answer
+
+
+# The greeting the daemon wrote first, in raw_once's last request.
+last_greeting = {}
+
+
+def raw_once(run, log, label, data, clock, limit, greeting_out):
+    """One request of `raw`, as given."""
     path = socket_path(run)
     t0 = clock()
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -270,6 +317,11 @@ def raw(run, log, label, data, clock=time.monotonic_ns, limit=60):
     finally:
         s.close()
     answer = f'no answer within {limit} s' if late and not got else answer_of(got)
+    said = got.decode('utf-8', 'replace').split('\n')[0] if b'\n' in got else None
+    last_greeting['said'] = said
+    if greeting_out is not None:
+        with open(greeting_out, 'w') as f:
+            f.write(f'{said}\n' if said is not None else '')
     with open(log, 'a') as f:
         f.write(f'{t0}\t{clock()}\traw {label}\t{1 if answer.startswith("refused ") else 0}\t{answer}\n')
     return answer
@@ -279,11 +331,11 @@ def answer_of(got):
     """The bytes a daemon wrote -> the answer: the first whole line after
     the greeting, '' for nothing at all, and `no answer line: ...` for
     anything else: bytes with no whole line after a whole greeting, a
-    first line that is not the greeting (skyzfsd's own `ask` refuses
-    it)."""
+    first line that is not a greeting of HELLOS (skyzfsd's own `ask`
+    refuses it)."""
     text = got.decode('utf-8', 'replace')
     whole = text.split('\n')[:-1]
-    if len(whole) > 1 and whole[0] == HELLO:
+    if len(whole) > 1 and whole[0] in HELLOS:
         return whole[1]
     if not text:
         return ''
@@ -433,7 +485,8 @@ def flow(agent, pool, name, sync=False, expiry=None, limit=300, manifest_out=Non
 def main(argv):
     try:
         if len(argv) >= 4 and argv[1] == 'raw':
-            print(raw(argv[2], argv[3], argv[4] if len(argv) > 4 else 'raw', sys.stdin.buffer.read()))
+            print(raw(argv[2], argv[3], argv[4] if len(argv) > 4 else 'raw', sys.stdin.buffer.read(),
+                      greeting_out=argv[5] if len(argv) > 5 else None))
             return 0
         if len(argv) < 6:
             print(__doc__, file=sys.stderr)
