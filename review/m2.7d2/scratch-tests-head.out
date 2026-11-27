@@ -1,0 +1,55 @@
+failures:
+
+---- program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing stdout ----
+round 1 failed took_ms=0 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+skyzfs-agent: round 1: the daemon: the daemon is away
+
+
+thread 'program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing' (1980) panicked at crates/skyzfs-agent/src/program/tests.rs:2439:9:
+calls after the end was asked: ["cuts", "count", "props", "tagged", "props", "cuts"]
+
+---- program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them stdout ----
+round 1 failed took_ms=0 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+skyzfs-agent: round 1: the daemon: the daemon is away
+calls: ["cuts", "props", "cuts", "cuts", "count", "props", "tagged", "props", "cuts"]
+
+thread 'program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them' (1979) panicked at crates/skyzfs-agent/src/program/tests.rs:2409:9:
+assertion `left == right` failed: round 1 failed took_ms=0 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=0
+skyzfs-agent: round 1: the daemon: the daemon is away
+
+  left: "0"
+ right: "2"
+
+
+failures:
+    program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them
+    program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing
+
+test result: FAILED. 263 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.96s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 7 tests
+test a_volume_with_no_place_in_object_storage_publishes_nothing ... ok
+test a_build_without_the_hooks_refuses_them ... ok
+test a_closed_pipe_on_standard_output_is_no_panic ... ok
+test a_usage_error_exits_2_with_the_usage ... ok
+test record_of_a_directory_with_none_prints_absent ... ok
+test record_of_what_is_not_a_directory_is_an_error ... ok
+test an_agent_whose_directory_another_holds_exits_8 ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Compiling skyzfs-agent v0.0.1 ($SCRATCH/pr172p/crates/skyzfs-agent)
+   Compiling skyzfs-agent-cli v0.0.1 ($SCRATCH/pr172p/bins/skyzfs-agent)
+    Finished `test` profile [optimized] target(s) in 25.09s
+     Running unittests src/lib.rs ($SCRATCH/t172p/debug/build/skyzfs-agent/0d80ea478ac91bce/out/skyzfs_agent-0d80ea478ac91bce)
+error: test failed, to rerun pass `-p skyzfs-agent --lib`
+     Running unittests src/main.rs ($SCRATCH/t172p/debug/build/skyzfs-agent-cli/fcfe98cc52513001/out/skyzfs_agent-fcfe98cc52513001)
+     Running tests/program.rs ($SCRATCH/t172p/debug/build/skyzfs-agent-cli/81d05be3903f2534/out/program-81d05be3903f2534)
+error: 1 target failed:
+    `-p skyzfs-agent --lib`

@@ -1,0 +1,17 @@
+--- a/crates/skyzfs-agent/src/program.rs
++++ b/crates/skyzfs-agent/src/program.rs
+@@ -1094,7 +1094,13 @@
+                     synced = k;
+                     clear = k == 0 || go();
+                 }
+-                Ok(Past::Unseen) => clear = true,
++                Ok(Past::Unseen) => {
++                    // The daemon unread after syncs that returned: the
++                    // line counts them, and an end asked during the last
++                    // begins nothing, as in the arm above.
++                    synced = agent.last_synced();
++                    clear = synced == 0 || go();
++                }
+                 Ok(Past::Behind {
+                     synced: k,
+                     group,

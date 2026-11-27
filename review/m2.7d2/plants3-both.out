@@ -1,0 +1,23 @@
+BASE -> SURVIVES rc= 101 test result: FAILED. 263 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.96s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+   FAILED program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing
+   FAILED program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them
+R16 the bound checked after go (order) -> SURVIVES rc= 101 test result: FAILED. 263 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.86s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+   FAILED program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them
+   FAILED program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing
+F1 bound also for an end (Told) -> KILLED rc= 101 test result: FAILED. 262 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.91s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+   FAILED program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing
+   FAILED program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them
+   FAILED program::tests::review172::s2_a_round_stopped_by_an_end_is_not_at_the_bound
+F2 bound=1 on an error of the syncs -> KILLED rc= 101 test result: FAILED. 262 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.43s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+   FAILED program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them
+   FAILED program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing
+   FAILED program::tests::review172::s3_a_round_whose_sync_failed_is_not_at_the_bound
+F4 last_synced reset where nothing is behind, not at the call's start -> KILLED rc= 101 test result: FAILED. 262 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.07s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+   FAILED program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them
+   FAILED program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing
+   FAILED program::tests::review172::s5_a_refusal_after_a_failed_sync_says_synced_0
+F5 bound kept across rounds (declared outside the round loop) -> KILLED rc= 101 test result: FAILED. 262 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.54s | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s | test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+   FAILED program::tests::review172::s1b_an_end_during_the_syncs_then_the_daemon_unread_begins_nothing
+   FAILED program::tests::review172::s1_a_round_whose_daemon_went_away_after_syncs_counts_them
+   FAILED program::tests::review172::s4_a_round_after_the_bound_that_finds_nothing_behind_says_bound_0
+ALLDONE
