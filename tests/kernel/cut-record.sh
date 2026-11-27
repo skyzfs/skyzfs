@@ -1692,9 +1692,13 @@ pwait() {
     pend "$1" "$out"
 }
 # LABEL BYTES: BYTES (printf %b) sent as they are to the socket.
+# LABEL DATA [GREETING_OUT]: a raw request (publish_agent.py raw), DATA
+# with printf's escapes; with GREETING_OUT, the greeting the daemon
+# answered with is kept there.
 praw() {
     local out rc=0
-    out=$(printf '%b' "$2" | python3 -I "$HERE/publish_agent.py" raw "$RUN" "$RDIR/agent.tsv" "$1" 2>> "$RDIR/agent.err") || rc=$?
+    out=$(printf '%b' "$2" | python3 -I "$HERE/publish_agent.py" raw "$RUN" "$RDIR/agent.tsv" "$1" ${3:+"$3"} \
+        2>> "$RDIR/agent.err") || rc=$?
     [ "$rc" -le 1 ] || rig_error "the raw request $1 ended $rc: $(tail -n 2 "$RDIR/agent.err")"
     pend "$1" "$out"
 }
@@ -1981,7 +1985,12 @@ rec_passist() {
 # (`name`), a well-formed `cuts` (that the raw path works), and one from
 # a peer of another user (`peer`: nobody, with the socket made 0666 and
 # the directories above it searchable for the request, and put back).
-# The status after them goes to DIR/channel-status.txt.
+# The status after them goes to DIR/channel-status.txt. The daemon's
+# version (protocol 3 from M2.7b, 2 before) is read from the greeting it
+# answers the first with (DIR/channel-greeting.txt), and the others are
+# sent in it: each is then one request, whichever the daemon speaks, and
+# the status's counts are the same. A greeting that is neither leaves
+# them to offer 3 and fall back to 2 (`skyzfs-control ?`).
 ppeer() {
     local sock dir tmp out rc=0 m modes=()
     sock=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import publish_agent as p; print(p.socket_path(sys.argv[2]))' \
@@ -1993,7 +2002,7 @@ ppeer() {
     tmp=$(mktemp -d)
     cp "$HERE/publish_agent.py" "$tmp/"
     chmod 0755 "$tmp"; chmod 0644 "$tmp/publish_agent.py"; chown nobody "$tmp"
-    out=$(printf 'skyzfs-control 2\ncuts\n' | runuser -u nobody -- python3 -I "$tmp/publish_agent.py" raw "$sock" \
+    out=$(printf '%s\ncuts\n' "$PCHANNEL_HELLO" | runuser -u nobody -- python3 -I "$tmp/publish_agent.py" raw "$sock" \
         "$tmp/agent.tsv" peer 2>> "$RDIR/agent.err") || rc=$?
     cat "$tmp/agent.tsv" >> "$RDIR/agent.tsv" 2>/dev/null || true
     rm -rf "${tmp:?}"
@@ -2002,6 +2011,17 @@ ppeer() {
     [ "$rc" -le 1 ] || rig_error "nobody's request ended $rc: $(tail -n 2 "$RDIR/agent.err")"
     pend peer "$out"
 }
+# FILE: the greeting a daemon answered with, if it is one of a version
+# the stand-in speaks (publish_agent.HELLOS), else `skyzfs-control ?`.
+channel_hello() {
+    local g
+    g=$(head -n 1 "$1" 2>/dev/null) || g=
+    case $g in
+        'skyzfs-control 3' | 'skyzfs-control 2') echo "$g" ;;
+        *) echo 'skyzfs-control ?' ;;
+    esac
+}
+PCHANNEL_HELLO='skyzfs-control ?'
 rec_pchannel() {
     create_pool
     load 1
@@ -2018,10 +2038,11 @@ rec_pchannel() {
     serve_start 2
     drain balance-start.txt idle 1
     import_pool
-    praw version 'skyzfs-control 9\ncuts\n'
-    praw malformed 'skyzfs-control 2\ncuts extra=1\n'
-    praw name 'skyzfs-control 2\nprogress name=a/b\n'
-    praw cuts 'skyzfs-control 2\ncuts\n'
+    praw version 'skyzfs-control 9\ncuts\n' "$RDIR/channel-greeting.txt"
+    PCHANNEL_HELLO=$(channel_hello "$RDIR/channel-greeting.txt")
+    praw malformed "$PCHANNEL_HELLO\ncuts extra=1\n"
+    praw name "$PCHANNEL_HELLO\nprogress name=a/b\n"
+    praw cuts "$PCHANNEL_HELLO\ncuts\n"
     ppeer
     # The peer is the last connection counted, and each post holds every
     # count so far: once it shows, the malformed ones do too.
