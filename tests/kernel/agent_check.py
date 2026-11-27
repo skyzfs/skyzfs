@@ -332,15 +332,17 @@ def not_reached(kill, rc, err, trace):
     return n > 1 and rc != '137' and not KILL_LINE.findall(err) and reach < n
 
 
+# `synced=K` at the end is #170's (M2.7d): read where it is there.
 ROUND_LINE = re.compile(r'round ([1-9][0-9]*) (ok|failed) took_ms=([0-9]+) late_ms=([0-9]+) skipped=([0-9]+) '
-                        r'begun=(\S+) under_way=([0-9]+)')
+                        r'begun=(\S+) under_way=([0-9]+)(?: synced=([0-9]+))?')
 
 
 def read_outputs(text):
     """The agent's standard output -> {'published': {t: commit}, 'abandoned': {t: why}, 'stopped': {t: why},
     'unsettled': [t], 'rounds': [round]}: `run`'s round lines are its
     fifth kind, each {'n', 'ok', 'took_ms', 'late_ms', 'skipped',
-    'begun' (None for -), 'under_way'}, in order."""
+    'begun' (None for -), 'under_way', 'synced' (None where the line
+    has none)}, in order."""
     out = {'published': {}, 'abandoned': {}, 'stopped': {}, 'unsettled': [], 'rounds': []}
     for ln in text.splitlines():
         f = ln.split()
@@ -348,7 +350,7 @@ def read_outputs(text):
         if r:
             out['rounds'].append({'n': int(r[1]), 'ok': r[2] == 'ok', 'took_ms': int(r[3]), 'late_ms': int(r[4]),
                                   'skipped': int(r[5]), 'begun': None if r[6] == '-' else r[6],
-                                  'under_way': int(r[7])})
+                                  'under_way': int(r[7]), 'synced': None if r[8] is None else int(r[8])})
         elif len(f) == 2 and f[0].startswith('snap/'):
             out['published'][f[0][len('snap/'):]] = f[1]
         elif len(f) == 3 and f[0] == 'abandoned':
