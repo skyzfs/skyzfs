@@ -667,17 +667,40 @@ await_rounds() {
         sleep 0.1
     done
 }
-# LABEL N: N round lines came (await_rounds) and the run is told to end
-# with one SIGTERM, between two rounds, while it waits for the next
-# tick; its end within 60 s (await_agent). The signal's time and the
-# end's, on the rig's clock, are CDIR/LABEL.term-at and LABEL.ended-at.
-# Fewer lines in 120 s per line is a verdict.
+# LABEL: the ms left to the next tick after the last round line of
+# CDIR/LABEL.out (--every-s less its took_ms and late_ms; below 0 where
+# it overran its tick, and the next round begins at once); 0 where there
+# is no round line.
+round_left() {
+    awk -v e="$RUN_EVERY" '/^round / { for (i = 3; i <= NF; i++) { split($i, f, "="); v[f[1]] = f[2] }; l = e * 1000 - v["took_ms"] - v["late_ms"] } END { print int(l) }' "$CDIR/$1.out" 2>/dev/null || echo 0
+}
+# LABEL N: N round lines came (await_rounds), then more until one came
+# with 3 s or more left to its next tick (three more at most), and the
+# run is told to end with one SIGTERM there: between two rounds, while
+# it waits for the tick. A round that overran its tick is followed at
+# once by the next (program::schedule), so a SIGTERM right after its
+# line would come while the engine works (Codex on #171). Round lines
+# are stamped until the run ends, so that one printed after the signal
+# has its arrival (the check's pin_ID_no_round_after_sigterm); the end
+# within 60 s (await_agent). The signal's time and the end's, on the
+# rig's clock, are CDIR/LABEL.term-at and LABEL.ended-at. Fewer than N
+# lines in 120 s per line, or no line with 3 s left, is a verdict.
 run_rounds_then_term() {
-    if await_rounds "$1" "$2" $((120 * $2)); then
+    local k=$2 limit=$((120 * $2)) left=0 have
+    while await_rounds "$1" "$k" "$limit"; do
+        left=$(round_left "$1")
+        [ "$left" -lt 3000 ] && [ "$k" -lt $(($2 + 3)) ] || break
+        k=$((k + 1)) limit=120
+    done
+    have=$(grep -c '^round ' "$CDIR/$1.out" 2>/dev/null) || have=0
+    if [ "$have" -ge "$2" ] && [ "$left" -ge 3000 ] && kill -0 "$AGENT_PID" 2>/dev/null; then
         kill -TERM "$AGENT_PID" 2>/dev/null || true
         echo "$EPOCHREALTIME" > "$CDIR/$1.term-at"
+        await_rounds "$1" 1000000 60 || true
+    elif [ "$have" -lt "$2" ]; then
+        verdict rounds "the run printed $have round lines, not $2: $(tail -n 2 "$CDIR/$1.err")"
     else
-        verdict rounds "the run printed $(grep -c '^round ' "$CDIR/$1.out") round lines, not $2: $(tail -n 2 "$CDIR/$1.err")"
+        verdict rounds "no round line with 3 s left to its next tick in $have rounds: $(tail -n 2 "$CDIR/$1.err")"
     fi
     await_agent "$1" 60
     echo "$EPOCHREALTIME" > "$CDIR/$1.ended-at"
@@ -764,7 +787,7 @@ scen_runbad() {
     abg publish run --every-s "$RUN_EVERY" "$@"
     for k in 1 2 3; do
         await_rounds publish "$k" 120 || break
-        left=$(awk -v e="$RUN_EVERY" '/^round / { for (i = 3; i <= NF; i++) { split($i, f, "="); v[f[1]] = f[2] }; l = e * 1000 - v["took_ms"] - v["late_ms"] } END { print int(l) }' "$CDIR/publish.out")
+        left=$(round_left publish)
         [ "${left:-0}" -lt 3000 ] || break
     done
     if ! kill -0 "$AGENT_PID" 2>/dev/null || [ "${left:-0}" -lt 3000 ]; then

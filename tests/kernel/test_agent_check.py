@@ -1404,6 +1404,13 @@ class Rounds(unittest.TestCase):
         self.assertTrue(ac.judge_rounds(rounds_of(*THREE), [1003.0, 1008.0, 1013.0], 3))
         self.assertEqual(ac.judge_rounds(rounds_of(*THREE), [1003.0, 1008.0, 1013.0], 3, every=5), [])
 
+    def test_rounds_after(self):
+        self.assertEqual(ac.rounds_after([1003.0, 1013.0], '1014.0\n'), [])
+        self.assertEqual(ac.rounds_after([], '1014.0'), [])
+        self.assertTrue(any('[3]' in b for b in ac.rounds_after([1003.0, 1013.0, 1014.5], '1014.0')))
+        with self.assertRaises(RigError):
+            ac.rounds_after([1.0], 'soon')
+
     def test_ended_within(self):
         self.assertEqual(ac.ended_within('10.0', '11.9'), [])
         self.assertTrue(ac.ended_within('10.0', '12.5'))
@@ -1418,7 +1425,8 @@ class Run(unittest.TestCase):
 
     def test_run(self):
         rc, lines = self.judged(with_run_case('R-run', 'run', '-', '0', 'r3', run_files()), 'R-run')
-        for k in ('pin_R-run_rounds', 'pin_R-run_ended_on_sigterm', 'pin_R-run_first_run', 'pin_R-run_outcome'):
+        for k in ('pin_R-run_rounds', 'pin_R-run_ended_on_sigterm', 'pin_R-run_no_round_after_sigterm',
+                  'pin_R-run_first_run', 'pin_R-run_outcome'):
             self.assertEqual(lines[k][0], 'ok', (k, lines))
         self.assertEqual(rc, 0, lines)
 
@@ -1428,7 +1436,8 @@ class Run(unittest.TestCase):
                                          ('r1', 'r2', 'r3'))}, 'rounds'),
                 ({'publish.out': run_out(THREE[:2], ('r1', 'r2'))}, 'rounds'),
                 ({'publish.rounds.tsv': arrivals(1003.0, 1013.0, 1029.0)}, 'rounds'),
-                ({'publish.ended-at': '1028.0\n'}, 'ended_on_sigterm')]:
+                ({'publish.ended-at': '1028.0\n'}, 'ended_on_sigterm'),
+                ({'publish.term-at': '1022.0\n', 'publish.ended-at': '1023.5\n'}, 'no_round_after_sigterm')]:
             rc, lines = self.judged(with_run_case('R-run', 'run', '-', '0', 'r3', run_files(**change)), 'R-run')
             self.assertEqual(lines[f'pin_R-run_{key}'][0], 'FAILED', (change, lines))
             self.assertEqual(rc, 1, (change, lines))
@@ -1461,7 +1470,7 @@ class Run(unittest.TestCase):
     def test_runkill(self):
         rc, lines = self.judged(self.run2(), 'R-kill')
         for k in ('premise_R-kill_killed', 'pin_R-kill_restarted', 'pin_R-kill_ended_on_sigterm',
-                  'pin_R-kill_outcome'):
+                  'pin_R-kill_no_round_after_sigterm', 'pin_R-kill_outcome'):
             self.assertEqual(lines[k][0], 'ok', (k, lines))
         for change in ({'run2.rc': '1\n'}, {'run2.out': run_out([rline(1, 'r4')], ('r4',))},
                        {'run2.rounds.tsv': arrivals(2003.0, 2020.0)}):
@@ -1469,6 +1478,8 @@ class Run(unittest.TestCase):
             self.assertEqual(lines['pin_R-kill_restarted'][0], 'FAILED', (change, lines))
         rc, lines = self.judged(self.run2(**{'run2.ended-at': '2020.0\n'}), 'R-kill')
         self.assertEqual(lines['pin_R-kill_ended_on_sigterm'][0], 'FAILED', lines)
+        rc, lines = self.judged(self.run2(**{'run2.term-at': '2012.0\n'}), 'R-kill')
+        self.assertEqual(lines['pin_R-kill_no_round_after_sigterm'][0], 'FAILED', lines)
 
     def twice(self, rc='1', **change):
         files = {'trace.tsv': trace('r1', *upto('asked', 'after')), 'publish.out': '',
@@ -1588,7 +1599,7 @@ class Rewind(unittest.TestCase):
     def test_runrewind(self):
         rc, lines = self.judged(self.case())
         for k in ('premise_R-rewind_rewound', 'pin_R-rewind_synced_past', 'pin_R-rewind_rounds',
-                  'pin_R-rewind_ended_on_sigterm', 'pin_R-rewind_first_run', 'pin_R-rewind_outcome'):
+                  'pin_R-rewind_ended_on_sigterm', 'pin_R-rewind_no_round_after_sigterm', 'pin_R-rewind_first_run', 'pin_R-rewind_outcome'):
             self.assertEqual(lines[k][0], 'ok', (k, lines))
         self.assertEqual(rc, 0, lines)
 

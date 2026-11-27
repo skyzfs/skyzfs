@@ -625,6 +625,18 @@ def judge_rounds(rounds, arrivals, want, every=RUN_EVERY):
     return bad
 
 
+def rounds_after(arrivals, term):
+    """The rig's arrival times of the round lines and LABEL.term-at ->
+    [what is not so]: no line came after the signal, which the rig sent
+    between two rounds."""
+    try:
+        t = float(term)
+    except ValueError:
+        raise RigError(f'term-at: not a time: {term!r}') from None
+    late = [k for k, a in enumerate(arrivals, 1) if a > t]
+    return [f'round line(s) {late} came after the SIGTERM'] if late else []
+
+
 def ended_within(term, ended, limit=END_WITHIN):
     """LABEL.term-at and LABEL.ended-at -> [what is not so]: the run ended
     within LIMIT s of the rig's signal."""
@@ -707,6 +719,12 @@ def judge_run(cid, cd, scen, outs, holds, premise, text):
         if term and end:
             holds(f'pin_{cid}_ended_on_{what}', ended_within(term, end), 'server',
                   f'it ended within {END_WITHIN} s of the {what.replace("_", " ")}')
+        if term and what == 'sigterm':
+            # The rig signals between two rounds and stamps round lines
+            # until the run ends: none may come after the signal.
+            holds(f'pin_{cid}_no_round_after_sigterm',
+                  rounds_after(read_arrivals(text(at(f'{label}.rounds.tsv'))), term), 'server',
+                  'no round line came after the SIGTERM')
 
     rounds = outs.get('publish', {}).get('rounds', [])
     if scen in ('run', 'runheld'):

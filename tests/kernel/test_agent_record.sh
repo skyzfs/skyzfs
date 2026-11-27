@@ -999,6 +999,7 @@ is "agent_quiet: its bounds" "$(tr '\n' ';' < "$T/qh.seq")" "1 20;1 120;"
 # (the second signal ends it 1; FAKE_LINGER s after the signal that
 # ends it, in these three), bad (after them, waits for FAKE_SOCK
 # to go, keeps the record it then finds, prints a failed round, exit 6).
+# FAKE_TERM_LINE=1: a round line printed on the signal that ends it.
 cat > "$T/fake-agent" <<'EOF'
 #!/usr/bin/env python3
 import os, signal, sys, time
@@ -1016,6 +1017,8 @@ def on(sig, _):
     with open(os.path.join(d, 'signals'), 'a') as f:
         f.write(signal.Signals(sig).name + '\n')
     if mode != 'twice' or len(got) == 2:
+        if os.environ.get('FAKE_TERM_LINE'):
+            print('round 99 ok took_ms=1 late_ms=0 skipped=0 begun=r99 under_way=0', flush=True)
         time.sleep(float(os.environ.get('FAKE_LINGER', '0')))
         sys.exit(1 if mode == 'twice' else 0)
 signal.signal(signal.SIGTERM, on)
@@ -1039,7 +1042,7 @@ while True:
     time.sleep(0.05)
 EOF
 chmod +x "$T/fake-agent"
-for f in await_rounds run_rounds_then_term scen_run scen_runkill scen_runtwice scen_runheld scen_runbad other_remote rec_arun; do
+for f in await_rounds round_left run_rounds_then_term scen_run scen_runkill scen_runtwice scen_runheld scen_runbad other_remote rec_arun; do
     is "$f is in the script" "$([ -n "$(fn "$f")" ] && echo yes)" yes
 done
 is "RUN_EVERY is 10" "$(grep -c '^RUN_EVERY=10$' "$SCRIPT")" 1
@@ -1055,7 +1058,7 @@ runt() {
         echo 'the record' > "$ADIR/record"; : > "$RUN/v/control"
         export FAKE_DIR=$CDIR FAKE_MODE=$2 FAKE_TOOK=$3 FAKE_GAP=${5:-0.15} FAKE_SOCK=$RUN/v/control FAKE_REC=$ADIR/record
         log() { :; }; vrun() { echo "$RUN/v"; }; wait_point() { sleep 0.3; }; case_name() { echo r1; }
-        for f in verdict case_error acmd abg await_agent await_rounds run_rounds_then_term other_remote \
+        for f in verdict case_error acmd abg await_agent await_rounds round_left run_rounds_then_term other_remote \
             rewind_groups "scen_$1"; do
             eval "$(fn "$f")"
         done
@@ -1092,6 +1095,30 @@ is "run: its end is when the agent ended, not when it was told" \
 runt run end "3000"
 is "run: a run that ends before its rounds is a verdict, no signal" "$(seen publish)" \
     "rc=3 rounds=1, ordered sig= ended= verdicts=rounds,"
+# Round 3 overran its tick (10.5 s of 10): the next began at once, and
+# the signal waits for round 4, which left 7 s (Codex on #171).
+runt run rounds "3000 3000 10500 3000"
+is "run: no signal after a round that overran its tick; the next one's" "$(seen publish)" \
+    "rc=0 rounds=1,2,3,4, ordered sig=SIGTERM, ended=after verdicts="
+runt run end "3000 3000 10500 9000 8000 10500"
+is "run: no round with 3 s left in three more is a verdict, no signal" \
+    "$(seen publish) $(cut -f2 "$T/rc/verdicts.tsv" | cut -c1-56)" \
+    "rc=3 rounds=1,2,3,4,5,6, ordered sig= ended= verdicts=rounds, no round line with 3 s left to its next tick in 6 rounds"
+# A seventh round would leave 7 s, but the rig waits for three more
+# rounds and no longer: it judges after round 6.
+runt run end "3000 3000 10500 9000 8000 10500 3000" "" 0.6
+is "run: the rig waits for three more rounds, not four" \
+    "$(sort "$T/rc/signals" 2>/dev/null | tr '\n' ,) $(cut -f2 "$T/rc/verdicts.tsv" | sed 's/: .*//')" \
+    " no round line with 3 s left to its next tick in 6 rounds"
+FAKE_TERM_LINE=1 FAKE_LINGER=0.3 runt run rounds "3000 3000 3000"
+is "run: a round line after the signal is stamped, after it" \
+    "$(seen publish) $(awk 'NR == FNR { t = $1; next } FNR == 4 { print ($2 >= t ? "after" : "before") }' "$T/rc/publish.term-at" "$T/rc/publish.rounds.tsv")" \
+    "rc=0 rounds=1,2,3,4, ordered sig=SIGTERM, ended=after verdicts= after"
+is "round_left: every less the last round's took and late" \
+    "$(eval "$(fn round_left)"; CDIR=$T/rl RUN_EVERY=10; mkdir -p "$CDIR"
+       printf 'round 1 ok took_ms=3000 late_ms=0 skipped=0 begun=a under_way=0\nsnap/a c\nround 2 ok took_ms=500 late_ms=1500 skipped=0 begun=b under_way=0 synced=0\n' > "$CDIR/x.out"
+       : > "$CDIR/none.out"
+       echo "$(round_left x) $(round_left none) $(round_left missing)")" "8000 0 0"
 runt runkill killfirst "3000 3000"
 is "runkill: the first run killed" "$(cat "$T/rc/publish.rc")" 137
 is "runkill: a run started again, two rounds, SIGTERM" "$(seen run2)" \
