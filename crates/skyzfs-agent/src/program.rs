@@ -1456,16 +1456,21 @@ pub fn round_line(round: &Round) -> String {
 ///   asked of `go` within the engine, and every [`WAKE`] while it waits,
 ///   at most once a second. News ends the round there and begins the
 ///   next at once.
+/// - **Retention** keeps what `kept` says ([`Kept`]; G16 of the review
+///   of #179: the settings are taken here, not left to the caller).
 /// - **What it keeps** of the publishes that left the record is
 ///   forgotten after each round ([`Agent::forget`]), once their lines
 ///   are out.
 pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
     agent: &mut Agent<Z, D, K, C>,
     every: Duration,
+    kept: Kept,
     go: &mut dyn FnMut() -> bool,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    agent.set_keep(kept.keep);
+    agent.set_abandoned_keep(kept.abandoned_keep);
     let every_ms = ms(every).max(1);
     let start = agent.clock().mono_ms();
     let mut tick = 0u64;
@@ -1664,10 +1669,11 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             }
             // Retention (M2.7b-2): the names published past `--keep`, and
             // those given up past `--abandoned-keep-s`, retired, a few at a
-            // round. Not after an end was asked, nor once the note had
-            // news: the next round reads it first.
-            if !restart && go() && !agent.note_came() {
-                if let Err(e) = agent.retain() {
+            // round. It asks `go` and the note before each step and each
+            // call to ZFS, and yields once an end was asked or the note
+            // had news: the next round reads it first.
+            if !restart {
+                if let Err(e) = agent.retain_while(go) {
                     restart = restarts(&e);
                     failed.push(e);
                 }

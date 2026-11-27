@@ -862,3 +862,507 @@ fn a_stop_in_the_retry_of_a_name_stuck_is_taken_up() {
         }
     }
 }
+
+/// What the round asks of ZFS and the daemon: the calls counted by the
+/// halt tests.
+fn asks(world: &Rc<RefCell<World>>) -> usize {
+    world
+        .borrow()
+        .calls
+        .iter()
+        .filter(|c| ["retire", "look", "members", "destroy", "destroy_one"].contains(c))
+        .count()
+}
+
+/// Two names past `--keep`, one given up past its time, and one stuck:
+/// a round with a step of each kind.
+fn every_kind() -> (Rc<RefCell<World>>, MemKeep, Vec<String>) {
+    let (world, keep, names) = published(5);
+    let now = world.borrow().now_ms;
+    change_record(&keep, |r| {
+        let given_up = r.published.remove(0);
+        r.abandoned.push(crate::record::Abandoned {
+            name: given_up.name,
+            why: Why::ManifestLost,
+            at_ms: now,
+            left: Left::Members(given_up.members),
+        });
+        let stuck = r.published.remove(0);
+        r.stuck.push(Stuck {
+            name: stuck.name,
+            members: stuck.members,
+            at_ms: now,
+        });
+    });
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    world.borrow_mut().calls.clear();
+    (world, keep, names)
+}
+
+/// An end asked (`go` says no), or news on the failure note, at any
+/// point of a round: retention asks nothing more of ZFS or the daemon,
+/// ends with no error, and the next round retires the rest, each name
+/// told once (M2 of the review of #179, and Codex's P1 on retain.rs:176).
+/// `go` and the note are asked before each step, each name stuck tried
+/// again and each call to ZFS; a round with nothing to stop it makes 18
+/// asks here (two retires, four members reads, twelve destroys), and the stop is put before each of them.
+///
+/// Mutants: `go` not asked before a step, a retry of a name stuck, a
+/// members read or a member's destroy; the note not asked there; a halt
+/// that goes on to the next step.
+#[test]
+fn an_end_or_a_note_stops_retention_before_its_next_ask() {
+    use skyzfs_control::failure::{Failure, Held, Reason};
+
+    use crate::engine::{Failed, Noted};
+
+    let whole = {
+        let (world, keep, _) = every_kind();
+        let mut a = agent(&world, &keep);
+        a.set_keep(1);
+        a.retain().expect("retained");
+        assert!(a.record().stuck.is_empty() && a.record().abandoned.is_empty());
+        assert_eq!(a.record().published.len(), 1);
+        asks(&world)
+    };
+    assert_eq!(whole, 18, "the round's asks");
+    for note in [false, true] {
+        for k in 0..whole {
+            let (world, keep, names) = every_kind();
+            let mut a = agent(&world, &keep);
+            a.set_keep(1);
+            a.watch_note(Some(Failed::No));
+            let stopped_at = Rc::new(RefCell::new(None));
+            let mut go = {
+                let world = world.clone();
+                let stopped_at = stopped_at.clone();
+                move || {
+                    if stopped_at.borrow().is_some() || asks(&world) < k {
+                        return stopped_at.borrow().is_none();
+                    }
+                    *stopped_at.borrow_mut() = Some(asks(&world));
+                    if !note {
+                        return false;
+                    }
+                    let mut w = world.borrow_mut();
+                    w.noted = Some(Noted::Failed(Failure {
+                        held: Held::Yes,
+                        reason: Reason::ImageFailed,
+                        identity: [7; 16],
+                    }));
+                    w.advance(Duration::from_secs(1));
+                    true
+                }
+            };
+            let at = format!("note={note} k={k}");
+            a.retain_while(&mut go).expect(&at);
+            let stopped = stopped_at.borrow().expect(&at);
+            assert_eq!(asks(&world), stopped, "{at}: asked after the stop");
+            let mut told = retired(a.outcomes());
+            drop(a);
+            world.borrow_mut().noted = None;
+            let mut next = agent(&world, &keep);
+            next.set_keep(1);
+            next.retain().expect(&at);
+            told.extend(retired(next.outcomes()));
+            told.sort();
+            assert_eq!(told, names[..4].to_vec(), "{at}");
+            assert!(next.record().stuck.is_empty(), "{at}");
+            assert!(next.record().abandoned.is_empty(), "{at}");
+            for t in &names[..4] {
+                assert!(snaps_of(&world, t).is_empty(), "{at}: {t}");
+            }
+        }
+    }
+}
+
+/// A name whose ref is retired, with the pool not imported when its
+/// members are read, stays in the record, and is retired once the pool
+/// is back (review's scratch test G-R12 on #179). Mutant: a members read
+/// that fails lets the name leave with its `@t`s (R12, P2).
+#[test]
+fn a_members_read_that_fails_keeps_the_name() {
+    let (world, keep, names) = published(2);
+    let t = names[0].clone();
+    let snaps = snaps_of(&world, &t);
+    let pool = world.borrow_mut().pool.take();
+    let mut a = agent(&world, &keep);
+    a.set_keep(1);
+    a.retain().expect("retained");
+    assert!(!world.borrow().refs.contains_key(&t), "the ref is retired");
+    // Still in the record (stuck), and not told retired.
+    assert!(a.record().names(&t));
+    assert!(retired(a.outcomes()).is_empty(), "{:?}", a.outcomes());
+    world.borrow_mut().pool = pool;
+    assert_eq!(snaps_of(&world, &t), snaps);
+    a.retain().expect("retained again");
+    assert_eq!(retired(a.outcomes()), vec![t.clone()]);
+    assert!(snaps_of(&world, &t).is_empty());
+}
+
+/// The fake daemon, whose `look` of a name in `unreadable` answers
+/// `unreadable` (snap/T there, its row not read).
+struct LookUnreadable {
+    daemon: FakeDaemon,
+    unreadable: String,
+}
+
+impl super::super::Daemon for LookUnreadable {
+    fn ask(
+        &mut self,
+        request: &skyzfs_control::Request,
+        manifest: &[u8],
+    ) -> std::io::Result<skyzfs_control::Reply> {
+        if let skyzfs_control::Request::Look(name) = request {
+            if *name == self.unreadable {
+                return Ok(skyzfs_control::Reply::Unreadable(
+                    skyzfs_control::UnreadableReply {
+                        commit: [0x55; 32],
+                        why: skyzfs_control::Unread::NoRow,
+                    },
+                ));
+            }
+        }
+        self.daemon.ask(request, manifest)
+    }
+    fn device(&mut self) -> std::io::Result<u64> {
+        self.daemon.device()
+    }
+    fn failure(&mut self) -> std::io::Result<Option<crate::engine::Noted>> {
+        self.daemon.failure()
+    }
+}
+
+/// A name a person gave up whose `snap/T` answers `unreadable` is
+/// there: nothing is destroyed, and it is forgotten for a person
+/// (review's G-R15 on #179). Mutant: `unreadable` taken as absent.
+#[test]
+fn an_unreadable_snap_t_is_there() {
+    let (world, keep, names) = published(1);
+    let t = names[0].clone();
+    let now = world.borrow().now_ms;
+    change_record(&keep, |r| {
+        let published = std::mem::take(&mut r.published);
+        for p in published {
+            r.abandoned.push(crate::record::Abandoned {
+                name: p.name,
+                why: Why::Person,
+                at_ms: now,
+                left: Left::Members(p.members),
+            });
+        }
+    });
+    let kept = snaps_of(&world, &t);
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    let mut a = Agent::new(
+        FakeZfs(world.clone()),
+        LookUnreadable {
+            daemon: FakeDaemon(world.clone()),
+            unreadable: t.clone(),
+        },
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent");
+    a.retain().expect("retained");
+    assert_eq!(snaps_of(&world, &t), kept);
+    assert!(
+        matches!(
+            a.outcomes().iter().find(|(n, _)| *n == t),
+            Some((_, Outcome::Forgotten(why))) if why.contains("snap/t exists")
+        ),
+        "{:?}",
+        a.outcomes()
+    );
+}
+
+/// Names given up by a person, past their time, with their members.
+fn given_up_by_a_person(n: usize) -> (Rc<RefCell<World>>, MemKeep, Vec<String>) {
+    let (world, keep, names) = published(n);
+    let now = world.borrow().now_ms;
+    change_record(&keep, |r| {
+        let published = std::mem::take(&mut r.published);
+        for p in published {
+            r.abandoned.push(crate::record::Abandoned {
+                name: p.name,
+                why: Why::Person,
+                at_ms: now,
+                left: Left::Members(p.members),
+            });
+        }
+    });
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    (world, keep, names)
+}
+
+/// A name a person gave up, whose look is not answered (the daemon
+/// away): nothing destroyed, the name kept, nothing told (review's G-R16
+/// on #179). Mutant: a look not answered taken as absent.
+#[test]
+fn a_look_not_answered_destroys_nothing() {
+    let (world, keep, names) = given_up_by_a_person(1);
+    let t = names[0].clone();
+    let kept = snaps_of(&world, &t);
+    let away = world.borrow().now_ms + 60_000;
+    world.borrow_mut().away_until = away;
+    let mut a = agent(&world, &keep);
+    a.retain().expect("retained");
+    assert_eq!(snaps_of(&world, &t), kept);
+    assert_eq!(a.record().abandoned.len(), 1);
+    assert!(a.outcomes().is_empty(), "{:?}", a.outcomes());
+}
+
+/// The same, with the look refused (`refused store`; review's G-R16b on
+/// #179). Mutant: a look refused taken as absent.
+#[test]
+fn a_look_refused_destroys_nothing() {
+    let (world, keep, names) = given_up_by_a_person(1);
+    let t = names[0].clone();
+    let kept = snaps_of(&world, &t);
+    let mut a = Agent::new(
+        FakeZfs(world.clone()),
+        LookRefused {
+            daemon: FakeDaemon(world.clone()),
+        },
+        keep.clone(),
+        FakeClock(world.clone()),
+        VOLUME,
+        POOL,
+    )
+    .expect("the agent");
+    a.retain().expect("retained");
+    assert_eq!(snaps_of(&world, &t), kept);
+    assert_eq!(a.record().abandoned.len(), 1);
+    assert!(a.outcomes().is_empty(), "{:?}", a.outcomes());
+}
+
+/// The fake daemon, whose `look` is refused `store`.
+struct LookRefused {
+    daemon: FakeDaemon,
+}
+
+impl super::super::Daemon for LookRefused {
+    fn ask(
+        &mut self,
+        request: &skyzfs_control::Request,
+        manifest: &[u8],
+    ) -> std::io::Result<skyzfs_control::Reply> {
+        if let skyzfs_control::Request::Look(_) = request {
+            return Ok(skyzfs_control::Reply::Refused(
+                skyzfs_control::Code::Store,
+                "object storage: away".into(),
+            ));
+        }
+        self.daemon.ask(request, manifest)
+    }
+    fn device(&mut self) -> std::io::Result<u64> {
+        self.daemon.device()
+    }
+    fn failure(&mut self) -> std::io::Result<Option<crate::engine::Noted>> {
+        self.daemon.failure()
+    }
+}
+
+/// A name given up past its time, with members: a stop just after the
+/// save that drops it has told `retired` already (review's G-R21 on
+/// #179). Mutant: told after the name leaves.
+#[test]
+fn a_given_up_name_is_told_before_it_leaves() {
+    let (world, keep, names) = published(1);
+    let t = names[0].clone();
+    let now = world.borrow().now_ms;
+    change_record(&keep, |r| {
+        let published = std::mem::take(&mut r.published);
+        for p in published {
+            r.abandoned.push(crate::record::Abandoned {
+                name: p.name,
+                why: Why::ManifestLost,
+                at_ms: now,
+                left: Left::Members(p.members),
+            });
+        }
+    });
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    let points: Points = Box::new(|p: Point, _: &str| p.effect == Effect::Retain && p.after);
+    let mut a = agent(&world, &keep).with_points(points);
+    let stopped = a.retain();
+    assert!(stopped.is_err(), "the stop");
+    assert!(agent(&world, &keep).record().abandoned.is_empty());
+    assert_eq!(retired(a.outcomes()), vec![t]);
+}
+
+/// A name given up with no GUIDs, past its time: a stop just after the
+/// save that drops it has told `forgotten` already (review's G-R22 on
+/// #179). Mutant: told after the name leaves.
+#[test]
+fn a_forgotten_name_is_told_before_it_leaves() {
+    let (world, keep, names) = published(1);
+    let t = names[0].clone();
+    let now = world.borrow().now_ms;
+    change_record(&keep, |r| {
+        let published = std::mem::take(&mut r.published);
+        for p in published {
+            r.abandoned.push(crate::record::Abandoned {
+                name: p.name,
+                why: Why::ManifestLost,
+                at_ms: now,
+                left: Left::Unknown,
+            });
+        }
+    });
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    let points: Points = Box::new(|p: Point, _: &str| p.effect == Effect::Retain && p.after);
+    let mut a = agent(&world, &keep).with_points(points);
+    let stopped = a.retain();
+    assert!(stopped.is_err(), "the stop");
+    assert!(agent(&world, &keep).record().abandoned.is_empty());
+    assert!(
+        matches!(a.outcomes(), [(n, Outcome::Forgotten(_))] if *n == t),
+        "{:?}",
+        a.outcomes()
+    );
+}
+
+/// A publish given up after its take (the uploader stopped) records its
+/// members, so retention destroys its `@t`s after `--abandoned-keep-s`
+/// (review's G-E4 on #179). Mutant: a take recorded as left=unknown.
+#[test]
+fn a_give_up_after_the_take_records_its_members() {
+    let world = World::new(Mode::Busy);
+    world.borrow_mut().refuse_every_publish = Some(skyzfs_control::Code::Stopped);
+    let keep = MemKeep::default();
+    let mut a = agent(&world, &keep);
+    let t = a.begin().expect("begun");
+    let _ = a.settle(LIMIT);
+    let given_up = a.record().abandoned.iter().find(|g| g.name == t).cloned();
+    let Some(given_up) = given_up else {
+        panic!("not given up: {:?}", a.outcomes());
+    };
+    assert!(
+        matches!(&given_up.left, Left::Members(m) if !m.is_empty()),
+        "{:?}",
+        given_up.left
+    );
+    world.borrow_mut().refuse_every_publish = None;
+    world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
+    a.retain().expect("retained");
+    assert!(
+        snaps_of(&world, &t).is_empty(),
+        "{:?}",
+        snaps_of(&world, &t)
+    );
+}
+
+/// The turn of the names stuck goes by name, whatever their order in
+/// the record, and holds across [`Agent::restart`] within the process;
+/// a name whose retry succeeds leaves alone, the others stay stuck
+/// (Q8, Q9 and M5 of the review of #179).
+///
+/// Mutants: the names tried in the record's order (Q8); the turn begun
+/// again at the first name by [`Agent::restart`] (Q9); a retry that
+/// succeeds clears every name stuck (M5).
+#[test]
+fn the_turn_goes_by_name_holds_across_a_restart_and_clears_one_name() {
+    let (world, keep, _) = published(1);
+    let seeds = seed_stuck(&world, &keep, 2 * STUCK_STEPS);
+    // The record holds them newest first: not the names' order.
+    change_record(&keep, |r| r.stuck.reverse());
+    let mut a = agent(&world, &keep);
+    a.retain().expect("retained");
+    let tried = |world: &Rc<RefCell<World>>| -> Vec<usize> {
+        seeds.iter().map(|n| refused(world, n)).collect()
+    };
+    let first = tried(&world);
+    let mut expected = vec![1; STUCK_STEPS];
+    expected.extend(vec![0; STUCK_STEPS]);
+    assert_eq!(first, expected, "the first STUCK_STEPS by name");
+    a.restart().expect("restarted");
+    // One of the next names can go now.
+    let freed = seeds[STUCK_STEPS + 1].clone();
+    world
+        .borrow_mut()
+        .destroy_refused
+        .remove(&format!("{POOL}@{freed}"));
+    a.retain().expect("retained");
+    let second = tried(&world);
+    let mut expected = vec![1; 2 * STUCK_STEPS];
+    expected[STUCK_STEPS + 1] = 0;
+    assert_eq!(second, expected, "the next STUCK_STEPS by name");
+    assert_eq!(retired(a.outcomes()), vec![freed.clone()]);
+    let stuck: BTreeSet<&str> = a.record().stuck.iter().map(|s| s.name.as_str()).collect();
+    let others: BTreeSet<&str> = seeds
+        .iter()
+        .filter(|n| **n != freed)
+        .map(String::as_str)
+        .collect();
+    assert_eq!(stuck, others);
+}
+
+/// A name stuck keeps every member it had, so that each `@t` left is
+/// destroyed at a retry (M7 of the review of #179).
+///
+/// Mutant: a name stuck keeps its first member only.
+#[test]
+fn a_name_stuck_keeps_all_its_members() {
+    let (world, keep, names) = published(2);
+    let t = names[0].clone();
+    let members = agent(&world, &keep).record().published[0].members.clone();
+    assert!(members.len() > 1, "{members:?}");
+    // The first destroy, of a child, is refused: every `@t` is left.
+    let child = members
+        .iter()
+        .find(|m| m.name != POOL)
+        .expect("a child")
+        .name
+        .clone();
+    world
+        .borrow_mut()
+        .destroy_refused
+        .insert(format!("{child}@{t}"), "a clone of it".into());
+    let mut a = agent(&world, &keep);
+    a.set_keep(1);
+    a.retain().expect("retained");
+    let [stuck] = a.record().stuck.as_slice() else {
+        panic!("{:?}", a.record().stuck);
+    };
+    assert_eq!(stuck.members, members);
+    world.borrow_mut().destroy_refused.clear();
+    a.retain().expect("retained again");
+    assert!(
+        snaps_of(&world, &t).is_empty(),
+        "{:?}",
+        snaps_of(&world, &t)
+    );
+    assert_eq!(retired(a.outcomes()), vec![t]);
+}
+
+/// Eight names whose destroy is refused for good (a person's clone of
+/// each, or a hold of a backup tool) do not starve the names after
+/// them: they move to the names stuck and take no step of a later
+/// round (L1 of the review of #179; its scratch test T4, which failed
+/// before the names stuck). Mutant: a name whose destroy fails stays
+/// among the names published.
+#[test]
+fn names_that_cannot_be_destroyed_do_not_starve_the_rest() {
+    let (world, keep, names) = published(12);
+    for t in &names[..STEPS_MAX] {
+        world.borrow_mut().destroy_refused.insert(
+            format!("{POOL}/db@{t}"),
+            "cannot destroy: filesystem has dependent clones".into(),
+        );
+    }
+    for _ in 0..6 {
+        let mut a = agent(&world, &keep);
+        a.set_keep(1);
+        a.retain().expect("retained");
+    }
+    let a = agent(&world, &keep);
+    let left: Vec<&String> = names[STEPS_MAX..names.len() - 1]
+        .iter()
+        .filter(|n| a.record().names(n))
+        .collect();
+    assert!(left.is_empty(), "never retired: {left:?}");
+    assert_eq!(a.record().stuck.len(), STEPS_MAX);
+}

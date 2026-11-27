@@ -178,8 +178,8 @@
 //! | 1248 | 128 | `publish_last`: the name of the last snapshot published or found; empty before the first |
 //! | 1376 | 8 | `control`: the daemon's channel (`DIR/control` under the volume's run directory, M2.5-2): 0 none (a daemon that did not reach serving, or one whose file is of an earlier version); 1 it answers through the uploader; 2 it refuses every request `no-upload` (this daemon does not upload, another holds the lease, or the attachment record could not be read); 3 the socket could not be made, and the volume is served without it. Any other value is read as "not said" |
 //! | 1384 | 24 | the channel's counts since this daemon started serving: requests answered, refusals included (`control_answered`); connections refused for their peer's user before they were read (`control_peer`); requests refused as `version` or `malformed` (`control_malformed`) |
-//! | 1416 | 24 | the retires answered since this daemon started serving (M2.7b-2): `snap/<t>` retired (`publish_retired`), none there (`publish_retire_gone`), and naming another commit than the one asked, which is left (`publish_retire_other`). A retire that failed on object storage is in none: it counts as a step's error (`upload_errors`) |
 //! | 1408 | 8 | `upload_cuts_lost_whole`: among the cuts lost before their commit (`upload_cuts_lost`), those that held the whole volume, since this daemon started serving (M2.4f). Each left the segments it PUT in object storage, in no commit |
+//! | 1416 | 24 | the retires answered since this daemon started serving (M2.7b-2): `snap/<t>` retired (`publish_retired`), none there (`publish_retire_gone`), and naming another commit than the one asked, which is left (`publish_retire_other`). A retire that failed on object storage is in none: it counts as a step's error (`upload_errors`) |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the

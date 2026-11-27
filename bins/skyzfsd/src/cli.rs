@@ -379,9 +379,9 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       no snap/T; refused other where snap/T names another commit (the
       text names it), which is left as it is. A retire goes through the
       uploader, under its lease: refused stopped once the uploader has
-      stopped, and no answer while it is in a long step. A monitor treats `retired` as
-      repeatable: asked again after its answer was lost, the same retire
-      answers `gone`.
+      stopped, and no answer while it is in a long step. A monitor
+      treats `retired` as repeatable: asked again after its answer was
+      lost, the same retire answers `gone`.
       A daemon with no place in object storage, or serving without
       upload, refuses each request no-upload.
 

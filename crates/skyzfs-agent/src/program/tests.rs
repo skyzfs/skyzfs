@@ -1070,12 +1070,22 @@ fn scheduled<D: Daemon, K: Keep>(
     every: Duration,
     go: &mut dyn FnMut() -> bool,
 ) -> (i32, String, String) {
+    scheduled_kept(agent, every, Kept::default(), go)
+}
+
+/// [`scheduled`], with retention keeping what `kept` says.
+fn scheduled_kept<D: Daemon, K: Keep>(
+    agent: &mut Agent<FakeZfs, D, K, FakeClock>,
+    every: Duration,
+    kept: Kept,
+    go: &mut dyn FnMut() -> bool,
+) -> (i32, String, String) {
     let (mut out, mut err) = (Shared::default(), Shared::default());
     let mut told = out.clone();
     agent.set_outcome_sink(Box::new(move |name, outcome| {
         let _ = told.write_all(outcome_line(name, outcome).as_bytes());
     }));
-    let code = schedule(agent, every, go, &mut out, &mut err);
+    let code = schedule(agent, every, kept, go, &mut out, &mut err);
     (code, out.text(), err.text())
 }
 
@@ -1517,6 +1527,7 @@ fn a_round_settles_once_however_long_the_count_took() {
     let code = schedule(
         &mut agent,
         Duration::from_secs(1),
+        Kept::default(),
         &mut until(&world, start + 120_000),
         &mut out,
         &mut err,
@@ -2408,7 +2419,7 @@ mod restarts {
         agent.set_outcome_sink(Box::new(move |name, outcome| {
             let _ = told.write_all(outcome_line(name, outcome).as_bytes());
         }));
-        let code = schedule(agent, every, go, &mut out, &mut err);
+        let code = schedule(agent, every, Kept::default(), go, &mut out, &mut err);
         (code, out.text(), err.text())
     }
 
@@ -3433,5 +3444,250 @@ mod failed_volume {
                 "00".repeat(16)
             )
         );
+    }
+}
+
+/// Retention's asks within `run`'s rounds (M2 and L2 of the review of
+/// #179; review's T1 and T2, adapted as said on each).
+mod retention_in_rounds {
+    use std::cell::Cell;
+
+    use skyzfs_control::failure::{Failure, Held, Reason};
+
+    use super::*;
+
+    /// The fake daemon, whose `retire` is not answered: each costs
+    /// `cost` of the fake clock (the daemon's answer limit while the
+    /// uploader is in a long step) and is refused `no-answer`. At the
+    /// first retire it may also leave a failure note, as of a volume
+    /// lost then.
+    struct Unanswered {
+        daemon: FakeDaemon,
+        cost: Duration,
+        asked: Rc<Cell<usize>>,
+        note_at_first: bool,
+    }
+
+    impl Daemon for Unanswered {
+        fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply> {
+            if let Request::Retire(_) = request {
+                let mut w = self.daemon.0.borrow_mut();
+                if self.asked.get() == 0 && self.note_at_first {
+                    w.noted = Some(Noted::Failed(Failure {
+                        held: Held::Yes,
+                        reason: Reason::ImageFailed,
+                        identity: [7; 16],
+                    }));
+                    w.noted_from_ms = Some(w.now_ms);
+                    w.suspends_after_ms = Some(1_050);
+                }
+                self.asked.set(self.asked.get() + 1);
+                w.advance(self.cost);
+                return Ok(Reply::Refused(
+                    Code::NoAnswer,
+                    "the uploader did not answer within 30 s".into(),
+                ));
+            }
+            self.daemon.ask(request, manifest)
+        }
+        fn device(&mut self) -> io::Result<u64> {
+            self.daemon.device()
+        }
+        fn failure(&mut self) -> io::Result<Option<Noted>> {
+            self.daemon.failure()
+        }
+    }
+
+    /// `--keep 1`.
+    fn keep_one() -> Kept {
+        Kept {
+            keep: 1,
+            ..Kept::default()
+        }
+    }
+
+    /// Twelve names published on an idle world, by an agent of its own.
+    fn twelve() -> (Rc<RefCell<World>>, MemKeep) {
+        let world = World::new(Mode::Idle);
+        let keep = MemKeep::default();
+        let mut a = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        for _ in 0..12 {
+            a.begin().expect("begun");
+            a.settle(LIMIT).expect("settled");
+            world.borrow_mut().advance(Duration::from_secs(3));
+        }
+        assert_eq!(a.record().published.len(), 12);
+        (world, keep)
+    }
+
+    fn unanswered(
+        world: &Rc<RefCell<World>>,
+        note_at_first: bool,
+    ) -> (Unanswered, Rc<Cell<usize>>) {
+        let asked = Rc::new(Cell::new(0));
+        let daemon = Unanswered {
+            daemon: FakeDaemon(world.clone()),
+            cost: Duration::from_secs(30),
+            asked: asked.clone(),
+            note_at_first,
+        };
+        (daemon, asked)
+    }
+
+    /// `run` retires the names past `--keep` at its rounds, at most
+    /// [`crate::engine::STEPS_MAX`] a round, each told on a `retired`
+    /// line before the round line (G11 of the review of #179). Mutant:
+    /// `run` never retains.
+    #[test]
+    fn run_retires_the_names_past_keep_a_few_a_round() {
+        let (world, keep) = twelve();
+        let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+        let oldest: Vec<String> = agent
+            .record()
+            .published
+            .iter()
+            .map(|p| p.name.clone())
+            .take(11)
+            .collect();
+        let start = mono(&world);
+        let (_, out, err) = scheduled_kept(
+            &mut agent,
+            Duration::from_secs(60),
+            keep_one(),
+            &mut until(&world, start + 1_000),
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        let steps = crate::engine::STEPS_MAX;
+        let told: Vec<String> = oldest[..steps]
+            .iter()
+            .map(|t| format!("retired {t}"))
+            .collect();
+        let retired: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| l.starts_with("retired "))
+            .collect();
+        assert_eq!(retired, told, "{out}{err}");
+        let round = lines
+            .iter()
+            .position(|l| l.starts_with("round 1 "))
+            .expect("round 1");
+        let last = lines
+            .iter()
+            .rposition(|l| l.starts_with("retired "))
+            .expect("retired");
+        assert!(last < round, "{out}");
+        for t in &oldest[..steps] {
+            assert!(!agent.record().names(t), "{t}");
+        }
+    }
+
+    /// `run` gives up for good the names given up past
+    /// `--abandoned-keep-s`, and keeps them before (G16 of the review of
+    /// #179). Mutant: the setting not taken.
+    #[test]
+    fn run_takes_its_abandoned_keep() {
+        for (abandoned_keep, gone) in [(Duration::ZERO, true), (Duration::from_secs(3600), false)] {
+            let (world, keep) = twelve();
+            let now = world.borrow().now_ms;
+            let given_up = {
+                let bytes = keep.0.borrow().record.clone().expect("a record");
+                let mut record = Record::decode(&bytes).expect("decoded");
+                let p = record.published.remove(0);
+                record.abandoned.push(Abandoned {
+                    name: p.name.clone(),
+                    why: crate::record::Why::ManifestLost,
+                    at_ms: now,
+                    left: crate::record::Left::Members(p.members),
+                });
+                keep.0.borrow_mut().record = Some(record.encode().expect("encoded"));
+                p.name
+            };
+            let mut agent = agent_on(&world, FakeDaemon(world.clone()), &keep);
+            let start = mono(&world);
+            let kept = Kept {
+                abandoned_keep,
+                ..Kept::default()
+            };
+            let (_, out, err) = scheduled_kept(
+                &mut agent,
+                Duration::from_secs(60),
+                kept,
+                &mut until(&world, start + 1_000),
+            );
+            let told = out.lines().any(|l| l == format!("retired {given_up}"));
+            assert_eq!(told, gone, "{abandoned_keep:?}: {out}{err}");
+            assert_eq!(agent.record().names(&given_up), !gone, "{out}");
+        }
+    }
+
+    /// A round asks `retire` of no more names once one was not answered
+    /// (L2 of the review of #179; its T1): eleven names past `--keep`,
+    /// whose retires the daemon answers only at its limit (30 s), cost a
+    /// round one ask, and the round ends within its tick. Each round
+    /// asks again, once. Mutant: the round goes on asking after a
+    /// `no-answer` (STEPS_MAX asks, 240 s a round).
+    #[test]
+    fn a_retire_not_answered_ends_the_round_s_retires() {
+        let (world, keep) = twelve();
+        let (daemon, asked) = unanswered(&world, false);
+        let mut agent = agent_on(&world, daemon, &keep);
+        let names: Vec<String> = agent
+            .record()
+            .published
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let start = mono(&world);
+        let (_, out, err) = scheduled_kept(
+            &mut agent,
+            Duration::from_secs(60),
+            keep_one(),
+            &mut until(&world, start + 150_000),
+        );
+        let rounds = rounds(&out);
+        assert_eq!(rounds.len(), 3, "{out}{err}");
+        for round in &rounds {
+            let took = field(round, "took_ms").parse::<u64>().expect("ms");
+            assert!(took < 60_000, "{round}");
+        }
+        assert_eq!(asked.get(), 3, "one retire a round: {out}{err}");
+        // Nothing retired.
+        for t in &names {
+            assert!(agent.record().names(t), "{t} left: {out}");
+        }
+    }
+
+    /// A volume lost while retention waits on a retire not answered is
+    /// stepped on as soon as that ask ends: retention asks nothing more
+    /// once the note has news, and the next round reads it (M2 of the
+    /// review of #179, Codex's P1 on retain.rs:176; review's T2). Review
+    /// asked for the reopen within 5 s of the failure; one ask already in
+    /// flight is not cut (as in the settle, whose asks the watch also
+    /// waits for), so the bound is that ask's 30 s and the note's read
+    /// (at most [`crate::engine::NOTE_EVERY`] apart) and the reopen's 1 s:
+    /// 35 s. Mutants: no halt on the note before the given-up names, the
+    /// settle, or the next retire.
+    #[test]
+    fn a_volume_lost_during_retention_is_stepped_on_after_the_ask_in_flight() {
+        let (world, keep) = twelve();
+        let (daemon, asked) = unanswered(&world, true);
+        let mut agent = agent_on(&world, daemon, &keep);
+        let start = mono(&world);
+        let (code, out, err) = scheduled_kept(
+            &mut agent,
+            Duration::from_secs(60),
+            keep_one(),
+            &mut until(&world, start + 900_000),
+        );
+        assert_eq!(code, exit::LOST, "{out}{err}");
+        let failed_at = world.borrow().noted_from_ms.expect("noted");
+        let reopened = world.borrow().suspended_at.expect("reopened") - 1_050;
+        let after = reopened - failed_at;
+        assert!(
+            after <= 35_000,
+            "the reopen {after} ms after the failure: {out}{err}"
+        );
+        assert_eq!(asked.get(), 1, "{out}{err}");
     }
 }

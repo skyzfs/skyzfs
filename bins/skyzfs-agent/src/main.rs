@@ -179,11 +179,9 @@ fn scheduled(run: &Run, every: std::time::Duration, kept: program::Kept) -> i32 
     }
     match agent(run) {
         Ok(mut agent) => {
-            agent.set_keep(kept.keep);
-            agent.set_abandoned_keep(kept.abandoned_keep);
             let (mut out, mut err) = (io::stdout(), io::stderr());
             let mut go = || !told.load(Ordering::SeqCst);
-            program::schedule(&mut agent, every, &mut go, &mut out, &mut err)
+            program::schedule(&mut agent, every, kept, &mut go, &mut out, &mut err)
         }
         Err(code) => code,
     }

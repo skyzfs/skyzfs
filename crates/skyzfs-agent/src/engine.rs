@@ -1688,12 +1688,15 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.point(Effect::Destroy, false)?;
         let destroyed = self.zfs.destroy(&self.pool, name);
         self.point(Effect::Destroy, true)?;
-        let why = if destroyed.is_ok() {
-            Why::NotWhole
+        // Destroyed, the take leaves nothing on the pool, and retention
+        // drops the name with no line for a person (L5 of the review of
+        // #179); kept, its members' GUIDs are not recorded here.
+        let (why, left) = if destroyed.is_ok() {
+            (Why::NotWhole, Left::Nothing)
         } else {
-            Why::ManifestLost
+            (Why::ManifestLost, Left::Unknown)
         };
-        self.abandon(name, why, Left::Unknown)?;
+        self.abandon(name, why, left)?;
         Ok(Moved::Yes)
     }
 

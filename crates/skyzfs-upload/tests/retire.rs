@@ -23,6 +23,11 @@ const ATTACHMENT: [u8; 16] = *b"the attachment..";
 
 /// `snap/t` published on cut 1, of group 7: its commit.
 async fn published(fx: &mut Fixture) -> CommitHash {
+    published_by(fx).await.0
+}
+
+/// [`published`], and the driver that published it.
+async fn published_by(fx: &mut Fixture) -> (CommitHash, Up) {
     let mut store = fx.start();
     fx.write(&mut store, 100, 0x07);
     fx.group(&mut store, 7);
@@ -44,7 +49,7 @@ async fn published(fx: &mut Fixture) -> CommitHash {
     up.run().await.expect("the publish");
     let commit = snap(fx, "t").await.0.expect("snap/t");
     assert_eq!(commit.commit, head(fx).await);
-    commit.commit
+    (commit.commit, up)
 }
 
 /// `snap/<name>` and its row, as the refs object has them.
@@ -101,6 +106,25 @@ async fn a_retire_deletes_the_ref_and_its_row_only_where_they_name_its_commit() 
     assert_eq!(remote.retire("t", commit).await, Ok(Retired::Gone));
     assert_eq!(remote.retire("u", commit).await, Ok(Retired::Gone));
     assert_eq!(head(&fx).await, head_before);
+}
+
+/// The driver counts each retire's answer in the status figures by what
+/// it was (status v20: `retired`, `retire_gone`, `retire_other`), and a
+/// failed retire as an error (U1 and U2 of the review of #179).
+/// Mutants: a `gone` counted as retired; the answers not counted.
+#[tokio::test]
+async fn the_driver_counts_each_retire_by_its_answer() {
+    let mut fx = Fixture::new(82).await;
+    let (commit, mut up) = published_by(&mut fx).await;
+    assert_eq!(up.retire("t", [0x0b; 32]).await, Ok(Retired::Other(commit)));
+    assert_eq!(up.retire("t", commit).await, Ok(Retired::Retired));
+    assert_eq!(up.retire("t", commit).await, Ok(Retired::Gone));
+    assert_eq!(up.retire("u", commit).await, Ok(Retired::Gone));
+    let figures = up.publishing().figures().clone();
+    assert_eq!(
+        (figures.retired, figures.retire_gone, figures.retire_other),
+        (1, 2, 1)
+    );
 }
 
 /// A row left with no ref (a publish's row whose ref a person deleted)

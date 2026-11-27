@@ -2387,6 +2387,8 @@ struct NeverWhole {
     told: Vec<(String, Report)>,
     takes_ms: Vec<u64>,
     processes: usize,
+    /// The names given up, as the record holds them at the end.
+    abandoned: Vec<crate::record::Abandoned>,
 }
 
 /// The processes [`never_whole`] runs at most.
@@ -2454,6 +2456,7 @@ fn never_whole_in(
     }
     let takes_ms = takes_ms.borrow().clone();
     let told = told.borrow().clone();
+    let abandoned = agent(&world, &keep).record().abandoned.clone();
     NeverWhole {
         world,
         outcomes,
@@ -2461,6 +2464,7 @@ fn never_whole_in(
         told,
         takes_ms,
         processes,
+        abandoned,
     }
 }
 
@@ -2472,7 +2476,7 @@ fn never_whole_in(
 /// Mutants: no bound (the loop the review found), the bound off by one
 /// either way, no pause or a shorter one, the last take kept, no report
 /// or another dataset named, the failed checks not counted in the
-/// record.
+/// record, the give-up recorded as leaving a take unknown.
 #[test]
 fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
     let run = never_whole(|_, _, _| false);
@@ -2512,6 +2516,12 @@ fn a_take_never_whole_is_given_up_at_the_third_failed_check() {
     let pool = world.pool.as_ref().expect("the pool");
     assert!(pool.snaps.is_empty(), "{:?}", pool.snaps.keys());
     assert!(world.refs.is_empty() && holds(&world).is_empty());
+    // The take destroyed, the give-up leaves nothing (L5 of the review
+    // of #179): retention drops it with no `forgotten` line.
+    let [given_up] = run.abandoned.as_slice() else {
+        panic!("{:?}", run.abandoned);
+    };
+    assert_eq!(given_up.left, crate::record::Left::Nothing);
 }
 
 /// The give-up's report reaches the sink at least once, whatever the
@@ -5349,4 +5359,81 @@ fn an_end_before_a_pass_names_what_is_under_way() {
         other => panic!("{other:?}"),
     }
     assert_eq!(world.borrow().calls.len(), before);
+}
+
+/// What a person's give-up at [`Phase::Intent`] leaves, by whether
+/// `pool@<t>` was seen (the lead's ruling ?4 on M2.7b-2; E3 and E4b of
+/// the review of #179): a stop before the take leaves nothing, and one
+/// after the take landed, before its record, leaves a take whose
+/// members' GUIDs the record does not hold.
+///
+/// Mutants: a take seen recorded as nothing (its `@t`s never told to a
+/// person); no take recorded as unknown (a `forgotten` line for nothing).
+#[test]
+fn a_give_up_at_intent_leaves_what_was_seen() {
+    for (after, left) in [
+        (false, crate::record::Left::Nothing),
+        (true, crate::record::Left::Unknown),
+    ] {
+        let world = World::new(Mode::Busy);
+        let keep = MemKeep::default();
+        let stop = at(Effect::Take, after);
+        let mut first =
+            agent(&world, &keep).with_points(Box::new(move |p: Point, _: &str| p == stop));
+        let begun = first.begin();
+        let t = match begun {
+            Ok(t) => {
+                assert!(matches!(first.settle(LIMIT), Err(Error::Stopped)));
+                t
+            }
+            Err(Error::Stopped) => first.record().under_way[0].name.clone(),
+            Err(e) => panic!("{e:?}"),
+        };
+        drop(first);
+        let seen = world
+            .borrow()
+            .pool
+            .as_ref()
+            .is_some_and(|p| p.snaps.contains_key(&format!("{POOL}@{t}")));
+        assert_eq!(seen, after, "the take landed");
+        let mut again = agent(&world, &keep);
+        assert!(
+            matches!(again.record().under_way[0].phase, Phase::Intent { .. }),
+            "{:?}",
+            again.record().under_way[0].phase
+        );
+        again.recover(&t, Choice::GiveUp).expect("recovered");
+        again.settle(LIMIT).expect("settled");
+        let given_up = again.record().abandoned.iter().find(|a| a.name == t);
+        assert_eq!(given_up.map(|a| &a.left), Some(&left), "after={after}");
+    }
+}
+
+/// [`Record::room`] bounds a begin by the names given up and published
+/// as well as by those under way: with [`ABANDONED_MAX`] - 1 given up,
+/// one publish under way leaves no room for another (E8 of the review of
+/// #179). Mutant: the begin bounded by the publishes under way alone.
+#[test]
+fn a_begin_is_refused_when_the_give_ups_leave_no_room() {
+    use crate::record::{Abandoned, Left, ABANDONED_MAX};
+
+    let world = World::new(Mode::Busy);
+    let keep = MemKeep::default();
+    let mut a = agent(&world, &keep);
+    a.begin().expect("begun");
+    drop(a);
+    let bytes = keep.0.borrow().record.clone().expect("a record");
+    let mut record = Record::decode(&bytes).expect("decoded");
+    for i in 0..ABANDONED_MAX - 1 {
+        record.abandoned.push(Abandoned {
+            name: format!("skz-20261001T{i:06}Z"),
+            why: Why::ManifestLost,
+            at_ms: 1,
+            left: Left::Nothing,
+        });
+    }
+    keep.0.borrow_mut().record = Some(record.encode().expect("encoded"));
+    let mut a = agent(&world, &keep);
+    assert_eq!(a.record().under_way.len(), 1);
+    assert!(matches!(a.begin(), Err(Error::Full)));
 }

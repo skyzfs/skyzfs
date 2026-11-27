@@ -3,6 +3,10 @@
 //! what they left: `snap/<t>` in object storage and each member's `@t`
 //! on the pool.
 //!
+//! The rulings cited as ?1 to ?4 are the lead's answers to the
+//! questions so numbered in this work package's plan; the description
+//! of skyzfs/skyzfs#179 lists them.
+//!
 //! **A name published** is kept while it is among the newest
 //! [`Retention::keep`] ([`KEEP_DEFAULT`], at most
 //! [`crate::record::KEEP_MAX`]). An older one is marked to be retired
@@ -40,12 +44,15 @@
 //! that at the cap every name is tried within
 //! `STUCK_MAX / STUCK_STEPS` (8) rounds and a slow pool does not
 //! stretch a round far past its tick. The turn is kept in the process:
-//! a restart begins it again at the first name, since the record does
-//! not keep when each was tried (no save at each round; this module's
-//! reading, confirmed by the lead). So a process restarted more often
-//! than every `STUCK_MAX / STUCK_STEPS` rounds retries only the first
-//! names by name; this has no other effect. A name leaves with `retired` once its destroy succeeds.
-//! At most [`STUCK_MAX`] are
+//! a new process begins it again at the first name, since the record
+//! does not keep when each was tried (no save at each round; this
+//! module's reading, confirmed by the lead). [`Agent::restart`] within
+//! the process keeps it. So with `n` names stuck, a process that is
+//! started anew every `k` rounds retries only the first `min(n, 8k)`
+//! by name, and the later ones wait while the first stay stuck: their
+//! snapshots stay longer, and one can reach the cap's forget untried.
+//! The room and the publishes are not touched by it. A name leaves
+//! with `retired` once its destroy succeeds. At most [`STUCK_MAX`] are
 //! kept: past that the oldest is forgotten with the line
 //! `forgotten <t> (destroy failed; destroy by hand)`, told before the
 //! save that drops it. A name given up moves there too, though the
@@ -74,7 +81,15 @@
 //!
 //! A round does at most [`STEPS_MAX`] steps (an ask of the daemon, or
 //! the destroys of one name), so that a backlog after a long stop is
-//! worked off over rounds and does not hold one round up.
+//! worked off over rounds and does not hold one round up. A `retire`
+//! or a `look` that the daemon does not answer (`no-answer`, or no
+//! answer at all) ends the round's asks of the daemon: the next round
+//! asks again, so that one round waits for at most one answer limit
+//! (L2 of #179's review). Before each step, each name stuck tried and
+//! each call to ZFS, the round asks whether an end was asked and
+//! whether the failure note has news, and ends quietly if so: a volume
+//! lost during retention is stepped on after the call under way, not
+//! after the round's steps (M2 of #179's review, and Codex's P1).
 //!
 //! **Conservative readings** where the rulings are silent: a member's
 //! `@t` left by a person who destroyed `pool@t` by hand is not seen
@@ -119,6 +134,12 @@ pub(super) struct Retention {
     /// The name stuck last tried in this process: the next round's
     /// turn begins after it.
     pub stuck_last: Option<String>,
+    /// In this round, a `retire` or a `look` the daemon did not answer:
+    /// the round asks the daemon nothing more (L2 of #179's review).
+    pub silent: bool,
+    /// In this round, an end was asked or the failure note had news:
+    /// the round takes no further step (M2 of #179's review).
+    pub halted: bool,
 }
 
 impl Default for Retention {
@@ -128,8 +149,22 @@ impl Default for Retention {
             abandoned_keep: ABANDONED_KEEP_DEFAULT,
             told: BTreeMap::new(),
             stuck_last: None,
+            silent: false,
+            halted: false,
         }
     }
+}
+
+/// How a destroy of a name's members ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Destroyed {
+    /// Each member's `@t` of the name's GUIDs is gone.
+    All,
+    /// A read or a destroy failed, and was told.
+    Failed,
+    /// An end was asked, or the failure note had news, before a call:
+    /// nothing was told, and the next round goes on.
+    Halted,
 }
 
 /// What a name given up past its time comes to.
@@ -154,13 +189,45 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         self.retention.abandoned_keep = keep;
     }
 
-    /// One round of retention (the docs of the module `retain`). `skyzfs-agent run`
-    /// calls it after a round that touched the pool and was not failed.
-    /// An error is one of saving the record, or a stop of the tests:
-    /// what the daemon and ZFS refuse is told and tried again.
+    /// One round of retention, with no end asked ([`Agent::retain_while`]).
     pub fn retain(&mut self) -> Result<(), Error> {
+        self.retain_while(&mut || true)
+    }
+
+    /// One round of retention (the docs of the module `retain`).
+    /// `skyzfs-agent run` calls it in each round, after the begin,
+    /// whether the begin failed or not, and before the settle; not while
+    /// the engine waits to be loaded anew after an error (a nit of
+    /// #179's review). Before each step, each name
+    /// stuck tried and each call to ZFS, it asks `go` and the failure
+    /// note, and it ends the round quietly where an end was asked or
+    /// the note had news: the next round reads the note first (M2 of
+    /// #179's review, and Codex's P1 there). An error is one of saving
+    /// the record, or a stop of the tests: what the daemon and ZFS
+    /// refuse is told and tried again.
+    pub fn retain_while(&mut self, go: &mut dyn FnMut() -> bool) -> Result<(), Error> {
         self.at.clear();
-        self.retry_stuck()?;
+        self.retention.silent = false;
+        self.retention.halted = false;
+        let result = self.retain_steps(go);
+        self.at.clear();
+        result
+    }
+
+    /// Whether the round must take no further step: an end was asked,
+    /// or the failure note has news. Once true, true for the round.
+    fn halt(&mut self, go: &mut dyn FnMut() -> bool) -> bool {
+        if !self.retention.halted && (!go() || self.note_came()) {
+            self.retention.halted = true;
+        }
+        self.retention.halted
+    }
+
+    fn retain_steps(&mut self, go: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+        self.retry_stuck(go)?;
+        if self.halt(go) {
+            return Ok(());
+        }
         self.mark_retiring()?;
         let mut steps = 0;
         let marked: Vec<(String, Retire)> = self
@@ -174,19 +241,22 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             match retire {
                 Retire::Other => self.say_other(&name, None),
                 _ if steps >= STEPS_MAX => {}
+                Retire::Ref if self.retention.silent => {}
+                _ if self.halt(go) => return Ok(()),
                 Retire::Ref => {
                     steps += 1;
-                    self.retire_ref(&name)?;
+                    self.retire_ref(&name, go)?;
                 }
                 Retire::Members => {
                     steps += 1;
-                    self.retire_members(&name)?;
+                    self.retire_members(&name, go)?;
                 }
             }
         }
-        self.retain_given_up(&mut steps)?;
-        self.at.clear();
-        Ok(())
+        if self.halt(go) {
+            return Ok(());
+        }
+        self.retain_given_up(&mut steps, go)
     }
 
     /// Mark the oldest names published past `keep` to be retired, within
@@ -216,7 +286,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     }
 
     /// Ask the daemon to retire `snap/<name>`.
-    fn retire_ref(&mut self, name: &str) -> Result<(), Error> {
+    fn retire_ref(&mut self, name: &str, go: &mut dyn FnMut() -> bool) -> Result<(), Error> {
         let Some(commit) = self
             .record
             .published
@@ -236,7 +306,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         match answer {
             Ok(Reply::Retired | Reply::Gone) => {
                 self.commit(Effect::Retired, |r| set_retire(r, name, Retire::Members))?;
-                self.retire_members(name)
+                self.retire_members(name, go)
             }
             Ok(Reply::Refused(Code::Other, text)) => {
                 self.commit(Effect::Retired, |r| set_retire(r, name, Retire::Other))?;
@@ -244,6 +314,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 Ok(())
             }
             Ok(Reply::Refused(code, text)) => {
+                if code == Code::NoAnswer {
+                    self.retention.silent = true;
+                }
                 self.say(
                     name,
                     Report::NotRetired(format!("retire refused {}: {text}", code.word())),
@@ -258,6 +331,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 Ok(())
             }
             Err(e) => {
+                self.retention.silent = true;
                 self.say(
                     name,
                     Report::NotRetired(format!("retire not answered: {e}")),
@@ -269,7 +343,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
 
     /// Destroy the members' `@<name>` of a name published whose ref is
     /// retired, and let it leave.
-    fn retire_members(&mut self, name: &str) -> Result<(), Error> {
+    fn retire_members(&mut self, name: &str, go: &mut dyn FnMut() -> bool) -> Result<(), Error> {
         let Some(members) = self
             .record
             .published
@@ -279,11 +353,13 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         else {
             return Ok(());
         };
-        if self.destroy_members(name, &members)? {
-            self.told(name.to_string(), Outcome::Retired);
-            self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;
-        } else {
-            self.stick(name, members)?;
+        match self.destroy_members(name, &members, go)? {
+            Destroyed::All => {
+                self.told(name.to_string(), Outcome::Retired);
+                self.commit(Effect::Retain, |r| r.published.retain(|p| p.name != name))?;
+            }
+            Destroyed::Failed => self.stick(name, members)?,
+            Destroyed::Halted => {}
         }
         Ok(())
     }
@@ -291,7 +367,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     /// Try again the destroy of at most [`STUCK_STEPS`] names stuck, in
     /// turn by name from the one after the last tried; one that
     /// succeeds is told `retired` and leaves.
-    fn retry_stuck(&mut self) -> Result<(), Error> {
+    fn retry_stuck(&mut self, go: &mut dyn FnMut() -> bool) -> Result<(), Error> {
         let mut stuck: Vec<(String, Vec<Member>)> = self
             .record
             .stuck
@@ -306,11 +382,18 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         stuck.rotate_left(first);
         stuck.truncate(STUCK_STEPS);
         for (name, members) in stuck {
+            if self.halt(go) {
+                break;
+            }
             self.at.clone_from(&name);
-            self.retention.stuck_last = Some(name.clone());
-            if self.destroy_members(&name, &members)? {
-                self.told(name.clone(), Outcome::Retired);
-                self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;
+            match self.destroy_members(&name, &members, go)? {
+                Destroyed::All => {
+                    self.retention.stuck_last = Some(name.clone());
+                    self.told(name.clone(), Outcome::Retired);
+                    self.commit(Effect::Retain, |r| r.stuck.retain(|s| s.name != name))?;
+                }
+                Destroyed::Failed => self.retention.stuck_last = Some(name.clone()),
+                Destroyed::Halted => break,
             }
         }
         Ok(())
@@ -346,11 +429,20 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     }
 
     /// Destroy each `@<name>` of the pool whose GUID is one of `members`',
-    /// children first and `pool@<name>` last. Whether all are gone; a
-    /// read or a destroy that fails is told.
-    fn destroy_members(&mut self, name: &str, members: &[Member]) -> Result<bool, Error> {
+    /// children first and `pool@<name>` last ([`Destroyed`]); a read or a
+    /// destroy that fails is told. Before each call to ZFS, `go` and the
+    /// failure note are asked ([`Agent::retain_while`]).
+    fn destroy_members(
+        &mut self,
+        name: &str,
+        members: &[Member],
+        go: &mut dyn FnMut() -> bool,
+    ) -> Result<Destroyed, Error> {
         let ours: BTreeSet<u64> = members.iter().map(|m| m.snapshot_guid).collect();
         let pool = self.pool.clone();
+        if self.halt(go) {
+            return Ok(Destroyed::Halted);
+        }
         let read = match self.zfs.members(&pool, name) {
             Ok(read) => read.unwrap_or_default(),
             Err(e) => {
@@ -358,7 +450,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     name,
                     Report::NotRetired(format!("the members' @{name} not read: {e}")),
                 );
-                return Ok(false);
+                return Ok(Destroyed::Failed);
             }
         };
         let mut doomed: Vec<Member> = read
@@ -370,6 +462,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             (Reverse(depth(a)), &b.name).cmp(&(Reverse(depth(b)), &a.name))
         });
         for member in doomed {
+            if self.halt(go) {
+                return Ok(Destroyed::Halted);
+            }
             self.point(Effect::DestroyMember, false)?;
             let destroyed = self.zfs.destroy_one(&pool, &member.name, name);
             self.point(Effect::DestroyMember, true)?;
@@ -378,15 +473,19 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     name,
                     Report::NotRetired(format!("zfs destroy {}@{name}: {e}", member.name)),
                 );
-                return Ok(false);
+                return Ok(Destroyed::Failed);
             }
         }
-        Ok(true)
+        Ok(Destroyed::All)
     }
 
     /// The names given up past their time, oldest first: those that left
     /// nothing leave in one save; the others, within the round's steps.
-    fn retain_given_up(&mut self, steps: &mut usize) -> Result<(), Error> {
+    fn retain_given_up(
+        &mut self,
+        steps: &mut usize,
+        go: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let now = self.clock.now_ms();
         let bound = u64::try_from(self.retention.abandoned_keep.as_millis()).unwrap_or(u64::MAX);
         let mut due = Vec::new();
@@ -422,6 +521,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 None => self.say(&name, Report::NoGuids),
                 Some(Due::Drop) => {}
                 Some(_) if *steps >= STEPS_MAX => {}
+                Some(Due::Destroy { look: true, .. }) if self.retention.silent => {}
+                Some(_) if self.halt(go) => return Ok(()),
                 Some(Due::Forget) => {
                     *steps += 1;
                     self.forget_given_up(&name, "no member guids; destroy by hand")?;
@@ -431,11 +532,15 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                     if look && !self.looked_absent(&name)? {
                         continue;
                     }
-                    if self.destroy_members(&name, &members)? {
-                        self.told(name.clone(), Outcome::Retired);
-                        self.commit(Effect::Retain, |r| r.abandoned.retain(|a| a.name != name))?;
-                    } else {
-                        self.stick(&name, members)?;
+                    match self.destroy_members(&name, &members, go)? {
+                        Destroyed::All => {
+                            self.told(name.clone(), Outcome::Retired);
+                            self.commit(Effect::Retain, |r| {
+                                r.abandoned.retain(|a| a.name != name)
+                            })?;
+                        }
+                        Destroyed::Failed => self.stick(&name, members)?,
+                        Destroyed::Halted => return Ok(()),
                     }
                 }
             }
@@ -462,6 +567,9 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 Ok(false)
             }
             Ok(other) => {
+                if matches!(other, Reply::Refused(Code::NoAnswer, _)) {
+                    self.retention.silent = true;
+                }
                 self.say(
                     name,
                     Report::NotRetired(format!("look answered `{}`", other.line())),
@@ -469,6 +577,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 Ok(false)
             }
             Err(e) => {
+                self.retention.silent = true;
                 self.say(name, Report::NotRetired(format!("look not answered: {e}")));
                 Ok(false)
             }
