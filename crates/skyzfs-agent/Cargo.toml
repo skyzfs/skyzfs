@@ -17,4 +17,7 @@ skyzfs-control = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# The ring's size, for the bound on the syncs after a rewind import
+# (`engine::SYNC_PAST_MAX`); the agent links nothing of the daemon.
+skyzfs-uberblock = { workspace = true }
 tempfile = { workspace = true }
