@@ -28,8 +28,8 @@ name: skyzfs-agent-rig
 # SIGTERM between rounds exits 0, a second signal 1, `recover` and
 # `settle` beside it 8, a run killed and started again, a record corrupt
 # or another volume's at a restart 6, and M2.7d's syncs past a rewind
-# import's abandoned groups before the first publish), and by dispatch
-# only f and fz (afail, M2.7c: `run` on its default schedule on a volume
+# import's abandoned groups before the first publish), f and fz (afail,
+# M2.7c: `run` on its default schedule on a volume
 # that fails while it is served: lost with no pool imported, then failed
 # with no client, a new attachment (12), and lost while a publish waits
 # for its cut (11, and 11 again); f with no zed, fz with zed running;
@@ -52,8 +52,8 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04"]'
       parts:
-        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare), r (arun), f and fz (afail without and with zed; not in the default)"
-        default: '["a1","a2","d","k","r"]'
+        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare), r (arun), f and fz (afail without and with zed)"
+        default: '["a1","a2","d","k","r","f","fz"]'
       points:
         description: "aplain only: the points to kill at (EFFECT:before|after:N, separated by spaces) in place of those the trace reaches; empty: the trace's"
         default: ""
@@ -138,7 +138,7 @@ jobs:
           PARTS: ${{ inputs.parts || '' }}
         run: |
           i=${IMAGES:-'["ubuntu-26.04"]'}
-          p=${PARTS:-'["a1","a2","d","k","r"]'}
+          p=${PARTS:-'["a1","a2","d","k","r","f","fz"]'}
           python3 -c 'import json, sys
           v = json.loads(sys.argv[1])
           ok = {"ubuntu-26.04", "ubuntu-24.04", "ubuntu-26.04-arm", "ubuntu-24.04-arm"}
