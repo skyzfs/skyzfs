@@ -242,10 +242,16 @@ done
 # pid is let go, so that no later check takes it for one that ended by
 # itself (Q3 of #169's review).
 rm -f "$CDIR"/* "$T/calls"
+set -m
 bash -c 'trap "" TERM; sleep 30 & wait' & upid=$!; sleep 0.2
+set +m
 is "reserve: unreaped after SIGKILL, its pid let go" \
-    "$(SERVE_PID=$upid; serve_end() { return 1; }; rig_error() { echo "rig_error [$SERVE_PID] $*" >> "$T/calls"; }; reserve; echo "$(cut -f1 "$CDIR/verdicts.tsv") $(tr '\n' ';' < "$T/calls")"; kill "$SERVE_PID" 2>/dev/null)" \
+    "$(SERVE_PID=$upid; serve_end() { return 1; }; rig_error() { echo "rig_error [$SERVE_PID] $*" >> "$T/calls"; }; reserve; echo "$(cut -f1 "$CDIR/verdicts.tsv") $(tr '\n' ';' < "$T/calls")")" \
     "daemon_stopped rig_error [] skyzfsd serve 2 did not end 10 s after SIGKILL;serve_again;"
+# The stand-in and its sleep, a process group of their own (set -m):
+# a sleep left behind holds the suite's stdout (the review's nit on
+# #169).
+kill -9 -- "-$upid" 2>/dev/null
 wait "$upid" 2>/dev/null
 
 # frozen_until_withdrawn and gone, on a stand-in agent.
@@ -786,7 +792,10 @@ ed_t() { # HOOK [hang|gone|unreaped]
             # A stop that neither SIGTERM nor SIGKILL ends in time, with a
             # rig error that returns, to see what is left.
             serve_end() { return 1; }
-            rig_error() { echo "rig error: $*"; }
+            rig_error() { echo "rig error [${SERVE_PID:+set}]: $*"; }
+            # daemon_wrong goes on to its hook after rig_error, which
+            # the real one never returns from.
+            daemon_wrong() { rig_error "$2"; }
             bash -c 'trap "" TERM; while :; do /bin/sleep 0.1; done' > /dev/null 2>&1 & SERVE_PID=$!
             echo "$SERVE_PID" > "$T/ed.pid"
         elif [ "${2:-}" = gone ]; then
@@ -818,9 +827,11 @@ went on, detached yes"
 
 # Unreaped after SIGKILL: the rig's error, and the pid let go (Q3 of
 # #169's review).
+# The pid is let go before the rig's error, which ends the recording
+# (Q04 of #169's review): the stub, which returns, says whether it was.
 is "end_daemon: unreaped after SIGKILL, its pid let go" "$(ed_t '' unreaped | grep -v '^went on')" \
-    "rig error: skyzfsd serve did not end 60 s after SIGTERM: lease kept
-rig error: skyzfsd serve did not end 10 s after SIGKILL
+    "rig error [set]: skyzfsd serve did not end 60 s after SIGTERM: lease kept
+rig error []: skyzfsd serve did not end 10 s after SIGKILL
 pid []"
 
 # A daemon that had ended before the SIGTERM ended unasked, even with 0:
@@ -1119,7 +1130,7 @@ is "runbad volume: the agent's own publish for the other volume" "$(cat "$T/rc/c
     "acmd other publish --limit-s 30 rc/other rc/other-vol"
 is "runbad volume: the other volume's remote" "$(tail -n 1 "$T/rc/other-vol/remote")" "id 01ARZ3NDEKTSV4RRFFQ69G5FA1"
 is "runbad volume: the case's directories as they were" "$(cat "$T/rc.vars")" "ADIR=rc/agent VOL=rvol"
-RUNT_ACMD='echo "acmd $*" >> "$CDIR/calls"' runt runbad bad "8000 3000" volume 0.6
+RUNT_ACMD='echo "acmd $*" >> "$CDIR/calls"; : > "$CDIR/$1.err"' runt runbad bad "8000 3000" volume 0.6
 is "runbad volume: no record of the other volume is the rig's error, no run" \
     "$(cut -c1-34 "$T/rc/rig-error.txt"; [ -e "$T/rc/count" ] || echo none)" "no record of another volume: 
 none"
