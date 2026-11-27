@@ -23,9 +23,9 @@ LOST_A = ('lost skzcut volume=00112233445566778899aabbccddeeff note=whole reason
           'step=suspended reopen=- state=SUSPENDED looked_ms=- verdict=lost')
 
 
-def rnd(n, took, begun='-', late=0, ok='ok', under=0):
+def rnd(n, took, begun='-', late=0, ok='ok', under=0, more=''):
     return (f'round {n} {ok} took_ms={took} late_ms={late} skipped=0 begun={begun} under_way={under} '
-            'synced=0 bound=0')
+            'synced=0 bound=0' + more)
 
 
 def run(out, errs=()):
@@ -56,6 +56,18 @@ def case_u():
         'notes': {'failed': (1015.05, 60), 'refused': (1019.0, 60), 'served': (None, None)},
         'refused_rc': '4', 'refused_at': 1020.0, 'served_at': 1130.0,
     }
+
+
+def case_u_179():
+    """U with #179's lines: round 2 says early_ms and keeps its tick, so
+    rounds 3 and 4 come 60 and 120 s after round 1."""
+    c = case_u()
+    c['run'] = run([(rnd(1, 9000, 'skz-1'), 1010.0), ('snap/skz-1 abc', 1010.0), (LOST_U, 1016.2),
+                    (rnd(2, 30, more=' early_ms=44830'), 1016.2), (rnd(3, 50), 1061.05),
+                    (rnd(4, 100, 'skz-2', under=1), 1121.1)],
+                   [(SAID_2, 1016.2), (SAID_3, 1061.05), (SAID_4, 1121.1)])
+    c.update(ended_at=1121.3, served_at=1070.0)
+    return c
 
 
 TRACE_W = [(4_000_000_000, 'ask', 'before', 'skz-3'), (5_000_000_000, 'asked', 'after', 'skz-3'),
@@ -250,6 +262,48 @@ class Unknown(unittest.TestCase):
                         for i, x in enumerate(c['run']['lines'])], c['run']['errs'])
         self.assertEqual(verdicts(f.judge_unknown, c)[0]['pin_U_default_schedule'], 'ok')
 
+    def test_179_s_lines_every_pin_holds(self):
+        v, j = verdicts(f.judge_unknown, case_u_179())
+        bad = {k: x for k, x in v.items() if x not in ('ok', 'INFO')}
+        self.assertEqual(bad, {}, j.lines)
+        self.assertEqual(j.status(), 0)
+        self.assertIn('early_ms=44830, its tick kept', '\n'.join(j.lines))
+        self.assertIn('with no early_ms, its tick taken', '\n'.join(verdicts(f.judge_unknown, case_u())[1].lines))
+
+    def test_179_s_round_3_a_tick_late(self):
+        # An early round that says it keeps its tick, and round 3 not on it.
+        def late(c):
+            ls = [(x['text'], x['at'] + (60 if i >= 4 else 0)) for i, x in enumerate(c['run']['lines'])]
+            c['run'] = run(ls, c['run']['errs'])
+        c = case_u_179()
+        late(c)
+        c.update(ended_at=1181.3)
+        v, j = verdicts(f.judge_unknown, c)
+        self.assertEqual(v['pin_U_default_schedule'], 'FAILED', j.lines)
+
+    def test_179_s_early_ms_wrong(self):
+        for e in (40000, 50000, 0):
+            c = case_u_179()
+            ls = [(x['text'] if i != 3 else rnd(2, 30, more=f' early_ms={e}'), x['at'])
+                  for i, x in enumerate(c['run']['lines'])]
+            c['run'] = run(ls, c['run']['errs'])
+            v, j = verdicts(f.judge_unknown, c)
+            self.assertEqual(v['pin_U_default_schedule'], 'FAILED', (e, j.lines))
+        c = case_u_179()
+        ls = [(x['text'] if i != 3 else rnd(2, 30, more=' early_ms=45500'), x['at'])
+              for i, x in enumerate(c['run']['lines'])]
+        c['run'] = run(ls, c['run']['errs'])
+        self.assertEqual(verdicts(f.judge_unknown, c)[0]['pin_U_default_schedule'], 'ok')
+
+    def test_179_s_round_3_or_4_early(self):
+        for i, n, took, b in ((4, 3, 50, '-'), (5, 4, 100, 'skz-2')):
+            c = case_u_179()
+            ls = [(x['text'] if k != i else rnd(n, took, b, under=int(n == 4), more=' early_ms=10'), x['at'])
+                  for k, x in enumerate(c['run']['lines'])]
+            c['run'] = run(ls, c['run']['errs'])
+            v, j = verdicts(f.judge_unknown, c)
+            self.assertEqual(v['pin_U_default_schedule'], 'FAILED', (n, j.lines))
+
     def test_the_rig_late(self):
         self.wrong(lambda c: c.update(refused_at=1125.0), 'premise_U_refused_in_time', 'ERROR')
         self.wrong(lambda c: c.update(served_at=1185.0), 'premise_U_served_in_time', 'ERROR')
@@ -277,6 +331,20 @@ class Wait(unittest.TestCase):
         change(c)
         v, _ = verdicts(f.judge_wait, c)
         self.assertEqual(v[key], verdict, v)
+
+    def test_179_s_lines(self):
+        # The round of the step begun early, its tick kept: read and judged as before.
+        c = case_w()
+        c['run'] = run([(rnd(1, 17500, 'skz-3', under=1), 2018.2), (LOST_W, 2019.5),
+                        (rnd(2, 1300, more=' early_ms=41500'), 2019.5)])
+        v, j = verdicts(f.judge_wait, c)
+        self.assertEqual({k: x for k, x in v.items() if x not in ('ok', 'INFO')}, {}, j.lines)
+        # The cap's held step is no step of W: ten reopens of one note are never made here.
+        held = LOST_W.replace('step=reopened reopen=ok', 'step=held reopen=-').replace('looked_ms=750', 'looked_ms=-')
+        self.wrong(lambda c: c.update(run=run([(rnd(1, 17500, 'skz-3', under=1), 2018.2), (held, 2019.5),
+                                               (rnd(2, 1300, more=' reopen=held'), 2019.5)])), 'pin_W_lost_line')
+        self.wrong(lambda c: c['again'].update(run=run([(held, 2030.4),
+                                                        (rnd(1, 40, more=' reopen=held'), 2030.4)])), 'pin_W_again')
 
     def test_zed_suspended_it_first(self):
         c = case_w()
@@ -404,6 +472,19 @@ class Reading(unittest.TestCase):
     def test_a_line_of_no_kind(self):
         with self.assertRaises(f.RigError):
             run([('hello', 1.0)])
+
+    def test_179_s_fields(self):
+        held = LOST_W.replace('step=reopened reopen=ok', 'step=held reopen=-')
+        r = run([(rnd(1, 10, more=' early_ms=250 reopen=held'), 1.0), (held, 1.0)])
+        self.assertEqual((r['lines'][0]['f']['early_ms'], r['lines'][0]['f']['reopen']), (250, 'held'))
+        self.assertEqual(r['lines'][1]['f']['step'], 'held')
+        r = run([(rnd(1, 10), 1.0)])
+        self.assertEqual((r['lines'][0]['f']['early_ms'], r['lines'][0]['f']['reopen']), (None, None))
+        for more in (' early_ms=x', ' early_ms=-1', ' reopen=ok', ' early_ms=1 early_ms=2', ' synced=1'):
+            with self.assertRaises(f.RigError, msg=more):
+                run([(rnd(1, 10, more=more), 1.0)])
+        with self.assertRaises(f.RigError):
+            run([(LOST_W.replace('step=reopened', 'step=kept'), 1.0)])
 
     def test_a_lost_line_with_a_field_more(self):
         with self.assertRaises(f.RigError):

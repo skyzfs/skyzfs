@@ -11,6 +11,10 @@ Each line of results.tsv is KEY, VERDICT, [what it rests on] and the
 detail, as agent_check.py's. Exit 1 is a verdict against the agent or
 the daemon, 2 the rig's own error, 0 neither.
 
+Both forms of the round and lost lines are read: zfs-topology's, and
+M2.7b-2's (#179: early_ms= and reopen=held on the round line, step=held
+on the lost line), so that either pull request can merge first.
+
 Case U (lost with no pool imported, then no client, then a new
 attachment):
 - premise_U_round_1 (rig): round 1's line came before the failure, with
@@ -41,9 +45,14 @@ attachment):
 - pin_U_moved (server): the run ended with 12 after the next round's
   line, the last it printed, saying why, within END_WITHIN s of it.
 - pin_U_default_schedule (server): with no --every-s, the rounds after
-  the early one keep the ticks of 60 s from the first (EVERY_DEFAULT):
-  round k begins (k - 1) x 60 s after round 1, give or take their
-  late_ms and TICK_SLACK; the early round shifts none of them.
+  the early one keep the ticks of 60 s from the first (EVERY_DEFAULT),
+  give or take their late_ms and TICK_SLACK; the early round shifts none
+  of them. Round k begins (k - 1) x 60 s after round 1 where round 2
+  carries no early_ms (zfs-topology before #179: the early round takes
+  the next tick) and (k - 2) x 60 s where it does (#179: it keeps its
+  tick), and then its early_ms is how long before its tick it began.
+  Rounds 3 and 4 carry no early_ms. #179's quick retry follows only a
+  retry verdict, which U never gives.
 - premise_U_refused_in_time, premise_U_served_in_time (rig): the
   refused start ended before round 3 began, and the acknowledged start
   served and its pool was imported before round 4 began.
@@ -115,8 +124,16 @@ REASON = 'image-failed'
 ROUND_LINE = re.compile(r'round ([1-9][0-9]*) (ok|failed) took_ms=([0-9]+) late_ms=([0-9]+) skipped=([0-9]+) '
                         r'begun=(\S+) under_way=([0-9]+)((?: [a-z][a-z_]*=[^ =]+)*)')
 LOST_LINE = re.compile(r'lost (\S+) volume=([0-9a-f]+) note=(whole|torn) reason=(\S+) held=(yes|unknown) '
-                       r'step=(not-imported|suspended|reopened|failed) reopen=(ok|failed|-) state=(\S+) '
+                       r'step=(not-imported|suspended|reopened|held|failed) reopen=(ok|failed|-) state=(\S+) '
                        r'looked_ms=([0-9]+|-) verdict=(lost|failed|retry)')
+# The two lines as zfs-topology has them and as M2.7b-2 (#179) adds to
+# them, read both ways so that either pull request can merge first (the
+# lead's ruling on #180): the lost line's step=held (the cap on reopens,
+# never reached here: it needs ten reopens of one note), and the round
+# line's early_ms=<ms> (a round begun before its tick, which with #179
+# keeps its tick: round_ticks) and reopen=held, among its trailing
+# name=value fields.
+ROUND_EXTRA = {'early_ms': re.compile(r'[0-9]+'), 'reopen': re.compile(r'held')}
 LOST_FIELDS = ('pool', 'volume', 'note', 'reason', 'held', 'step', 'reopen', 'state', 'looked_ms', 'verdict')
 # The outcome lines `run` prints among its rounds (agent_check.py's
 # read_outputs).
@@ -162,6 +179,7 @@ def read_run(out, out_tsv, err, err_tsv):
         if r:
             f = {'n': int(r[1]), 'ok': r[2] == 'ok', 'took_ms': int(r[3]), 'late_ms': int(r[4]),
                  'skipped': int(r[5]), 'begun': None if r[6] == '-' else r[6], 'under_way': int(r[7])}
+            f.update(round_extra(r[8], ln))
             lines.append({'kind': 'round', 'f': f, 'text': ln, 'at': at})
         elif m:
             lines.append({'kind': 'lost', 'f': dict(zip(LOST_FIELDS, m.groups())), 'text': ln, 'at': at})
@@ -172,6 +190,31 @@ def read_run(out, out_tsv, err, err_tsv):
     estamps = read_stamps(err_tsv, 'err.tsv')
     errs = [(ln, estamps[k] if k < len(estamps) else None) for k, ln in enumerate(err.splitlines())]
     return {'lines': lines, 'errs': errs}
+
+
+def round_extra(tail, ln):
+    """A round line's trailing name=value fields -> {'early_ms': int or
+    None, 'reopen': 'held' or None}. A name twice, or early_ms or reopen
+    not as ROUND_EXTRA has them, is the rig's error."""
+    seen = {}
+    for w in tail.split():
+        k, v = w.split('=', 1)
+        if k in seen:
+            raise RigError(f'a round line with {k} twice: {ln!r}')
+        seen[k] = v
+    for k, want in ROUND_EXTRA.items():
+        if k in seen and not want.fullmatch(seen[k]):
+            raise RigError(f'a round line with {k}={seen[k]}: {ln!r}')
+    return {'early_ms': int(seen['early_ms']) if 'early_ms' in seen else None, 'reopen': seen.get('reopen')}
+
+
+def round_ticks(run, n):
+    """The ticks of 60 s from round 1's to round N's: one for each round
+    from 2 to N that carries no early_ms. Before #179 the early round
+    carries none and takes the next tick, whose round does not come; with
+    #179 it says early_ms and keeps it (D1 of #173's review), so round 3
+    comes on that tick."""
+    return sum(1 for r in rounds(run) if 2 <= r['f']['n'] <= n and r['f']['early_ms'] is None)
 
 
 def rounds(run):
@@ -370,18 +413,30 @@ def judge_unknown(c, j):
             bad.append(f'it ended {ms(r4["at"], c["ended_at"])} ms after round 4\'s line, not within '
                        f'{END_WITHIN} s')
     j.holds('pin_U_moved', bad, 'server', 'ended with 12 after round 4, the new attachment said')
+    # #179's quick retry follows only a retry verdict, which U never
+    # gives (not-imported is failed, and so is the round after it), so
+    # no round of U is a quick one (the lead's ruling on #180).
     bad = []
+    if r2 is not None and r2['f']['early_ms'] is not None and b1 is not None and began(r2) is not None:
+        early = tick2 - began(r2)
+        if abs(r2['f']['early_ms'] / 1000 - early) > TICK_SLACK:
+            bad.append(f"round 2 says early_ms={r2['f']['early_ms']}, but it began {early:.2f} s before its tick")
     for r in (r3, r4):
         if r is None or b1 is None or began(r) is None:
             continue
-        want = (r['f']['n'] - 1) * EVERY_DEFAULT + (r['f']['late_ms'] - r1['f']['late_ms']) / 1000
+        if r['f']['early_ms'] is not None:
+            bad.append(f"round {r['f']['n']} says early_ms={r['f']['early_ms']}: it did not come on its tick")
+            continue
+        want = round_ticks(run, r['f']['n']) * EVERY_DEFAULT + (r['f']['late_ms'] - r1['f']['late_ms']) / 1000
         got = began(r) - b1
         if abs(got - want) > TICK_SLACK:
             bad.append(f"round {r['f']['n']} began {got:.2f} s after round 1, not {want:.2f} s")
     if r3 is None or r4 is None or b1 is None:
         bad.append('rounds 1, 3 and 4 are not all there to time')
     j.holds('pin_U_default_schedule', bad, 'server',
-            f'rounds 3 and 4 began {began(r3) - b1:.2f} s and {began(r4) - b1:.2f} s after round 1'
+            f'rounds 3 and 4 began {began(r3) - b1:.2f} s and {began(r4) - b1:.2f} s after round 1; '
+            + (f"round 2 early_ms={r2['f']['early_ms']}, its tick kept" if r2 and r2['f']['early_ms'] is not None
+               else 'round 2 with no early_ms, its tick taken')
             if not bad else '')
 
 
