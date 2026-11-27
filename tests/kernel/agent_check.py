@@ -653,8 +653,10 @@ def ended_within(term, ended, limit=END_WITHIN):
 
 
 RUN_SCENARIOS = ('run', 'runkill', 'runtwice', 'runheld', 'runbad', 'runrewind')
-# The daemon's `cuts` answer, as publish_agent.py's `ask cuts` prints it.
-CUTS_LINE = re.compile(r'cuts .*\bgroup=([0-9]+|none) opens=(itself|rewind|none)\b.*')
+# The daemon's `cuts` answer, as publish_agent.py's `ask cuts` prints it:
+# protocol 2 ends with opens=, 3 (M2.7b-1) adds rewound=R, the store's
+# rewind mark, after it.
+CUTS_LINE = re.compile(r'cuts .*\bgroup=([0-9]+|none) opens=(itself|rewind|none)(?: rewound=([0-9]+))?')
 NO_BEGIN = 'no publish begun'
 
 
@@ -665,6 +667,15 @@ def read_cuts(text):
     if not m:
         raise RigError(f'not a cuts answer: {text.strip()[:200]!r}')
     return (None if m[1] == 'none' else int(m[1])), m[2]
+
+
+def read_mark(text):
+    """A `cuts` answer -> its rewound= (protocol 3), or None for an
+    answer of protocol 2, which has none."""
+    m = CUTS_LINE.fullmatch(text.strip())
+    if not m:
+        raise RigError(f'not a cuts answer: {text.strip()[:200]!r}')
+    return None if m[3] is None else int(m[3])
 
 
 def rewind_premise(txg, top, cuts):
@@ -746,11 +757,13 @@ def judge_synced(rounds, published, err, ask):
     return bad
 
 
-def judge_run(cid, cd, scen, outs, holds, premise, text, instances=()):
+def judge_run(cid, cd, scen, outs, holds, premise, text, instances=(), put=None):
     """The pins of a case of `skyzfs-agent run` (agent-record.sh's run
     scenarios); TEXT reads a file of the run's directory, '' where there
     is none. The first run's status is FIRST_RC's pin (runkill's is the
-    kill's premise)."""
+    kill's premise). PUT(key, verdict, rests, detail) writes an INFO
+    line; with none, INFO lines are left out."""
+    put = put or (lambda *_: None)
     def at(path):
         return os.path.join(cd, path)
 
@@ -808,6 +821,10 @@ def judge_run(cid, cd, scen, outs, holds, premise, text, instances=()):
                   f'round 1 synced {first.get("synced")} times, then began {first.get("begun")}, asked first from '
                   f'cut {ask[0] if ask else "-"}, which opens as itself, published; {nref} asks of the run\'s '
                   'publishes refused rewound (rule R)')
+            mark, (tg, _) = read_mark(text(at('rewind-cuts.txt'))), read_cuts(text(at('rewind-top.txt')))
+            put(f'obs_{cid}_mark', 'INFO', 'server',
+                'the cuts answer has no rewound= (a daemon of protocol 2)' if mark is None else
+                f"after the import the daemon's rewind mark is {mark}; its newest cut before it was of group {tg}")
         holds(f'pin_{cid}_rounds', judge_rounds(rounds, read_arrivals(text(at('publish.rounds.tsv'))), 2), 'server',
               f'{len(rounds)} rounds after the rewind import, each ok and beginning its own publish')
         ended('publish', 'sigterm')
@@ -1060,7 +1077,7 @@ def main():
                            'ended by itself'], 'server', 'the daemon was serving until the rig killed it (137)')
                 if scen in RUN_SCENARIOS:
                     judge_run(cid, cd, scen, outs, holds, premise, lambda path: text_of(path, need=False),
-                              instances)
+                              instances, put)
                 if scen == 'sweep' and not kill:
                     stray = text_of(os.path.join(cd, 'stray-holds.txt'))
                     holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
