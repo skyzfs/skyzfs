@@ -3686,8 +3686,11 @@ fn an_agent_given_a_mistyped_directory_releases_no_hold() {
 /// snapshot of another name (a person's hold, or a snapshot of the
 /// agent's renamed) is left, and does not stop the sweep, which releases
 /// the stray hold on a name of the agent's beside it (A4 of #165's
-/// review, TG2 of #168's). Mutants: the fake's or the sweep's filter
-/// dropped; the prefix matched without its case.
+/// review, TG2 of #168's). Mutants of the fake's filter (the engine's
+/// sweep has none: the CLI's own tests hold `Zfs::tagged`'s): dropped,
+/// matched without its case or without its dash, applied to the pool's
+/// own snapshots only, or matched anywhere in the name (A9e of the next
+/// look at #168).
 #[test]
 fn the_sweep_leaves_a_hold_of_the_tag_on_a_name_not_the_agents() {
     let world = World::new(Mode::Busy);
@@ -3697,6 +3700,7 @@ fn the_sweep_leaves_a_hold_of_the_tag_on_a_name_not_the_agents() {
         format!("{POOL}@keep"),
         format!("{POOL}/db@SKZ-1"),
         format!("{POOL}@skz"),
+        format!("{POOL}@keep-skz-1"),
     ];
     let stray = format!("{POOL}@skz-stray");
     {
@@ -4675,5 +4679,247 @@ fn a_destroy_between_two_reads_is_no_missing_pool() {
             "{mode:?}: {:?}",
             again.outcomes()
         );
+    }
+}
+
+/// The syncs after a rewind import (M2.7d; design §5.2: after `zpool
+/// import -T` no cut opens as itself until the pool's groups have passed
+/// the abandoned ones, and the agent syncs the pool until they have, a
+/// group at a time).
+mod past {
+    use super::*;
+
+    /// An idle pool imported with `-T`, whose abandoned history's top is
+    /// `gap` groups above the group the import wrote: the daemon's newest
+    /// cut does not open as itself.
+    fn rewound(gap: u64) -> Rc<RefCell<World>> {
+        let world = World::new(Mode::Idle);
+        {
+            let mut world = world.borrow_mut();
+            for _ in 0..4 {
+                world.sync("before the rewind");
+            }
+            world.restart(Restart::RewindT(Back::AfterHold), None);
+            let pool = world.pool.as_mut().expect("the pool");
+            pool.abandoned_top = pool.txg + gap;
+        }
+        assert_eq!(newest(&world).map(|(_, itself)| itself), Some(false));
+        world
+    }
+
+    /// The daemon's newest cut: its group, and whether it opens as itself.
+    fn newest(world: &Rc<RefCell<World>>) -> Option<(u64, bool)> {
+        world
+            .borrow()
+            .daemon
+            .cuts
+            .last()
+            .map(|c| (c.group, c.itself))
+    }
+
+    fn syncs(world: &Rc<RefCell<World>>) -> usize {
+        world.borrow().synced_at.len()
+    }
+
+    /// The agent syncs until the newest cut opens as itself, and no
+    /// more; with that cut there, it syncs nothing. Each sync writes two
+    /// groups in the fake (the kernel probe of #145), so passing five
+    /// abandoned groups and one more takes three. Mutants: no sync; one
+    /// sync only; one after the cut opens; the newest cut's group
+    /// compared instead of whether it opens.
+    #[test]
+    fn after_a_rewind_import_the_agent_syncs_until_a_cut_opens_as_itself() {
+        let world = rewound(5);
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true).expect("synced");
+        assert_eq!(past, Past::Clear { synced: 3 });
+        assert_eq!(syncs(&world), 3);
+        assert_eq!(newest(&world).map(|(_, itself)| itself), Some(true));
+        let again = agent.sync_past(&mut || true).expect("seen");
+        assert_eq!(again, Past::Clear { synced: 0 });
+        assert_eq!(syncs(&world), 3);
+        // Nothing was written in the record's directory.
+        assert!(keep.0.borrow().record.is_none());
+    }
+
+    /// With no cut, or a newest cut that opens as itself, or a daemon
+    /// that does not answer, nothing is synced. Mutant: a sync where the
+    /// daemon holds no cut, or says nothing.
+    #[test]
+    fn with_no_cut_behind_nothing_is_synced() {
+        let world = World::new(Mode::Idle);
+        world.borrow_mut().daemon.cuts.clear();
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("seen"),
+            Past::Clear { synced: 0 }
+        );
+        world.borrow_mut().sync("a person's change");
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("seen"),
+            Past::Clear { synced: 0 }
+        );
+        let world = rewound(5);
+        world.borrow_mut().away_until = u64::MAX;
+        let mut agent = super::agent(&world, &keep);
+        assert_eq!(agent.sync_past(&mut || true).expect("unseen"), Past::Unseen);
+        assert_eq!(syncs(&world), 0);
+    }
+
+    /// Where the abandoned groups are more than one ring holds, the
+    /// agent stops at [`SYNC_PAST_MAX`] syncs, in this process and not
+    /// per call, until it sees a cut that opens as itself; a restart of
+    /// the engine does not start the count again. Mutants: no bound; a
+    /// bound per call; the count not reset by a cut that opens; the count
+    /// reset by [`Agent::restart`].
+    #[test]
+    fn the_syncs_stop_at_their_bound_until_a_cut_opens() {
+        let world = rewound(10_000);
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true).expect("synced");
+        let Past::Behind { synced, group, why } = past else {
+            panic!("{past:?}");
+        };
+        assert_eq!((synced, why), (SYNC_PAST_MAX, Stuck::Bound));
+        assert_eq!(Some(group), newest(&world).map(|(group, _)| group));
+        assert_eq!(syncs(&world), SYNC_PAST_MAX as usize);
+        agent.restart().expect("restarted");
+        let past = agent.sync_past(&mut || true).expect("seen");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 0,
+                    why: Stuck::Bound,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        assert_eq!(syncs(&world), SYNC_PAST_MAX as usize);
+        // The pool passes the abandoned groups by itself: the count
+        // starts again, and a later rewind is synced past anew.
+        {
+            let mut world = world.borrow_mut();
+            world.pool.as_mut().expect("the pool").abandoned_top = 0;
+            world.sync("a person's change");
+        }
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("seen"),
+            Past::Clear { synced: 0 }
+        );
+        {
+            let mut world = world.borrow_mut();
+            let pool = world.pool.as_mut().expect("the pool");
+            pool.abandoned_top = pool.txg + 3;
+            world.sync("a person's change, below the abandoned top");
+        }
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("synced"),
+            Past::Clear { synced: 2 }
+        );
+    }
+
+    /// The ring of uberblocks holds at most [`SYNC_PAST_MAX`] of them, so
+    /// a `-T` import is at most that many groups below the abandoned top,
+    /// and each sync writes at least one group: the bound is never met
+    /// after a rewind import alone.
+    #[test]
+    fn the_bound_is_the_most_slots_a_ring_holds() {
+        assert_eq!(
+            u64::from(SYNC_PAST_MAX),
+            skyzfs_uberblock::RING_SIZE / skyzfs_uberblock::SLOT_MIN
+        );
+    }
+
+    /// A sync after which the daemon counts no cut ends the syncs: they
+    /// do not reach the volume. Mutant: syncing on regardless.
+    #[test]
+    fn a_sync_that_makes_no_cut_ends_the_syncs() {
+        let world = rewound(5);
+        world.borrow_mut().plain_sync = true;
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true).expect("synced");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 1,
+                    why: Stuck::NoCut,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        assert_eq!(syncs(&world), 1);
+    }
+
+    /// `go` is asked before each sync: an end asked for stops them.
+    /// Mutant: `go` not asked.
+    #[test]
+    fn an_end_stops_the_syncs() {
+        let world = rewound(5);
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let mut left = 1;
+        let mut go = || {
+            left -= 1;
+            left >= 0
+        };
+        let past = agent.sync_past(&mut go).expect("told");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 1,
+                    why: Stuck::Told,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        assert_eq!(syncs(&world), 1);
+    }
+
+    /// A pool that the agent's premise refuses is not synced: the agent
+    /// changes nothing on a pool it would not publish. Mutant: the
+    /// premise not checked before the first sync.
+    #[test]
+    fn a_pool_refused_its_premise_is_not_synced() {
+        for user in [User::Attach, User::Add] {
+            let world = rewound(5);
+            world.borrow_mut().user(user, "");
+            let keep = MemKeep::default();
+            let mut agent = agent(&world, &keep);
+            let past = agent.sync_past(&mut || true);
+            assert!(matches!(past, Err(Error::Premise(_))), "{user:?}: {past:?}");
+            assert_eq!(syncs(&world), 0, "{user:?}");
+        }
+    }
+
+    /// A sync that fails is not counted toward the bound: after more
+    /// failures than the bound, a ZFS that takes the syncs again carries
+    /// the pool past the abandoned groups (Astra's P2 on #170). Mutant:
+    /// the count raised before the sync returns.
+    #[test]
+    fn a_sync_that_failed_is_not_charged_to_the_bound() {
+        let world = rewound(5);
+        world.borrow_mut().assist_fails = SYNC_PAST_MAX + 1;
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        for n in 0..=SYNC_PAST_MAX {
+            let past = agent.sync_past(&mut || true);
+            assert!(matches!(past, Err(Error::Zfs(_))), "{n}: {past:?}");
+        }
+        assert_eq!(syncs(&world), 0);
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("synced"),
+            Past::Clear { synced: 3 }
+        );
+        assert_eq!(newest(&world).map(|(_, itself)| itself), Some(true));
     }
 }

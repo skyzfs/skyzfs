@@ -487,6 +487,9 @@ pub struct World {
     /// (N1 of #142's review), for a test that shows the property is
     /// needed.
     pub plain_sync: bool,
+    /// The agent's next sync tasks that fail before they write anything,
+    /// as a `zfs set` that ZFS refuses (Astra's P2 on #170).
+    pub assist_fails: u32,
     abandon_next: bool,
     err_low_next: bool,
     erred_low: bool,
@@ -535,6 +538,7 @@ impl World {
             members_read: None,
             calls: Vec::new(),
             plain_sync: false,
+            assist_fails: 0,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
             erred_low: false,
@@ -1639,6 +1643,13 @@ impl Zfs for FakeZfs {
     fn assist(&mut self, pool: &str, value: u64) -> Result<(), ZfsError> {
         self.pool(pool, |_| ())?;
         let mut world = self.0.borrow_mut();
+        if world.assist_fails > 0 {
+            world.assist_fails -= 1;
+            world
+                .log
+                .push(format!("zfs set skyzfs:assist={value}: refused"));
+            return Err(ZfsError::Other("cannot set property: refused".into()));
+        }
         let now = world.now_ms;
         world.synced_at.push(now);
         // `zfs set` is a sync task: its own group; the `zpool sync` after

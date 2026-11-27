@@ -52,8 +52,10 @@
 //!
 //! `run` holds the record's directory and publishes at each tick, every
 //! `--every-s` seconds ([`EVERY_DEFAULT`]) on the clock that does not
-//! step, the first at once ([`schedule`]). Each tick's round begins a
-//! publish and then settles every publish under way until the next tick:
+//! step, the first at once ([`schedule`]). Each tick's round syncs the
+//! pool past the groups of a history that a rewind import abandoned, if
+//! there are any (below), begins a publish, and then settles every
+//! publish under way until the next tick:
 //! a publish that does not settle within its round is settled by the
 //! rounds after it, as `settle` would, and up to
 //! [`crate::record::UNDER_WAY_MAX`] are under way at once (a begin
@@ -64,7 +66,10 @@
 //!
 //! ```text
 //! round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<k> begun=<t|-> under_way=<count>
+//!   synced=<k>
 //! ```
+//!
+//! on one line.
 //!
 //! - `took_ms`: how long the round ran; `late_ms`: how long after its
 //!   tick it began.
@@ -72,8 +77,12 @@
 //!   of their own. Rounds never overlap: the next round begins as this
 //!   one ends, for the last tick that passed, and its `late_ms` says by
 //!   how much.
-//! - `begun`: the publish this round began, `-` where its begin failed.
+//! - `begun`: the publish this round began; `-` where it began none:
+//!   its begin failed, or the round's syncs left the daemon's newest cut
+//!   still behind (below).
 //! - `under_way`: publishes still under way as the round ended.
+//! - `synced`: the syncs the round ran to pass the groups of an abandoned
+//!   history (below); 0 in a round that found none.
 //! - `ok`: no engine call of the round returned an error. It does not
 //!   say that anything moved: a round that waited on the daemon
 //!   throughout is `ok`.
@@ -85,9 +94,50 @@
 //!   the record again, as a new process would: at once after a begin's
 //!   error, before the round settles; at the next round after a
 //!   settle's error. A reading that fails is tried again at the next
-//!   round, which settles nothing until it succeeds. So `begun=-` can
-//!   follow a `snap/` line for the very publish whose begin failed: its
-//!   intent was saved before the save failed, and the round settled it.
+//!   round, which begins and settles nothing until it succeeds: its
+//!   `begun=-` then says that no begin ran, and its `under_way` is the
+//!   count the process had before. So `begun=-` can also follow a
+//!   `snap/` line for the very publish whose begin failed: its intent
+//!   was saved before the save failed, and the round settled it.
+//!
+//!   The rule is wide on purpose (the lead's D1 on #167), and it has a
+//!   cost while the daemon is down: each round that fails reads the
+//!   record again, walks the pool's holds again at its sweep, and tells
+//!   again every `stopped` line and every report of a stall that the
+//!   restart made it forget.
+//!
+//! **After a rewind import** (`zpool import -T`) no cut opens as itself
+//! until the pool's groups have passed those of the history the import
+//! abandoned, so no publish can be made (design §5.2). Each round first
+//! reads the daemon's `cuts`, and while its newest cut does not open as
+//! itself runs the agent's sync task, one at a time, `cuts` read again
+//! after each, until one does ([`Agent::sync_past`]); the pool's premise
+//! is checked before the first. The syncs stop with the newest cut still
+//! behind where the daemon counted no cut after one, where an end was
+//! asked for, or after [`crate::engine::SYNC_PAST_MAX`] syncs in this
+//! process with no cut that opens as itself (more than a rewind import
+//! can leave). Such a round begins no publish (`begun=-`), says why on
+//! standard error, and is still `ok`:
+//!
+//! ```text
+//! skyzfs-agent: round <n>: no publish begun: the newest cut, of group <g>,
+//!   does not open as itself: <why>
+//! ```
+//!
+//! on one line.
+//!
+//! It still settles the publishes under way. Once the bound is met, the
+//! rounds of this process sync no more until they see a cut that opens
+//! as itself (a change of the pool's own, or a person's `zpool sync`,
+//! makes one); a restart of the engine does not start the count again.
+//! Only syncs that returned count toward it: a sync that fails fails its
+//! round, as a begin's error does, and is not counted. An end asked
+//! during the syncs begins no publish, even where the last of them made
+//! the newest cut open as itself: the round line says `begun=-` and the
+//! process ends.
+//! `publish` does not sync before its begin: a publish asked while the
+//! pool is below the abandoned groups pends, and the planner's own syncs
+//! carry it (the case M2's criterion tests).
 //!
 //! The outcome lines below are printed as each publish leaves the
 //! record or stops, among the round lines. A `snap/` line is printed
@@ -102,11 +152,11 @@
 //! `run` ends with 0 at SIGTERM or SIGINT, between two rounds of the
 //! engine or while it waits for a tick, within [`WAKE`]; what is under
 //! way stays in the record for the next start. A signal that comes
-//! while the engine works ends `run` only once its step is done (a
-//! begin, or a pass over the publishes under way): a ZFS call is not
-//! cut, and the step's other calls run first, each within its own time
-//! limit. A second signal ends it
-//! at once with 1. It ends with 6 after the round line of a round that
+//! while the engine works ends `run` once its step is done (a begin, or
+//! a pass over the publishes under way), before the count and the sweep
+//! that would open the next: a ZFS call is not cut, and the step's other
+//! calls run first, each within its own time limit. A second signal ends
+//! it at once with 1. It ends with 6 after the round line of a round that
 //! met a record that is corrupt or another volume's, or holds it would
 //! release with no agent's marker: a person judges those. It ends with
 //! 1 or 8 where it cannot start (the record unread, or the directory
@@ -178,7 +228,7 @@ use std::time::Duration;
 
 use skyzfs_control::{hex, EXPIRY_MAX};
 
-use crate::engine::{Agent, Choice, Clock, Daemon, Effect, Error, Outcome, Point, Points};
+use crate::engine::{Agent, Choice, Clock, Daemon, Effect, Error, Outcome, Past, Point, Points};
 use crate::plan::Report;
 use crate::record::{Keep, Loaded, Person, Phase, Why};
 use crate::zfs::Zfs;
@@ -873,10 +923,12 @@ fn ends_run(e: &Error) -> bool {
     matches!(e, Error::Corrupt(_) | Error::Volume(_) | Error::Unmarked(_))
 }
 
-/// Whether `run` starts the engine again after a round that failed with
-/// `e` ([`Agent::restart`]): after any error but the two refusals that
-/// [`Agent::begin`] makes before it changes anything, 8 publishes under
-/// way ([`Error::Full`]) and the pool's premise ([`Error::Premise`]).
+/// Whether `run` starts the engine again after `e` ([`Agent::restart`]):
+/// at once after a begin's error, before the round settles, and at the
+/// next round after a settle's error ([`schedule`]); after any error but
+/// the two refusals that [`Agent::begin`] makes before it changes
+/// anything, 8 publishes under way ([`Error::Full`]) and the pool's
+/// premise ([`Error::Premise`]).
 /// Before this package an engine call that failed ended the program,
 /// and the next one started from the record; within one process the
 /// engine goes on from such an error only by the same way, so that no
@@ -904,23 +956,30 @@ pub struct Round {
     pub begun: Option<String>,
     /// The publishes under way when it ended.
     pub under_way: usize,
+    /// The syncs it ran to pass the groups of a history a rewind import
+    /// abandoned ([`Agent::sync_past`]).
+    pub synced: u32,
 }
 
 /// The line of standard output for a round of `run` (M2.T4 reads it):
 ///
 /// ```text
 /// round <n> ok|failed took_ms=<ms> late_ms=<ms> skipped=<ticks> begun=<t|-> under_way=<count>
+///   synced=<k>
 /// ```
+///
+/// on one line.
 pub fn round_line(round: &Round) -> String {
     format!(
-        "round {} {} took_ms={} late_ms={} skipped={} begun={} under_way={}\n",
+        "round {} {} took_ms={} late_ms={} skipped={} begun={} under_way={} synced={}\n",
         round.n,
         if round.failed { "failed" } else { "ok" },
         round.took_ms,
         round.late_ms,
         round.skipped,
         round.begun.as_deref().unwrap_or("-"),
-        round.under_way
+        round.under_way,
+        round.synced
     )
 }
 
@@ -928,8 +987,11 @@ pub fn round_line(round: &Round) -> String {
 /// that does not step, the first at once, until `go` says no; the
 /// exit code ([module docs](self), "`run`").
 ///
-/// A round begins a publish ([`Agent::begin`]), then settles every
-/// publish under way ([`Agent::settle_while`]) until the next tick, and
+/// A round syncs the pool past an abandoned history
+/// ([`Agent::sync_past`]; module docs, "After a rewind import"), begins
+/// a publish ([`Agent::begin`]) where that left nothing behind, then
+/// settles every publish under way ([`Agent::settle_while`]) until the
+/// next tick, and
 /// at least one round of the engine: what is still under way then is
 /// settled by the rounds after. A begin that fails (8 under way, the
 /// pool's premise refused, no cuts from the daemon, ZFS) does not keep
@@ -977,13 +1039,55 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
         let mut failed = Vec::new();
         let mut begun = None;
         let mut ended = None;
+        let mut synced = 0;
         if restart {
             match agent.restart() {
                 Ok(()) => restart = false,
                 Err(e) => failed.push(e),
             }
         }
+        // The pool synced past the groups of a history a rewind import
+        // abandoned (M2.7d), and nothing begun while the daemon's newest
+        // cut still does not open as itself: no cut could carry it.
+        let mut clear = false;
         if !restart {
+            match agent.sync_past(go) {
+                Ok(Past::Clear { synced: k }) => {
+                    // An end asked during the syncs begins nothing: the
+                    // begin would be a new step after it (Astra's P2 on
+                    // #170). The settle below then ends at once.
+                    synced = k;
+                    clear = k == 0 || go();
+                }
+                Ok(Past::Unseen) => clear = true,
+                Ok(Past::Behind {
+                    synced: k,
+                    group,
+                    why,
+                }) => {
+                    synced = k;
+                    let _ = writeln!(
+                        err,
+                        "skyzfs-agent: round {n}: no publish begun: the newest cut, of group \
+                         {group}, does not open as itself: {why}"
+                    );
+                }
+                Err(e) => {
+                    // As a begin's error ([`restarts`]); the syncs change
+                    // nothing that the engine saves, so a restart only
+                    // costs a reading of the record.
+                    let reload = restarts(&e);
+                    failed.push(e);
+                    if reload {
+                        if let Err(again) = agent.restart() {
+                            failed.push(again);
+                            restart = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !restart && clear {
             match agent.begin() {
                 Ok(name) => begun = Some(name),
                 Err(e) => {
@@ -1032,6 +1136,7 @@ pub fn schedule<Z: Zfs, D: Daemon, K: Keep, C: Clock>(
             skipped: passed.saturating_sub(1),
             begun,
             under_way: agent.record().under_way.len(),
+            synced,
         };
         let _ = out.write_all(round_line(&round).as_bytes());
         let _ = out.flush();
