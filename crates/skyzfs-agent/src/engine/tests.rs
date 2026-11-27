@@ -4922,4 +4922,184 @@ mod past {
         );
         assert_eq!(newest(&world).map(|(_, itself)| itself), Some(true));
     }
+
+    /// A daemon that counts no cut after any sync gets one sync a call,
+    /// and the bound still ends them: `NoCut` does not start the count
+    /// again (R11 of the review of #170: one sync a round for ever).
+    #[test]
+    fn a_sync_that_makes_no_cut_still_counts_toward_the_bound() {
+        let world = rewound(5);
+        world.borrow_mut().plain_sync = true;
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        for n in 0..SYNC_PAST_MAX {
+            let past = agent.sync_past(&mut || true).expect("synced");
+            assert!(
+                matches!(
+                    past,
+                    Past::Behind {
+                        synced: 1,
+                        why: Stuck::NoCut,
+                        ..
+                    }
+                ),
+                "{n}: {past:?}"
+            );
+        }
+        let past = agent.sync_past(&mut || true).expect("seen");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 0,
+                    why: Stuck::Bound,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        assert_eq!(syncs(&world), SYNC_PAST_MAX as usize);
+    }
+
+    /// The premise is checked before the first sync of each call, not
+    /// only of the first call: a pool attached to between two rounds is
+    /// not synced (R7 of the review of #170).
+    #[test]
+    fn the_premise_is_checked_at_each_call() {
+        let world = rewound(5);
+        world.borrow_mut().plain_sync = true;
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true).expect("synced");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 1,
+                    why: Stuck::NoCut,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        world.borrow_mut().user(User::Attach, "");
+        assert_eq!(newest(&world).map(|(_, itself)| itself), Some(false));
+        let past = agent.sync_past(&mut || true);
+        assert!(matches!(past, Err(Error::Premise(_))), "{past:?}");
+        assert_eq!(syncs(&world), 1);
+    }
+
+    /// A daemon that holds no cut (a state begun anew) starts the count
+    /// again, as a cut that opens as itself does (R1 of the review of
+    /// #170).
+    #[test]
+    fn no_cut_held_starts_the_count_again() {
+        let world = rewound(10_000);
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true).expect("synced");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    why: Stuck::Bound,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        world.borrow_mut().daemon.cuts.clear();
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("seen"),
+            Past::Clear { synced: 0 }
+        );
+        world
+            .borrow_mut()
+            .sync("a person's change, below the abandoned top");
+        let past = agent.sync_past(&mut || true).expect("synced");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: SYNC_PAST_MAX,
+                    why: Stuck::Bound,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+    }
+
+    /// `NoCut` is judged against the count before the last sync, not the
+    /// first: a sync that makes cuts and then one that makes none end
+    /// there (R5 of the review of #170).
+    #[test]
+    fn no_cut_is_judged_from_the_last_sync() {
+        let world = rewound(10);
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let watched = world.clone();
+        let mut asked = 0;
+        let mut go = move || {
+            asked += 1;
+            if asked == 2 {
+                watched.borrow_mut().plain_sync = true;
+            }
+            true
+        };
+        let past = agent.sync_past(&mut go).expect("synced");
+        assert!(
+            matches!(
+                past,
+                Past::Behind {
+                    synced: 2,
+                    why: Stuck::NoCut,
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        assert_eq!(syncs(&world), 2);
+    }
+
+    /// The syncs of a call that failed after some returned are told
+    /// ([`Agent::last_synced`], L2 of the review of #170), and a call
+    /// that runs none says 0.
+    #[test]
+    fn the_syncs_before_a_failure_are_told() {
+        let world = rewound(10);
+        {
+            let mut world = world.borrow_mut();
+            world.assist_fails = 1;
+            world.assist_fails_after = 2;
+        }
+        let keep = MemKeep::default();
+        let mut agent = agent(&world, &keep);
+        let past = agent.sync_past(&mut || true);
+        assert!(matches!(past, Err(Error::Zfs(_))), "{past:?}");
+        assert_eq!(agent.last_synced(), 2);
+        world.borrow_mut().daemon.cuts.clear();
+        assert_eq!(
+            agent.sync_past(&mut || true).expect("seen"),
+            Past::Clear { synced: 0 }
+        );
+        assert_eq!(agent.last_synced(), 0);
+    }
+}
+
+/// An end asked before a pass of `settle_while` names what is still
+/// under way, and the pass's count and sweep do not run (R19 of the
+/// review of #170; `run` treats both results alike).
+#[test]
+fn an_end_before_a_pass_names_what_is_under_way() {
+    let world = World::new(Mode::Idle);
+    let keep = MemKeep::default();
+    let mut agent = agent(&world, &keep);
+    let name = agent.begin().expect("begun");
+    let before = world.borrow().calls.len();
+    match agent.settle_while(Duration::from_secs(60), &mut || false) {
+        Err(Error::Unsettled(names)) => assert_eq!(names, vec![name]),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(world.borrow().calls.len(), before);
 }
