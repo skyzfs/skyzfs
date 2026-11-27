@@ -307,9 +307,8 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 }
             }
         }
-        if self.halt(go) {
-            return Ok(());
-        }
+        // No ask here either: the drops of names given up are a save,
+        // and each step there asks before it goes.
         self.retain_given_up(&mut steps, go)
     }
 
@@ -436,9 +435,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
         stuck.rotate_left(first);
         stuck.truncate(STUCK_STEPS);
         for (name, members) in stuck {
-            if self.halt(go) {
-                break;
-            }
+            // `destroy_members` asks before its first call to ZFS.
             self.at.clone_from(&name);
             match self.destroy_members(&name, &members, go)? {
                 Destroyed::All => {

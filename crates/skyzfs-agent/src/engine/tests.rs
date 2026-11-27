@@ -5398,7 +5398,7 @@ fn a_give_up_at_intent_leaves_what_was_seen() {
         assert_eq!(seen, after, "the take landed");
         let mut again = agent(&world, &keep);
         assert!(
-            matches!(again.record().under_way[0].phase, Phase::Intent { .. }),
+            matches!(again.record().under_way[0].phase, Phase::Intent),
             "{:?}",
             again.record().under_way[0].phase
         );

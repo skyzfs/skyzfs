@@ -11,7 +11,9 @@ use super::super::fake::{
 use super::super::{Agent, Effect, Error, Outcome, Point, Points};
 use super::{ABANDONED_KEEP_DEFAULT, STEPS_MAX, STUCK_FORGOTTEN, STUCK_STEPS};
 use crate::plan::Report;
-use crate::record::{Left, Member, Record, Retire, Stuck, Why, RETIRING_MAX, STUCK_MAX};
+use crate::record::{
+    Left, Member, Record, Retire, Stuck, Why, ABANDONED_MAX, RETIRING_MAX, STUCK_MAX,
+};
 
 type FakeAgent = Agent<FakeZfs, FakeDaemon, MemKeep, FakeClock>;
 
@@ -874,10 +876,12 @@ fn asks(world: &Rc<RefCell<World>>) -> usize {
         .count()
 }
 
-/// Two names past `--keep`, one given up past its time, and one stuck:
-/// a round with a step of each kind.
+/// Two names past `--keep`, two given up past their time (one by a
+/// person, whose `snap/T` is absent, so that it is looked up and then
+/// destroyed), and one stuck: a round with a step of each kind.
 fn every_kind() -> (Rc<RefCell<World>>, MemKeep, Vec<String>) {
-    let (world, keep, names) = published(5);
+    let (world, keep, names) = published(6);
+    world.borrow_mut().refs.remove(&names[2]);
     let now = world.borrow().now_ms;
     change_record(&keep, |r| {
         let given_up = r.published.remove(0);
@@ -893,6 +897,13 @@ fn every_kind() -> (Rc<RefCell<World>>, MemKeep, Vec<String>) {
             members: stuck.members,
             at_ms: now,
         });
+        let person = r.published.remove(0);
+        r.abandoned.push(crate::record::Abandoned {
+            name: person.name,
+            why: Why::Person,
+            at_ms: now,
+            left: Left::Members(person.members),
+        });
     });
     world.borrow_mut().advance(ABANDONED_KEEP_DEFAULT);
     world.borrow_mut().calls.clear();
@@ -904,12 +915,14 @@ fn every_kind() -> (Rc<RefCell<World>>, MemKeep, Vec<String>) {
 /// ends with no error, and the next round retires the rest, each name
 /// told once (M2 of the review of #179, and Codex's P1 on retain.rs:176).
 /// `go` and the note are asked before each step, each name stuck tried
-/// again and each call to ZFS; a round with nothing to stop it makes 18
-/// asks here (two retires, four members reads, twelve destroys), and the stop is put before each of them.
+/// again and each call to ZFS; a round with nothing to stop it makes 23
+/// asks here (two retires, one look, five members reads, fifteen
+/// destroys), and the stop is put before each of them: it must come
+/// before that ask, not at the next ask after it.
 ///
-/// Mutants: `go` not asked before a step, a retry of a name stuck, a
-/// members read or a member's destroy; the note not asked there; a halt
-/// that goes on to the next step.
+/// Mutants: `go` not asked before a step, a look, a members read or a
+/// member's destroy; the note not asked there; a halt that goes on to
+/// the next step.
 #[test]
 fn an_end_or_a_note_stops_retention_before_its_next_ask() {
     use skyzfs_control::failure::{Failure, Held, Reason};
@@ -925,7 +938,7 @@ fn an_end_or_a_note_stops_retention_before_its_next_ask() {
         assert_eq!(a.record().published.len(), 1);
         asks(&world)
     };
-    assert_eq!(whole, 18, "the round's asks");
+    assert_eq!(whole, 23, "the round's asks");
     for note in [false, true] {
         for k in 0..whole {
             let (world, keep, names) = every_kind();
@@ -957,6 +970,7 @@ fn an_end_or_a_note_stops_retention_before_its_next_ask() {
             let at = format!("note={note} k={k}");
             a.retain_while(&mut go).expect(&at);
             let stopped = stopped_at.borrow().expect(&at);
+            assert_eq!(stopped, k, "{at}: no ask of `go` before the ask");
             assert_eq!(asks(&world), stopped, "{at}: asked after the stop");
             let mut told = retired(a.outcomes());
             drop(a);
@@ -966,10 +980,10 @@ fn an_end_or_a_note_stops_retention_before_its_next_ask() {
             next.retain().expect(&at);
             told.extend(retired(next.outcomes()));
             told.sort();
-            assert_eq!(told, names[..4].to_vec(), "{at}");
+            assert_eq!(told, names[..5].to_vec(), "{at}");
             assert!(next.record().stuck.is_empty(), "{at}");
             assert!(next.record().abandoned.is_empty(), "{at}");
-            for t in &names[..4] {
+            for t in &names[..5] {
                 assert!(snaps_of(&world, t).is_empty(), "{at}: {t}");
             }
         }
@@ -1125,6 +1139,8 @@ fn a_look_refused_destroys_nothing() {
         FakeZfs(world.clone()),
         LookRefused {
             daemon: FakeDaemon(world.clone()),
+            code: skyzfs_control::Code::Store,
+            looks: Rc::default(),
         },
         keep.clone(),
         FakeClock(world.clone()),
@@ -1138,9 +1154,12 @@ fn a_look_refused_destroys_nothing() {
     assert!(a.outcomes().is_empty(), "{:?}", a.outcomes());
 }
 
-/// The fake daemon, whose `look` is refused `store`.
+/// The fake daemon, whose `look` is refused with `code`; `looks`
+/// counts them.
 struct LookRefused {
     daemon: FakeDaemon,
+    code: skyzfs_control::Code,
+    looks: Rc<std::cell::Cell<usize>>,
 }
 
 impl super::super::Daemon for LookRefused {
@@ -1150,8 +1169,9 @@ impl super::super::Daemon for LookRefused {
         manifest: &[u8],
     ) -> std::io::Result<skyzfs_control::Reply> {
         if let skyzfs_control::Request::Look(_) = request {
+            self.looks.set(self.looks.get() + 1);
             return Ok(skyzfs_control::Reply::Refused(
-                skyzfs_control::Code::Store,
+                self.code,
                 "object storage: away".into(),
             ));
         }
@@ -1439,4 +1459,130 @@ fn a_given_up_destroy_the_host_did_not_run_stays_given_up() {
     a.retain().expect("retained again");
     assert_eq!(retired(a.outcomes()), vec![t.clone()]);
     assert!(!a.record().names(&t));
+}
+
+/// How many times the round asked the daemon `what`.
+fn asked(world: &Rc<RefCell<World>>, what: &str) -> usize {
+    world.borrow().calls.iter().filter(|c| **c == what).count()
+}
+
+/// A look not answered, by an error or by `no-answer`, ends the round's
+/// asks of the daemon: of three names a person gave up, one is looked up
+/// a round; a look refused for another reason does not (L2 of the review
+/// of #179, for the looks). Mutants: a look's error or `no-answer` that
+/// leaves the round's asks on; the looks not stopped when they are off.
+#[test]
+fn a_look_not_answered_ends_the_round_s_looks() {
+    let (world, keep, _) = given_up_by_a_person(3);
+    let away = world.borrow().now_ms + 60_000;
+    world.borrow_mut().away_until = away;
+    let mut a = agent(&world, &keep);
+    world.borrow_mut().calls.clear();
+    a.retain().expect("retained");
+    assert_eq!(asked(&world, "look"), 1, "an error");
+    assert_eq!(a.record().abandoned.len(), 3);
+    for (code, looks) in [
+        (skyzfs_control::Code::NoAnswer, 1),
+        (skyzfs_control::Code::Store, 3),
+    ] {
+        let (world, keep, _) = given_up_by_a_person(3);
+        let counted = Rc::default();
+        let mut a = Agent::new(
+            FakeZfs(world.clone()),
+            LookRefused {
+                daemon: FakeDaemon(world.clone()),
+                code,
+                looks: Rc::clone(&counted),
+            },
+            keep.clone(),
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent");
+        a.retain().expect("retained");
+        assert_eq!(counted.get(), looks, "{code:?}");
+        assert_eq!(a.record().abandoned.len(), 3, "{code:?}");
+    }
+}
+
+/// A retire not answered by an error ends the round's retires: of
+/// three names past `--keep`, one is asked a round (L2 of the review of
+/// #179, the error's arm; `no-answer` is in `program/tests.rs`).
+/// Mutant: an error that leaves the round's asks on.
+#[test]
+fn a_retire_not_answered_by_an_error_ends_the_round_s_retires() {
+    let (world, keep, names) = published(4);
+    let away = world.borrow().now_ms + 60_000;
+    world.borrow_mut().away_until = away;
+    let mut a = agent(&world, &keep);
+    a.set_keep(1);
+    world.borrow_mut().calls.clear();
+    a.retain().expect("retained");
+    assert_eq!(asked(&world, "retire"), 1);
+    assert!(retired(a.outcomes()).is_empty());
+    world.borrow_mut().away_until = 0;
+    a.retain().expect("retained again");
+    assert_eq!(retired(a.outcomes()), names[..3].to_vec());
+}
+
+/// Where the names given up alone keep the next begin from its room,
+/// the oldest leave early, each looked up first: with `snap/T` there,
+/// the local snapshot is kept and the name is forgotten for a person
+/// (M1 of the review of #179, as the lead ruled). Only as many leave as
+/// [`Record::abandoned_over`] counts, and the newer stay.
+///
+/// Mutants: an early name not looked up; the newest leaving first.
+#[test]
+fn the_oldest_given_up_leave_early_for_room_looked_up_first() {
+    let (world, keep, names) = published(2);
+    let now = world.borrow().now_ms;
+    let (oldest, newer) = (names[0].clone(), names[1].clone());
+    change_record(&keep, |r| {
+        let published = std::mem::take(&mut r.published);
+        for (k, p) in published.into_iter().enumerate() {
+            r.abandoned.push(crate::record::Abandoned {
+                name: p.name,
+                why: Why::ManifestLost,
+                at_ms: now - 2_000 + 1_000 * k as u64,
+                left: Left::Members(p.members),
+            });
+        }
+        for i in 0..ABANDONED_MAX - 2 {
+            r.abandoned.push(crate::record::Abandoned {
+                name: format!("n{i}"),
+                why: Why::Premise,
+                at_ms: now,
+                left: Left::Nothing,
+            });
+        }
+    });
+    let kept = snaps_of(&world, &oldest);
+    assert!(!kept.is_empty());
+    let mut a = agent(&world, &keep);
+    assert_eq!(a.record().abandoned_over(), 1);
+    world.borrow_mut().calls.clear();
+    a.retain().expect("retained");
+    assert_eq!(
+        snaps_of(&world, &oldest),
+        kept,
+        "the local snapshot is kept"
+    );
+    assert!(
+        world.borrow().refs.contains_key(&oldest),
+        "the ref is touched"
+    );
+    assert!(
+        matches!(
+            a.outcomes(),
+            [(n, Outcome::Forgotten(why))]
+                if *n == oldest && why.starts_with("snap/t exists though given up;")
+        ),
+        "{:?}",
+        a.outcomes()
+    );
+    assert_eq!(asked(&world, "look"), 1);
+    assert_eq!(a.record().abandoned.len(), ABANDONED_MAX - 1);
+    assert!(a.record().abandoned.iter().any(|g| g.name == newer));
+    assert_eq!(a.record().abandoned_over(), 0);
 }

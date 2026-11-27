@@ -443,7 +443,7 @@ fn at_the_bound_of_keep_a_slack_of_publishes_is_left() {
     assert!(record.room(), "the slack's last");
     record.published.push(one);
     assert!(!record.room());
-    assert!(PUBLISHED_SLACK >= 64);
+    const { assert!(PUBLISHED_SLACK >= 64) };
 }
 
 /// Where the names given up alone stand between the record and its
