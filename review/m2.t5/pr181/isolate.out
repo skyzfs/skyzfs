@@ -1,0 +1,5 @@
+S released while held: original: pin_S_released=FAILED exit=1; planted: pin_S_released=ok exit=0
+S released three rounds after: original: pin_S_released=FAILED exit=1; planted: pin_S_released=ok exit=0
+B kept name marked ref only: original: pin_B_kept=FAILED exit=1; planted: pin_B_kept=ok exit=0
+B retired said twice: original: pin_B_retired=FAILED exit=1; planted: pin_B_retired=ok exit=0
+B retired out of order in a round: original: pin_B_retired=FAILED exit=1; planted: pin_B_retired=ok exit=0

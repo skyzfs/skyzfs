@@ -1,0 +1,64 @@
+caught  due_retired counts the last round: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  due_retired keeps one more: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  judge_keep < not <=: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+MISSED  judge_keep fewer-after branch dropped: MISSED
+caught  judge_in_round +2: caught test_retired_a_round_late
+caught  judge_in_round no report exemption: caught test_late_where_a_report_names_it
+caught  judge_gone allowed ignored: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  judge_gone allowed by name only: caught test_a_retired_name_left_under_a_rig_snapshots_name_with_another_guid
+caught  judge_gone no ref check: caught test_a_retired_name_with_a_ref
+caught  judge_gone no record check: caught test_a_retired_name_in_the_record
+caught  judge_kept no commit check: caught test_a_kept_name_on_another_commit_in_the_record
+MISSED  judge_kept no retire check: MISSED
+caught  judge_kept no pool@t check: caught test_a_kept_name_with_no_pool_snapshot
+caught  judge_kept no ref commit: caught test_a_kept_name_on_another_commit
+MISSED  K record: stuck/abandoned unchecked: MISSED
+MISSED  K record: published unchecked: MISSED
+MISSED  K others: guid unchecked: MISSED
+caught  K others premise: rounds unchecked: caught test_the_others_made_late
+MISSED  retired_once ignores order: MISSED
+MISSED  retired_once ignores duplicates: MISSED
+caught  retire_log ignores order: caught test_retire_lines_out_of_order
+caught  retire_log ignores commit: caught test_a_retire_line_on_another_commit
+caught  S children: grandchild may stay: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  S children: root may go: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  S said: dedup unchecked: caught test_said_twice
+caught  S said: first report text unchecked: caught test_said_of_the_root
+MISSED  S stuck: published allowed: MISSED
+caught  S stuck: node B unchecked: caught test_the_ref_kept_while_stuck
+caught  S others_go_on +1: caught test_the_others_wait
+MISSED  S released +3: MISSED
+MISSED  S released may be before: MISSED
+caught  S released twice ok: caught test_retired_three_rounds_after | test_retired_twice
+caught  S request_log unfiltered want: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  X_WANT X-retain said 0/1: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  X said counts run2 only: caught test_retire_said_twice
+caught  X-destroy: nothing gone wanted: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  X kill side ignored: caught test_not_killed | test_killed
+caught  B steps: 9 a round allowed: caught test_nine_in_a_round_with_a_report
+caught  B steps: first round unchecked: caught test_seven_in_round_one
+caught  B kept_60 unchecked: caught test_retired_at_keep_60
+caught  A-old: same round ok: caught test_too_old_retired_in_the_round_that_gave_it_up
+MISSED  A-old: twice ok: MISSED
+caught  A-old: left unchecked: caught test_too_old_left_nothing | test_too_old_left_unknown
+caught  A-nothing: lines unchecked: caught test_nothing_forgotten | test_nothing_said
+MISSED  A-nothing: pool @t unchecked: MISSED
+MISSED  A-members: twice ok: MISSED
+MISSED  A-members: record unchecked: MISSED
+caught  status: served-again ignored: caught test_the_daemon_served_again
+caught  status: commit unchecked: caught test_a_retire_on_another_commit
+caught  status: counted unchecked: caught test_the_status_counts_a_gone | test_the_status_counts_one_retire_less
+caught  holds: any tag: caught test_a_hold_of_another_tag_is_not_the_agents
+caught  holds: none: caught test_a_hold_left
+caught  verdicts.tsv ignored: caught test_a_verdict_beats_an_error | test_a_verdict_of_the_recorder
+MISSED  rig-error.tsv ignored: MISSED
+caught  case rig-error ignored: caught test_a_case_with_the_rigs_error
+caught  watcher not judged: caught test_the_watcher_saw_a_verdict | test_the_watcher_wrote_nothing | test_every_pin_holds
+caught  read_out round starts 0: caught test_given_up_in_round_one | test_given_up_not_the_one_round_one_began | test_no_name_before_the_kill
+caught  read_dump allows dup: caught test_dump
+caught  control: MISSED not failing: caught test_the_control_missed
+MISSED  main: exception is exit 1: MISSED
+MISSED  ctl_K_keep_3 judged at 2: MISSED
+caught  premise_B_backlog never: caught test_a_report_makes_round_one_unjudged | test_nine_in_a_round_with_a_report
+
+[exited with code 0]
