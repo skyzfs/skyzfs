@@ -1,0 +1,25 @@
+head 78c3997bfab4550213c9420fd3bef1ce679fc779 clean=0
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+fmt rc=0
+clippy plain rc=0
+test plain rc=0 2146 passed 0 failed 16 ignored
+doc plain rc=0
+disk avail 9.8G
+clippy skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+test skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0 2205 passed 0 failed 16 ignored
+doc skyzfsd_test-hooks+skyzfs-local_test-hooks rc=0
+disk avail 9.7G
+clippy skyzfs-agent-cli_test-hooks rc=0
+test skyzfs-agent-cli_test-hooks rc=0 2146 passed 0 failed 16 ignored
+doc skyzfs-agent-cli_test-hooks rc=0
+disk avail 9.7G
+clippy skyzfs-ublk-sys_control-test-program rc=0
+test skyzfs-ublk-sys_control-test-program rc=0 2170 passed 0 failed 18 ignored
+doc skyzfs-ublk-sys_control-test-program rc=0
+disk avail 9.4G
+agent repeat 1 rc=0 363 passed 0 failed
+agent repeat 2 rc=0 363 passed 0 failed
+agent repeat 3 rc=0 363 passed 0 failed
+agent repeat 4 rc=0 363 passed 0 failed
+agent repeat 5 rc=0 363 passed 0 failed
+done

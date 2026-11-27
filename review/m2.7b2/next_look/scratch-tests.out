@@ -1,0 +1,24 @@
+# scratch tests at 78c3997 (plant tree, restored after: 0 changed)
+## run 1: cargo test -p skyzfs-agent --lib review179n (both scratch files in)
+test zfs::cli::tests::review179n_the_destroy_of_one_member ... ok
+test zfs::cli::tests::review179n_a_member_already_gone_is_destroyed ... FAILED
+test program::tests::retention_in_rounds::review179n_a_backlog_of_marked_names_starves_the_early_leave ... FAILED
+thread 'zfs::cli::tests::review179n_a_member_already_gone_is_destroyed' panicked at crates/skyzfs-agent/src/zfs/cli/tests.rs:3530:5:
+  left: Err(Other("zfs destroy tank/db@skz-1: exit 1: could not find any snapshots to destroy; check snapshot names."))
+ right: Ok(())
+thread 'program::tests::retention_in_rounds::review179n_a_backlog_of_marked_names_starves_the_early_leave' panicked at crates/skyzfs-agent/src/program/tests.rs:3822:9:
+while stopped: 44 of 300 rounds began nothing, the first at round Some(256), 256 names given up; after the uploader is back, the first round that began is Some(2) of 10
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 356 filtered out; finished in 1.41s
+## B-cli-one-other planted, cargo test -p skyzfs-agent --lib review179n_the_destroy_of_one_member
+test zfs::cli::tests::review179n_the_destroy_of_one_member ... FAILED
+thread 'zfs::cli::tests::review179n_the_destroy_of_one_member' panicked at crates/skyzfs-agent/src/zfs/cli/tests.rs:3495:5:
+assertion failed: matches!(cli(fake).destroy_one("tank", "tank/db", "skz-1"),
+## B-cli-one-gone planted, cargo test -p skyzfs-agent --lib review179n_the_destroy_of_one_member
+test zfs::cli::tests::review179n_the_destroy_of_one_member ... FAILED
+thread 'zfs::cli::tests::review179n_the_destroy_of_one_member' panicked at crates/skyzfs-agent/src/zfs/cli/tests.rs:3501:5:
+assertion `left == right` failed
+  left: Err(NoSnapshot)
+ right: Ok(())
+## B-cli-one-guard planted, cargo test -p skyzfs-agent --lib review179n_the_destroy_of_one_member
+test zfs::cli::tests::review179n_the_destroy_of_one_member ... FAILED
+thread 'zfs::cli::tests::review179n_the_destroy_of_one_member' panicked at crates/skyzfs-agent/src/zfs/cli/tests.rs:3510:9:
