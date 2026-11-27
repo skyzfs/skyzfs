@@ -109,7 +109,8 @@
 //!   (`skyzfs_upload::publish`).
 //! - `progress`: how the publish of T stands. `done` names the commit
 //!   (H, 64 hex digits) that `snap/T` names. `unknown`: not asked of
-//!   this daemon's uploader, or its end has left the 1024 kept.
+//!   this daemon's uploader, or its end has left the 1024 kept, or a
+//!   `retire` of T since answered `retired` or `gone`.
 //! - `withdraw`: end the publish of T, unless it is made already. One
 //!   whose transaction may have landed is looked up first, and so may
 //!   still read `pending` and then `done`. While it still pends so, the
@@ -147,7 +148,10 @@
 //!   step of its own, `no-answer` while the uploader is in a long step
 //!   (the transaction may still land: ask again), and `refused stopped`
 //!   once the uploader steps no more. A retire of a name whose publish
-//!   pends on this uploader is refused `asked`.
+//!   pends on this uploader is refused `asked`. A retire answered
+//!   `retired` or `gone` ends what the uploader kept of the publish of
+//!   T: `progress` then answers `unknown`, as a daemon started anew
+//!   would; a retire refused keeps it.
 //!
 //! A name T that no publish can have
 //! ([`valid_name`]) is refused `name` by each of
@@ -464,9 +468,11 @@ pub enum Code {
     /// The daemon has no uploader.
     NoUpload,
     /// What answers the request has ended: the uploader, for a publish,
-    /// its progress, its withdrawal or a retire (whose transaction may
-    /// have landed: ask again); for `cuts`, the store's queue, whose desk
-    /// is closed once the store is no longer served.
+    /// its progress, its withdrawal or a retire; for `cuts`, the store's
+    /// queue, whose desk is closed once the store is no longer served.
+    /// This daemon answers `ended` from then on. A publish or a retire
+    /// that the uploader took and dropped may have landed: `look`, which
+    /// does not go through the uploader, tells.
     Ended,
     /// What answers the request did not answer within the limit: the
     /// uploader, for a publish, its progress, its withdrawal or a retire

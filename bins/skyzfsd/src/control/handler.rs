@@ -175,7 +175,7 @@ fn answer<R: RefStore>(
                     reply: tx,
                 },
             )?;
-            match wait(waiter, rx, PUBLISH_AGAIN)? {
+            match wait(waiter, rx, &PUBLISH_AGAIN)? {
                 Answer::Accepted => Reply::Accepted,
                 Answer::Refused(why) => Reply::Refused(code_of(&why), why.to_string()),
             }
@@ -183,12 +183,12 @@ fn answer<R: RefStore>(
         Request::Progress(name) => {
             let (tx, rx) = oneshot::channel();
             send(inbox, Control::Progress(name.clone(), tx))?;
-            reply_of(&wait(waiter, rx, PUBLISH_AGAIN)?)
+            reply_of(&wait(waiter, rx, &PUBLISH_AGAIN)?)
         }
         Request::Withdraw(name) => {
             let (tx, rx) = oneshot::channel();
             send(inbox, Control::Withdraw(name.clone(), tx))?;
-            reply_of(&wait(waiter, rx, PUBLISH_AGAIN)?)
+            reply_of(&wait(waiter, rx, &PUBLISH_AGAIN)?)
         }
         Request::Look(name) => look(waiter, lookup, name)?,
         Request::Retire(r) => {
@@ -203,7 +203,7 @@ fn answer<R: RefStore>(
                     reply: tx,
                 },
             )?;
-            retired_reply(&wait(waiter, rx, RETIRE_AGAIN)?)
+            retired_reply(&wait(waiter, rx, &RETIRE_AGAIN)?)
         }
     })
 }
@@ -236,31 +236,47 @@ fn send(inbox: &mpsc::Sender<Control>, control: Control) -> Result<(), Reply> {
     })
 }
 
-/// What a `no-answer` of a publish, its progress or its withdrawal adds.
-const PUBLISH_AGAIN: &str = "a publish may have been taken: ask again, or withdraw it";
+/// What a publish, its progress or its withdrawal adds to an answer
+/// that is not the uploader's: after `no-answer` and after `ended`.
+const PUBLISH_AGAIN: Advice = Advice {
+    no_answer: "a publish may have been taken: ask again, or withdraw it",
+    ended: "a publish it took may have landed: look tells",
+};
 
-/// What a `no-answer` of a retire adds: the uploader takes it at its
-/// next turn, so it may still be made.
-const RETIRE_AGAIN: &str = "the retire may still be made: ask again, which answers gone once it is";
+/// What a retire adds: after `no-answer`, the uploader takes it at its
+/// next turn, so it may still be made; after `ended`, this daemon
+/// answers `ended` from then on, so asking it again tells nothing (L4 of
+/// the next look at #175).
+const RETIRE_AGAIN: Advice = Advice {
+    no_answer: "the retire may still be made: ask again, which answers gone once it is",
+    ended: "the retire may have landed: look tells (absent once it has)",
+};
+
+/// What an answer that is not the uploader's adds, by the code.
+struct Advice {
+    no_answer: &'static str,
+    ended: &'static str,
+}
 
 /// The uploader's answer, waited for at most the waiter's limit. A
 /// `no-answer`, and an `ended` where the uploader took the request and
-/// dropped it, end with `again`.
-fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>, again: &str) -> Result<T, Reply> {
+/// dropped it, end with the advice of `again` for each.
+fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>, again: &Advice) -> Result<T, Reply> {
     match waiter.within(rx)? {
         Some(Ok(answer)) => Ok(answer),
         // The uploader dropped the request unanswered: it has ended,
         // perhaps in the request's own step, which may have landed.
         Some(Err(_)) => Err(Reply::Refused(
             Code::Ended,
-            format!("the uploader has ended; {again}"),
+            format!("the uploader has ended; {}", again.ended),
         )),
         None => Err(Reply::Refused(
             Code::NoAnswer,
             format!(
                 "the uploader did not answer within what was left of the \
-                 request's {} s; {again}",
-                waiter.limit.as_secs_f64()
+                 request's {} s; {}",
+                waiter.limit.as_secs_f64(),
+                again.no_answer
             ),
         )),
     }

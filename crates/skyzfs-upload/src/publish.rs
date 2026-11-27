@@ -299,7 +299,8 @@ pub enum Progress {
     Expired,
     /// Withdrawn by the agent ([`Publishing::withdraw`]), and dropped.
     Withdrawn,
-    /// Not asked of this uploader, or its outcome has left the view.
+    /// Not asked of this uploader, or its outcome has left the view, or
+    /// a retire of the name since ended it ([`Publishing::retired`]).
     Unknown,
 }
 

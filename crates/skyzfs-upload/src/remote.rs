@@ -24,6 +24,9 @@ use crate::row::{self, ROW_KEY};
 /// moved between the read and the transaction.
 pub const RETIRE_TRIES: usize = 3;
 
+/// The text of a retire refused for want of the volume's lease row.
+const NO_LEASE_ROW: &str = "it has no lease row, which the daemon makes when it takes the lease";
+
 /// What [`Remote::retire`] found and did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Retired {
@@ -171,7 +174,9 @@ pub trait Remote {
     /// transaction, delete the ref, compared with the value read just
     /// before, and its row. A ref that moved between the read and the
     /// transaction is read again, at most [`RETIRE_TRIES`] times in all,
-    /// and then the error is [`RemoteError::Conflict`]. As for a publish,
+    /// and then the error is [`RemoteError::Conflict`]; a refs store that
+    /// fences writes and has no lease row for the volume gives
+    /// [`RemoteError::Volume`] (L5 of the next look at #175). As for a publish,
     /// no error says that the transaction did not land: asked again, a
     /// retire that landed finds [`Retired::Gone`]. The commit's blocks and
     /// the manifests stay, for garbage collection (M4).
@@ -376,7 +381,15 @@ where
                     key: snap_row_key(name),
                 },
             ];
-            match self.refs.transact(self.vol, ops).await? {
+            let outcome = self.refs.transact(self.vol, ops).await.map_err(|e| {
+                match RemoteError::from(e) {
+                    // `LeaseLost` with no holder, which the engine maps
+                    // to a conflict: not `snap/T` moving.
+                    RemoteError::Conflict => RemoteError::Volume(NO_LEASE_ROW.into()),
+                    other => other,
+                }
+            })?;
+            match outcome {
                 TxnOutcome::Committed => return Ok(Retired::Retired),
                 TxnOutcome::Conflict { actual, .. } => current = actual,
             }

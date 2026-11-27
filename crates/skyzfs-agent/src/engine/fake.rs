@@ -1377,16 +1377,42 @@ impl World {
                     manifest_hash: manifest::hash(&r.manifest),
                 }),
             },
-            // As the daemon retires (M2.7b-1): only where `snap/T` names
-            // the request's commit.
-            Request::Retire(r) => match self.refs.get(&r.name) {
-                None => Reply::Gone,
-                Some(s) if s.commit == r.commit => {
-                    self.refs.remove(&r.name);
-                    Reply::Retired
+            // As the daemon retires (M2.7b-1): refused `stopped` once
+            // the uploader has stopped and `asked` while a publish of the
+            // name pends; otherwise only where `snap/T` names the
+            // request's commit. `retired` and `gone` end what the daemon
+            // kept of the name's publish, so that its progress then
+            // answers `unknown` (D4 of the review of #175; L3 of its next
+            // look).
+            Request::Retire(r) => {
+                if self.daemon.stopped {
+                    return Ok(Reply::Refused(
+                        Code::Stopped,
+                        "the uploader has stopped".into(),
+                    ));
                 }
-                Some(_) => Reply::Refused(Code::Other, "snap/T names another commit".into()),
-            },
+                if self.daemon.pending.iter().any(|p| p.request.name == r.name) {
+                    return Ok(Reply::Refused(
+                        Code::Asked,
+                        "a publish of the name pends".into(),
+                    ));
+                }
+                let reply = match self.refs.get(&r.name) {
+                    None => Reply::Gone,
+                    Some(s) if s.commit == r.commit => {
+                        self.refs.remove(&r.name);
+                        Reply::Retired
+                    }
+                    Some(_) => {
+                        return Ok(Reply::Refused(
+                            Code::Other,
+                            "snap/T names another commit".into(),
+                        ))
+                    }
+                };
+                self.daemon.ended.remove(&r.name);
+                reply
+            }
         })
     }
 

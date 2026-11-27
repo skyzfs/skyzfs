@@ -1386,6 +1386,37 @@ mod uploader {
         let _ = thread.join();
     }
 
+    /// A request that the uploader took and dropped unanswered reads
+    /// `ended` with the advice of its verb: `look` tells whether it
+    /// landed, and not "ask again", which this daemon would answer
+    /// `ended` (G10 and L4 of the next look at #175, its scratch test S4).
+    ///
+    /// Mutants: the bare text, or no-answer's advice after `ended`.
+    #[test]
+    fn a_request_the_uploader_dropped_reads_ended_with_advice() {
+        let (mut handler, thread) = uploader_with(|control, _| drop(control));
+        let retire = Request::Retire(Retire {
+            name: "t".into(),
+            commit: [0xc0; 32],
+        });
+        let words = [
+            handler(&retire, Vec::new()).line(),
+            handler(&publish(None), b"12345".to_vec()).line(),
+        ];
+        for line in &words {
+            assert!(
+                line.starts_with("refused ended the uploader has ended; "),
+                "{line}"
+            );
+            assert!(line.contains("look tells"), "{line}");
+            assert!(!line.contains("ask again"), "{line}");
+        }
+        assert!(words[0].contains("retire"), "{}", words[0]);
+        assert!(words[1].contains("publish"), "{}", words[1]);
+        drop(handler);
+        let _ = thread.join();
+    }
+
     /// A full inbox is not waited on, and does not hold back the count of
     /// cuts, which the desk gives (F1 of the review of #127).
     ///

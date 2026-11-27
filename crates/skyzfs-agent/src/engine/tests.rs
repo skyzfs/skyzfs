@@ -490,6 +490,47 @@ fn a_publish_with_no_loss_is_published_in_each_mode() {
     }
 }
 
+/// The fake daemon retires as skyzfsd does: a retire that lands, or
+/// finds no `snap/T`, ends what it kept of the publish, so that its
+/// progress answers `unknown`; one refused `other` keeps it; a retire is
+/// refused `stopped` once the uploader has stopped (D5 and L3 of the
+/// next look at #175).
+///
+/// Mutants: the outcome kept after `retired`; `stopped` not refused.
+#[test]
+fn the_fake_daemon_retires_as_skyzfsd_does() {
+    let ran = run(Mode::Busy, Fault::None);
+    let world = ran.world.clone();
+    let (t, commit) = {
+        let w = world.borrow();
+        let (t, r) = w.refs.iter().next().expect("snap/t");
+        (t.clone(), r.commit)
+    };
+    let mut daemon = FakeDaemon(world.clone());
+    let mut ask = |request: Request| daemon.ask(&request, &[]).expect("an answer");
+    assert_eq!(ask(Request::Progress(t.clone())), Reply::Done(commit));
+    let other = ask(Request::Retire(skyzfs_control::Retire {
+        name: t.clone(),
+        commit: [0xee; 32],
+    }));
+    assert!(matches!(other, Reply::Refused(Code::Other, _)), "{other:?}");
+    assert_eq!(ask(Request::Progress(t.clone())), Reply::Done(commit));
+    let retire = Request::Retire(skyzfs_control::Retire {
+        name: t.clone(),
+        commit,
+    });
+    assert_eq!(ask(retire.clone()), Reply::Retired);
+    assert_eq!(ask(Request::Progress(t.clone())), Reply::Unknown);
+    assert_eq!(ask(retire.clone()), Reply::Gone);
+    world.borrow_mut().stop_uploader();
+    let mut daemon = FakeDaemon(world.clone());
+    let stopped = daemon.ask(&retire, &[]).expect("an answer");
+    assert!(
+        matches!(stopped, Reply::Refused(Code::Stopped, _)),
+        "{stopped:?}"
+    );
+}
+
 /// The agent's run with the daemon rebooted just after each of its first
 /// `reboots` requests was accepted, on an idle pool: the held cuts are
 /// lost, and a request asked anew (with a count read after the hold) is

@@ -382,3 +382,26 @@ async fn a_retire_that_lands_unheard_deleted_the_ref_and_its_row_together() {
     let mut remote = fx.remote();
     assert_eq!(remote.retire("t", commit).await, Ok(Retired::Gone));
 }
+
+/// A refs store that fences writes and has no lease row for the volume
+/// refuses the retire's transaction on its first try: given as the
+/// volume's state, and not as `snap/T` moving under each of the tries
+/// (L5 of the next look at #175). Nothing is deleted.
+///
+/// Mutant: the missing row given as [`RemoteError::Conflict`].
+#[tokio::test]
+async fn a_retire_with_no_lease_row_is_refused_as_the_volume() {
+    let mut fx = Fixture::new(77).await;
+    let commit = published(&mut fx).await;
+    let refs: Refs = Arc::new(ObjectRefStore::new(fx.store.clone()));
+    let acting = Arc::new(skynbd_refs::ActingRefStore::new(refs, "a holder", 1));
+    let mut remote = EngineRemote::new(fx.store.clone(), acting, fx.vol, cfg());
+    let refused = remote.retire("t", commit).await;
+    assert!(
+        matches!(&refused, Err(RemoteError::Volume(why)) if why.contains("no lease row")),
+        "{refused:?}"
+    );
+    let (found, row) = snap(&fx, "t").await;
+    assert!(names(&found, commit), "{found:?}");
+    assert!(row.is_some(), "the row is kept");
+}

@@ -112,10 +112,12 @@
 //! queued ([`Control::Retire`]), and taken at the next turn as a step of
 //! its own, before the publishes' and the cut's, under the lease and
 //! the fence as they are ([`Driver::retire`]). It is answered after
-//! that step. It is refused at once where the asker has stopped
-//! waiting, where the uploader steps no more, or where a publish of
-//! the name pends; one asked before the lease is first held waits for
-//! it, and a stop answers each retire that waits `stopped`. A retire
+//! that step. It is refused at once where the uploader steps no more,
+//! or where a publish of the name pends. One whose asker has stopped
+//! waiting is dropped unanswered, when it is asked or at its turn, and
+//! taken when it is asked again; one asked before the lease is first
+//! held waits for it, and a stop answers each retire that waits
+//! `stopped`. A retire
 //! that lands, or finds no `snap/T`, ends what the uploader kept of the
 //! name's publish ([`Publishing::retired`]).
 //!
@@ -335,8 +337,10 @@ pub enum RetireRefused {
 }
 
 /// The text of a retire that failed for [`RetireRefused::Store`]. A
-/// conflict of a retire is `snap/T` moving under it, not the head or a
-/// cut's row as for a publish ([`RemoteError::Conflict`]'s own text).
+/// conflict of a retire is `snap/T` moving under it at each try, not the
+/// head or a cut's row as for a publish ([`RemoteError::Conflict`]'s own
+/// text): [`crate::remote::Remote::retire`] gives a missing lease row as
+/// [`RemoteError::Volume`] (L5 of the next look at #175).
 fn retire_failed(e: &RemoteError) -> String {
     match e {
         RemoteError::Conflict => format!(
@@ -1021,5 +1025,27 @@ mod tests {
         assert_eq!(run(&mut turns, 1, 20 * S, S), "P");
         turns.restart();
         assert_eq!(run(&mut turns, 4, S, S), "CPCP");
+    }
+
+    /// A retire given up after its tries is worded as a retire's
+    /// conflict, naming object storage once; any other error keeps its
+    /// own text (G6 of the next look at #175, its scratch test S5).
+    ///
+    /// Mutants: the conflict worded as a publish's, or with no "object
+    /// storage".
+    #[test]
+    fn a_retire_that_gave_up_is_worded_as_a_retire() {
+        let text = retire_failed(&RemoteError::Conflict);
+        assert_eq!(
+            text,
+            format!(
+                "object storage: snap/T moved under each of {} tries",
+                crate::remote::RETIRE_TRIES
+            )
+        );
+        assert_eq!(
+            retire_failed(&RemoteError::Store("down".into())),
+            "object storage: down"
+        );
     }
 }
