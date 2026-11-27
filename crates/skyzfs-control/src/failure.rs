@@ -148,7 +148,9 @@ pub fn encode_failure(stored: &StoredFailure) -> [u8; FAILED_LEN] {
     bytes
 }
 
-fn decode_failure(bytes: &[u8]) -> Option<StoredFailure> {
+/// The note in `bytes`; `None` where they are not a whole note of
+/// this version.
+pub fn decode_failure(bytes: &[u8]) -> Option<StoredFailure> {
     let whole = bytes.len() == FAILED_LEN
         && &bytes[..8] == FAILED_MAGIC
         && bytes[40] <= 2
@@ -206,9 +208,12 @@ pub fn parse_boot_id(text: &str) -> Option<[u8; 16]> {
     Some(boot)
 }
 
+/// Where the kernel names this boot ([`parse_boot_id`]).
+pub const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
+
 /// This boot, as the kernel names it.
 pub fn boot_id() -> io::Result<[u8; 16]> {
-    let text = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    let text = fs::read_to_string(BOOT_ID)?;
     parse_boot_id(&text).ok_or_else(|| not_whole("the kernel's boot id is not a UUID"))
 }
 

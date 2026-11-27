@@ -2982,6 +2982,10 @@ impl Daemon for Blind {
     fn device(&mut self) -> io::Result<u64> {
         self.0.device()
     }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        self.0.failure()
+    }
 }
 
 /// A publish stopped for a person by a `done` that `look` did not see,
@@ -3893,6 +3897,10 @@ impl Daemon for LostAnswer {
     fn device(&mut self) -> io::Result<u64> {
         FakeDaemon(self.world.clone()).device()
     }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        FakeDaemon(self.world.clone()).failure()
+    }
 }
 
 /// An ask sent in this process whose answer is lost (`Err` or
@@ -4001,6 +4009,10 @@ impl Daemon for LoseNth {
 
     fn device(&mut self) -> io::Result<u64> {
         FakeDaemon(self.world.clone()).device()
+    }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        FakeDaemon(self.world.clone()).failure()
     }
 }
 

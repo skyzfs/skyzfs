@@ -11,6 +11,7 @@ use super::*;
 use crate::engine::fake::{
     Back, FakeClock, FakeDaemon, FakeZfs, MemKeep, Mode, Restart, User, World, POOL, VOLUME,
 };
+use crate::engine::Noted;
 use crate::record::{Abandoned, Count, Enrolled, Member, Publish, Record, Taken};
 
 fn args(line: &str) -> Vec<String> {
@@ -678,6 +679,10 @@ impl Daemon for Blind {
     fn device(&mut self) -> io::Result<u64> {
         self.0.device()
     }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        self.0.failure()
+    }
 }
 
 fn agent_on<D: Daemon>(
@@ -1117,6 +1122,9 @@ impl Daemon for Slow {
     }
     fn device(&mut self) -> io::Result<u64> {
         self.daemon.device()
+    }
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        self.daemon.failure()
     }
 }
 

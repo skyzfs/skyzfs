@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use skyzfs_control::{Code, CutsReply, Publish as PublishRequest, Reply, Request, SnapReply};
 
-use super::{Clock, Daemon};
+use super::{Clock, Daemon, Noted};
 use crate::manifest::{self, Kind, Manifest};
 use crate::record::{self, Keep, Loaded, Record, SaveError};
 use crate::zfs::{
@@ -493,6 +493,8 @@ pub struct World {
     /// The agent's sync tasks that land before those of `assist_fails`
     /// begin to fail.
     pub assist_fails_after: u32,
+    /// The daemon's failure note of this boot ([`Daemon::failure`]).
+    pub noted: Option<Noted>,
     abandon_next: bool,
     err_low_next: bool,
     erred_low: bool,
@@ -543,6 +545,7 @@ impl World {
             plain_sync: false,
             assist_fails: 0,
             assist_fails_after: 0,
+            noted: None,
             abandon_next: mode == Mode::Abandoned,
             err_low_next: false,
             erred_low: false,
@@ -1693,6 +1696,10 @@ impl Daemon for FakeDaemon {
 
     fn device(&mut self) -> io::Result<u64> {
         Ok(DEVICE)
+    }
+
+    fn failure(&mut self) -> io::Result<Option<Noted>> {
+        Ok(self.0.borrow().noted)
     }
 }
 

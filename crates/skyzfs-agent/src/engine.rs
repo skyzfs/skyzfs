@@ -199,6 +199,25 @@ pub trait Daemon {
     fn ask(&mut self, request: &Request, manifest: &[u8]) -> io::Result<Reply>;
     /// The device number (`st_rdev`) of the volume's block device.
     fn device(&mut self) -> io::Result<u64>;
+    /// The failure note of this boot in the volume's run directory
+    /// (`skyzfs_control::failure`): what a daemon leaves when its volume
+    /// fails, or when a start refuses the volume as failed, before it
+    /// deletes the device and exits (design §4.2). `None` where there is
+    /// none, or it is of another boot. A file there that is not a whole
+    /// note is [`Noted::NotWhole`]. An error is one of reading it.
+    fn failure(&mut self) -> io::Result<Option<Noted>>;
+}
+
+/// A failure note of this boot, as [`Daemon::failure`] reads it (M2.7c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Noted {
+    /// A whole note: whether a client held the device, why the volume
+    /// failed, and the store's identity.
+    Failed(skyzfs_control::failure::Failure),
+    /// A file there that is not a whole note, so of no known boot. The
+    /// daemon counts that as a failure while a client held the device
+    /// (`skyzfs_ublk::records`), and so does the agent.
+    NotWhole,
 }
 
 /// The wall clock, a clock that does not step, and waiting.
