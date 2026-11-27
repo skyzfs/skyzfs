@@ -582,21 +582,28 @@ is "pretire and pkillret are publish courses by name" \
 is "pkillret serves with the kill after the first retire" \
     "$(grep -c '^        pkillret) SERVE_ARGS=(--kill-at-upload retire:1) ;;$' "$SCRIPT")" 1
 steps_of() { sed -n "/^$1() {\$/,/^}\$/p" "$SCRIPT" | grep -E "$2" | sed 's/^ *//; s/ *\\$//'; }
-is "pretire: e1 and e2 published; e1 retired with e2's commit, looked at, retired, looked at, listed, retired again; e9" \
+is "pretire: e1 and e2 published; e1 retired with e2's commit, looked at, progress, retired, looked at, progress of e1 and e2, listed, retired again; e9; e3 pending, retired, withdrawn" \
     "$(steps_of rec_pretire '^    (pflow|pask|nodeb)')" \
     'pflow e1 e1 --sync --limit-s 300
 pflow e2 e2 --sync --limit-s 300
 pask e1-other retire e1 "$(pcommit e2)"
 pask e1-kept look e1
+pask e1-progress progress e1
 pask e1-retire retire e1 "$(pcommit e1)"
 pask e1-look look e1
+pask e1-progress-after progress e1
+pask e2-progress progress e2
 nodeb refs > "$RDIR/refs-after.txt" 2> "$RDIR/refs-after.err"
 pask e1-again retire e1 "$(pcommit e1)"
-pask e9 retire e9 "$(pcommit e1)"'
-is "pkillret: k1 published, retired (the daemon dies), node B between, the take-over, retired again, looked at" \
+pask e9 retire e9 "$(pcommit e1)"
+pflow e3 e3 --group-plus 1000000 --expiry-s 900 --limit-s 3
+pask e3-retire retire e3 "$(pcommit e1)"
+pask e3-withdraw withdraw e3'
+is "pkillret: k1 published, node B before, retired (the daemon dies), node B between, the take-over, retired again, looked at" \
     "$(steps_of rec_pkillret '^    (pflow|h=|out=|pend|serve_end|printf|nodeb|SERVE_ARGS|serve_start|pask)')" \
     'pflow k1 k1 --sync --limit-s 300
 h=$(pcommit k1)
+nodeb snap-row --snapshot k1 > "$RDIR/k1-before.txt" 2> "$RDIR/k1-before.err"
 out=$(pagent ask retire k1 "$h" 2>> "$RDIR/agent.err") || rc=$?
 pend k1-retire "${out:-none (exit $rc)}"
 serve_end 5 || rig_error "the daemon'"'"'s pid went away and serve_end did not see it end"

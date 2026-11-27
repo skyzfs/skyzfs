@@ -228,18 +228,23 @@ COURSES = {
                   'socket-mode.txt': '600\n'},
     },
     # pretire: e1 and e2 published; e1 retired (refused with e2's commit
-    # first), then asked again; e9 never published. Node B lists e2 only.
+    # first), then asked again; e9 never published; e3 pends, its retire
+    # is refused `asked`, and it is withdrawn. Node B lists e2 only.
     'pretire': {
         'ends': {'e1': 'done commit=' + commit_of('e1'), 'e2': 'done commit=' + commit_of('e2'),
                  'e1-other': f"refused other snap/T names commit {commit_of('e1')}, not the request's; it is "
                              'left as it is',
-                 'e1-kept': look_of('e1', 8, 50), 'e1-retire': 'retired', 'e1-look': 'absent', 'e1-again': 'gone',
-                 'e9': 'gone'},
-        'requests': {'e1': (7, 50, 50), 'e2': (8, 51, 51)},
+                 'e1-kept': look_of('e1', 8, 50), 'e1-progress': 'done commit=' + commit_of('e1'),
+                 'e1-retire': 'retired', 'e1-look': 'absent', 'e1-progress-after': 'unknown',
+                 'e2-progress': 'done commit=' + commit_of('e2'), 'e1-again': 'gone', 'e9': 'gone',
+                 'e3': 'pending after 3 s', 'e3-retire': 'refused asked a publish of the name pends on this daemon',
+                 'e3-withdraw': 'withdrawn'},
+        'requests': {'e1': (7, 50, 50), 'e2': (8, 51, 51), 'e3': (9, 1000052, 52)},
         'rows': {'e2': (9, 51)},
         'log': [(PID, [(8, 50, True), (9, 51, True), ('publish', 'retire', 'e1 refused other'),
                        ('publish', 'retire', 'e1 retired'), ('publish', 'retire', 'e1 gone'),
-                       ('publish', 'retire', 'e9 gone')])],
+                       ('publish', 'retire', 'e9 gone'), ('publish', 'retire', 'e3 refused asked'),
+                       ('publish', 'withdraw', 'e3 withdrawn')])],
         'files': {'refs-after.txt': f'head\t{"f" * 64}\t9\nsnap/e2\t{commit_of("e2")}\t3\n'},
     },
     # pkillret: the daemon killed once k1's retire landed; the next
@@ -253,6 +258,8 @@ COURSES = {
         'files': {'kill.tsv': 'killed_rc\t137\n',
                   'serve.log': 'skyzfsd: test hook --kill-at-upload: killed after the transaction of retire 1 (k1) '
                                'landed, before the uploader knew it\n',
+                  'k1-before.txt': f'ref\t{commit_of("k1")}\t3\n'
+                                   f'snaprow\t{S}\t8\t50\t{commit_of("k1")}\t{ULID}\t1\t{"0" * 64}\n',
                   'k1-between.txt': 'ref\tnone\nsnaprow\tnone\n'},
     },
     # passist: a1 asked with G 5 above its snapshot's group on an idle
@@ -783,11 +790,14 @@ class Retire(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(verdicts(lines, 'pin_e1_other_names_its_own', 'pin_e1_kept', 'pin_e1_not_listed',
                                   'pin_retire_lines', 'pin_e1_absent', 'pin_e9_absent', 'pin_e2_row',
-                                  'pin_e2_nodeb'), ['ok'] * 8)
+                                  'pin_e2_nodeb', 'pin_progress_commits', 'pin_e3_absent',
+                                  'pin_answer_e1-progress-after', 'pin_answer_e3-retire'), ['ok'] * 12)
         rc, lines = run_course('pkillret')
         self.assertEqual(rc, 0)
-        self.assertEqual(verdicts(lines, 'premise_k1_killed_by_the_hook', 'premise_k1_retired_before_the_kill',
-                                  'pin_retire_lines', 'pin_k1_absent'), ['ok'] * 4)
+        self.assertEqual(verdicts(lines, 'premise_k1_killed_by_the_hook', 'pin_k1_retired_whole',
+                                  'pin_retire_lines', 'pin_k1_absent', 'pin_k1_there_before_the_retire'),
+                         ['ok'] * 5)
+        self.assertNotIn('premise_k1_retired_before_the_kill', lines)
 
     def test_other_naming_another_commit_ends_1(self):
         for text in (f"refused other snap/T names commit {commit_of('e2')}, not the request's",
@@ -810,8 +820,9 @@ class Retire(unittest.TestCase):
             self.assertEqual((rc, lines['pin_e1_not_listed'][0]), (1, 'FAILED'), text)
 
     def test_a_listing_that_does_not_read_is_the_rig_s_error(self):
-        rc, lines = run_course('pretire', write('refs-after.txt', 'snap/e2 nothing\n'))
-        self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'))
+        for text in ('snap/e2 nothing\n', f'snap/e2\t{commit_of("e2")}\t\u00b2\n'):
+            rc, lines = run_course('pretire', write('refs-after.txt', text))
+            self.assertEqual((rc, lines['rig_error'][0]), (2, 'ERROR'), text)
 
     def test_e1_still_at_node_b_ends_1(self):
         rc, lines = run_course('pretire', rows={'e1': (8, 50), 'e2': (9, 51)})
@@ -821,7 +832,7 @@ class Retire(unittest.TestCase):
 
     def test_e2_gone_with_e1_ends_1(self):
         # (rows={} would read as the course's own: another name's row stands in.)
-        rc, lines = run_course('pretire', rows={'e3': (10, 52)})
+        rc, lines = run_course('pretire', rows={'e4': (10, 52)})
         self.assertEqual(lines['pin_e2_row'][0], 'FAILED')
         self.assertEqual(rc, 1)
 
@@ -829,12 +840,16 @@ class Retire(unittest.TestCase):
         def log(*instances):
             return write('requests.tsv', log_text(list(instances)))
         swapped = [('publish', 'retire', 'e1 retired'), ('publish', 'retire', 'e1 refused other'),
-                   ('publish', 'retire', 'e1 gone'), ('publish', 'retire', 'e9 gone')]
+                   ('publish', 'retire', 'e1 gone'), ('publish', 'retire', 'e9 gone'),
+                   ('publish', 'retire', 'e3 refused asked')]
         right = [('publish', 'retire', 'e1 refused other'), ('publish', 'retire', 'e1 retired'),
-                 ('publish', 'retire', 'e1 gone'), ('publish', 'retire', 'e9 gone')]
+                 ('publish', 'retire', 'e1 gone'), ('publish', 'retire', 'e9 gone'),
+                 ('publish', 'retire', 'e3 refused asked')]
         for name, change in (('pretire', log((PID, [(8, 50, True), (9, 51, True)] + right), (PID2, []))),
                              ('pretire', log((PID, swapped))),
                              ('pretire', log((PID, swapped[1:]))),
+                             ('pretire', log((PID, right[:-1]))),
+                             ('pretire', log((PID, right[:-1] + [('publish', 'retire', 'e3 retired')]))),
                              ('pretire', log((PID, []))),
                              ('pkillret', log((PID, [('publish', 'retire', 'k1 retired')]),
                                               (PID2, [('publish', 'retire', 'k1 gone')]))),
@@ -843,11 +858,44 @@ class Retire(unittest.TestCase):
             rc, lines = run_course(name, change)
             self.assertEqual((rc, lines['pin_retire_lines'][0]), (1, 'FAILED'), name)
 
-    def test_k1_there_after_the_kill_ends_2(self):
-        for text in (f'ref\t{commit_of("k1")}\t3\nsnaprow\tnone\n',
-                     f'ref\tnone\nsnaprow\t{S}\t8\t50\t{commit_of("k1")}\t{ULID}\t1\t{"0" * 64}\n'):
+    def test_k1_torn_or_there_after_the_kill_ends_1(self):
+        # The hook printed its line once the transaction landed: whatever
+        # is left of snap/k1 is the server's (#178's B1 and D2).
+        row = f'snaprow\t{S}\t8\t50\t{commit_of("k1")}\t{ULID}\t1\t{"0" * 64}\n'
+        for text in (f'ref\t{commit_of("k1")}\t3\nsnaprow\tnone\n', 'ref\tnone\n' + row,
+                     f'ref\t{commit_of("k1")}\t3\n' + row):
             rc, lines = run_course('pkillret', write('k1-between.txt', text))
-            self.assertEqual((rc, lines['premise_k1_retired_before_the_kill'][0]), (2, 'ERROR'), text)
+            self.assertEqual((rc, lines['pin_k1_retired_whole'][0]), (1, 'FAILED'), text)
+
+    def test_k1_not_read_before_the_retire_ends_1(self):
+        row = f'snaprow\t{S}\t8\t50\t{commit_of("k1")}\t{ULID}\t1\t{"0" * 64}\n'
+        for text in ('ref\tnone\nsnaprow\tnone\n', f'ref\t{commit_of("k1")}\t3\nsnaprow\tnone\n',
+                     f'ref\t{commit_of("e2")}\t3\n' + row, 'ref\tnone\n' + row):
+            rc, lines = run_course('pkillret', write('k1-before.txt', text))
+            self.assertEqual((rc, lines['pin_k1_there_before_the_retire'][0]), (1, 'FAILED'), text)
+        rc, lines = run_course('pkillret', answer('k1', 'done commit=' + commit_of('e2')))
+        self.assertEqual((rc, lines['pin_k1_there_before_the_retire'][0]), (1, 'FAILED'))
+
+    def test_progress_on_another_commit_ends_1(self):
+        for label, text in (('e1-progress', 'done commit=' + commit_of('e2')),
+                            ('e2-progress', 'done commit=' + commit_of('e1')),
+                            ('e2-progress', 'done commit=' + commit_of('e2') + ' x'),
+                            ('e2-progress', 'unknown'),            # e1's retire let go of e2's outcome
+                            ('e1-progress', 'done')):
+            rc, lines = run_course('pretire', answer(label, text))
+            self.assertEqual((rc, lines['pin_progress_commits'][0]), (1, 'FAILED'), (label, text))
+
+    def test_a_retired_name_s_progress_done_ends_1(self):
+        # #175's D4: done after the retire is a snapshot no longer listed.
+        rc, lines = run_course('pretire', answer('e1-progress-after', 'done commit=' + commit_of('e1')))
+        self.assertEqual((rc, lines['pin_answer_e1-progress-after'][0]), (1, 'FAILED'))
+
+    def test_a_pending_name_retired_ends_1(self):
+        for text in ('retired', 'gone', 'refused other x'):
+            rc, lines = run_course('pretire', answer('e3-retire', text))
+            self.assertEqual((rc, lines['pin_answer_e3-retire'][0]), (1, 'FAILED'), text)
+        rc, lines = run_course('pretire', rows={'e2': (9, 51), 'e3': (10, 1000052)})
+        self.assertEqual((rc, lines['pin_e3_absent'][0]), (1, 'FAILED'))
 
     def test_k1_at_node_b_after_the_take_over_ends_1(self):
         rc, lines = run_course('pkillret', rows={'k1': (8, 50)})

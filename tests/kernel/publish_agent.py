@@ -48,7 +48,9 @@ anew (`ask cuts`), as the agent's AskAnew does; `ask look T` reads
 `snap/T` as the daemon finds it (`snap ...`, `absent`, `unreadable ...`).
 `ask retire T H` asks the daemon to retire `snap/T` where it names the
 commit H (version 3, M2.7b-1): `retired`, `gone` where there is no
-`snap/T`, `refused other COMMIT` where it names another.
+`snap/T`, `refused other` where it names another (the daemon's text
+names that commit: "snap/T names commit C, not the request's; it is
+left as it is").
 
 The versions (HELLOS). Version 3 is version 2 with `retire` and the
 store's rewind mark in the answer to `cuts` (`rewound=R`), and each
@@ -246,7 +248,8 @@ class Agent:
         return self.ask('look', '--name', name)
 
     def retire(self, name, commit):
-        """`retired`, `gone`, or `refused other COMMIT` (M2.7b-1)."""
+        """`retired`, `gone`, or `refused other`, whose text names the
+        commit snap/T names (M2.7b-1)."""
         return self.ask('retire', '--name', name, '--commit', commit)
 
 

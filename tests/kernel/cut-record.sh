@@ -1962,10 +1962,13 @@ pcommit() {
 # pretire (M2.7b-1): a published snapshot retired, as the monitor
 # retires one it no longer keeps (`skyzfsd retire`). e1 and e2 are
 # published; e1 asked to be retired with e2's commit is refused `other`,
-# naming e1's own, and left as it was (a look reads its row); retired
-# with its own; then looked at (absent), listed by node B (no snap/e1,
-# snap/e2 still there: DIR/refs-after.txt), and retired again: `gone`,
-# as is e9, never published. e2 is then read by node B in full.
+# naming e1's own, and left as it was (a look reads its row, its
+# progress `done`); retired with its own; then looked at (absent), its
+# progress `unknown` and e2's still `done`, listed by node B (no
+# snap/e1, snap/e2 still there: DIR/refs-after.txt), and retired again:
+# `gone`, as is e9, never published. e3, asked with G far above, pends:
+# its retire is refused `asked`, and it is withdrawn. e2 is then read by
+# node B in full.
 rec_pretire() {
     create_pool
     load 1
@@ -1973,12 +1976,18 @@ rec_pretire() {
     pflow e2 e2 --sync --limit-s 300
     pask e1-other retire e1 "$(pcommit e2)"
     pask e1-kept look e1
+    pask e1-progress progress e1
     pask e1-retire retire e1 "$(pcommit e1)"
     pask e1-look look e1
+    pask e1-progress-after progress e1
+    pask e2-progress progress e2
     nodeb refs > "$RDIR/refs-after.txt" 2> "$RDIR/refs-after.err" \
         || rig_error "node B refs failed: $(tail -n 2 "$RDIR/refs-after.err")"
     pask e1-again retire e1 "$(pcommit e1)"
     pask e9 retire e9 "$(pcommit e1)"
+    pflow e3 e3 --group-plus 1000000 --expiry-s 900 --limit-s 3
+    pask e3-retire retire e3 "$(pcommit e1)"
+    pask e3-withdraw withdraw e3
     load 1
     export_pool
 }
@@ -1986,8 +1995,9 @@ rec_pretire() {
 # pkillret (M2.7b-1): the daemon kills itself inside its first retire
 # (--kill-at-upload retire:1), once the transaction that deletes snap/k1
 # and its row has landed and before the uploader knew it. The agent gets
-# no answer. Node B reads snap/k1 between the kill and the take-over
-# (DIR/k1-between.txt: gone, the hook's premise). The next instance,
+# no answer. Node B reads snap/k1 before the retire (DIR/k1-before.txt:
+# there, which shows that the read can see it) and between the kill and
+# the take-over (DIR/k1-between.txt: gone). The next instance,
 # asked the same retire, answers `gone`: a retire is asked again until
 # it is answered, and one that landed is not an error.
 rec_pkillret() {
@@ -1996,6 +2006,8 @@ rec_pkillret() {
     load 1
     pflow k1 k1 --sync --limit-s 300
     h=$(pcommit k1)
+    nodeb snap-row --snapshot k1 > "$RDIR/k1-before.txt" 2> "$RDIR/k1-before.err" \
+        || rig_error "node B snap-row failed: $(tail -n 2 "$RDIR/k1-before.err")"
     out=$(pagent ask retire k1 "$h" 2>> "$RDIR/agent.err") || rc=$?
     pend k1-retire "${out:-none (exit $rc)}"
     for _i in $(seq 1 1200); do kill -0 "$SERVE_PID" 2>/dev/null || break; sleep 0.25; done

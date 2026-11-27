@@ -110,10 +110,16 @@ class Tables(unittest.TestCase):
                 'e2': ('done ',),
                 'e1-other': ('refused other',),       # asked with e2's commit
                 'e1-kept': ('snap ',),                # the refusal deleted nothing
+                'e1-progress': ('done ',),
                 'e1-retire': ('retired',),
                 'e1-look': ('absent',),
+                'e1-progress-after': ('unknown',),    # its outcome let go (#175's D4)
+                'e2-progress': ('done ',),
                 'e1-again': ('gone',),                # landed, asked again: not an error
                 'e9': ('gone',),                      # never published
+                'e3': ('pending after',),
+                'e3-retire': ('refused asked',),      # its publish pends
+                'e3-withdraw': ('withdrawn',),
             },
             'pkillret': {
                 'k1': ('done ',),
@@ -139,7 +145,7 @@ class Tables(unittest.TestCase):
         # mark, c1 withdrawn, tw withdrawn before the kill, a2 withdrawn,
         # e1 and k1 retired, e9 never published.
         self.assertEqual(pc.ABSENT, {'pplain': ('t5', 't3'), 'prewindf': ('f1',), 'prewindc': ('c1',),
-                                     'pkill': ('tw',), 'passist': ('a2',), 'pretire': ('e1', 'e9'),
+                                     'pkill': ('tw',), 'passist': ('a2',), 'pretire': ('e1', 'e9', 'e3'),
                                      'pkillret': ('k1',)})
         # A look at a name published must name its row.
         self.assertEqual(pc.LOOKS, {'pplain': {'t1': 't1-look'}, 'pkillpub': {'p1': 'p1-look'}})
@@ -157,7 +163,8 @@ class Tables(unittest.TestCase):
         # A retire's line is written after the uploader's answer: none
         # in the instance killed after the transaction landed.
         self.assertEqual(pc.RETIRES, {
-            'pretire': [[('e1', 'refused other'), ('e1', 'retired'), ('e1', 'gone'), ('e9', 'gone')]],
+            'pretire': [[('e1', 'refused other'), ('e1', 'retired'), ('e1', 'gone'), ('e9', 'gone'),
+                         ('e3', 'refused asked')]],
             'pkillret': [[], [('k1', 'gone')]]})
 
     def test_killed_by_is_in_the_hook_s_own_words(self):
