@@ -22,8 +22,8 @@ Files beside this one:
 - `scratch-tests.rs`, the review's tests (not for merging as they are),
   with `scratch-tests-head.out` (the two that fail at the head);
 - `fix-L3.diff`, the fix tried for L3;
-- `pr171-reader.out`, PR #171's reader of the round line at its two
-  heads;
+- `pr171-reader.out`, PR #171's reader of the round line at three of
+  its heads;
 - `gates.sh` with `gates.out`.
 
 The scripts take the scratch directory from `$SCRATCH`.
@@ -110,9 +110,10 @@ its `ROUND_LINE` took `synced=K` only as the line's last field under
 `fullmatch`, so a line ending ` bound=0` was a `RigError` (exit 2); its
 head now, 4ccc4b4 ("read the round line's fields after under_way by
 name"), reads fields after `under_way` by name and takes `bound=0` and
-`bound=1` (`pr171-reader.out`). So the order of merging does not matter
-as long as #171 merges at 4ccc4b4 or later. #171 reads `bound` and
-judges nothing on it.
+`bound=1`, and so does its head at the end of this review, 3b9dc1c
+(`pr171-reader.out`). So the order of merging does not matter as long
+as #171 merges at 4ccc4b4 or later. #171 reads `bound` and judges
+nothing on it.
 
 ### (c) "What the bound does not cover" (`program.rs:151-160`)
 
@@ -336,7 +337,18 @@ None blocks.
 
 ## Gates (`gates.sh`, `gates.out`)
 
-GATES_TABLE
+rustc 1.100.0 (`rustup update stable` first: unchanged), in a scratch
+worktree at edf9a17, the target cleaned between feature sets.
+
+| Gate | Plain | `skyzfsd/test-hooks,skyzfs-local/test-hooks` | `skyzfs-ublk-sys/control-test-program` | `skyzfs-agent-cli/test-hooks` |
+|---|---|---|---|---|
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean | clean | clean | clean |
+| `cargo test --workspace` (passed / failed / ignored) | 2019 / 0 / 16 | 2077 / 0 / 16 | 2043 / 0 / 18 | 2019 / 0 / 16 |
+| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps` | clean | clean | clean | clean |
+
+`cargo fmt --all -- --check`: clean. The agent crates' tests
+(`cargo test -p skyzfs-agent -p skyzfs-agent-cli`) twenty times: 0
+failed runs, 266 tests a run. The numbers are the description's.
 
 ## CI
 

@@ -6,3 +6,7 @@ PR 171 at 4ccc4b47d8ad1695853c87a75f255bfa27152c0d: tests/kernel/agent_check.py 
   read   'round 1 ok took_ms=5 late_ms=0 skipped=0 begun=r1 under_way=0 synced=2' -> synced 2
   read   'round 1 ok took_ms=5 late_ms=0 skipped=0 begun=r1 under_way=0 synced=2 bound=0' -> synced 2
   read   'round 1 ok took_ms=5 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=1' -> synced 0
+PR 171 at 3b9dc1c210148c1f8ea2db2d85dfaef2b49d80bf: tests/kernel/agent_check.py read_outputs
+  read   'round 1 ok took_ms=5 late_ms=0 skipped=0 begun=r1 under_way=0 synced=2' -> synced 2
+  read   'round 1 ok took_ms=5 late_ms=0 skipped=0 begun=r1 under_way=0 synced=2 bound=0' -> synced 2
+  read   'round 1 ok took_ms=5 late_ms=0 skipped=0 begun=- under_way=0 synced=0 bound=1' -> synced 0
