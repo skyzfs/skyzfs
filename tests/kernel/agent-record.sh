@@ -5,7 +5,8 @@
 # serves with its uploads (cut-record.sh's CUT_UPLOAD=1), and the rig
 # loses the agent, the daemon or both at each step of a publish; arun
 # drives `skyzfs-agent run`. Sourced by cut-record.sh, which calls the
-# courses by name (rec_aplain, rec_adaemon, rec_arare, rec_arun);
+# courses by name (rec_aplain, rec_adaemon, rec_arare, rec_arun,
+# rec_afail);
 # agent_check.py (their CUT_CHECK) judges what
 # each case left, and node B verifies every snapshot published.
 #
@@ -154,6 +155,8 @@
 # - arun (job R): R-run (run), R-kill (runkill at intent:after:2, the
 #   second round's intent), R-twice (runtwice), R-held (runheld),
 #   R-corrupt and R-volume (runbad), R-rewind (runrewind).
+# - afail (jobs f and fz): a volume that fails while `run` serves
+#   it (M2.7c), cases U and W; below, at rec_afail.
 #
 # A stall (eight asks with no cut counted, then given up) is left to the
 # agent's fakes: on a real daemon a stall needs a cut that is not
@@ -1045,4 +1048,294 @@ rec_arun() {
     acase R-volume runbad "" volume
     acase R-rewind runrewind
     agent_end
+}
+
+# The failure course (afail, parts f and fz; M2.7c, #76): `skyzfs-agent run` on
+# its default schedule (no --every-s: 60 s) on a volume that fails while
+# it is served. The test build's SIGUSR1 fails the volume: the daemon
+# writes the failure note beside its socket ($(vrun)/failed), deletes
+# the device and ends with 3. Every line the run prints, on standard
+# output and on standard error, is stamped with its arrival on the rig's
+# clock (astamp). Two cases, in this order, on one volume:
+#
+# - U: the run's first round with the pool imported; then the pool
+#   exported, and the volume failed. Nothing holds the device, and the
+#   daemon's exclusive open that finds no holder proves none
+#   (skyzfs_ublk_sys::control::client_holds): the note says
+#   held=unknown, which makes the volume lost. The run's wait ends, its
+#   next round takes the step at once, finds the pool not imported
+#   (verdict failed) and goes on. A start without --acknowledge-failure
+#   is refused (4) and settles the note to held=no: the round at the
+#   next tick says that no client held the device and touches nothing.
+#   A start that acknowledges the failure serves the volume afresh (a
+#   new attachment), the pool is imported on its device, and the round
+#   at the tick after ends the run with 12.
+# - W: a writer on the pool and the store frozen; a new run (traced)
+#   whose first round begins a publish that waits for its cut; the
+#   volume fails FAIL_AFTER s after `asked:after`, past the agent's
+#   ASSIST_AFTER of 10 s, so an assist sync may have begun (obs_W_in_flight
+#   says; none had in the runs so far), with the pool
+#   imported on the device (held=yes). The run's wait ends, and its next
+#   round reopens the pool and looks at it until it reads SUSPENDED:
+#   exit 11. Then `run` again in the same directory (again): 11 again,
+#   and no reopen.
+#
+# The pool is left suspended, with no device under it. From each
+# failure on (fail_now) the course has no daemon to stop at its end
+# (DAEMON_GONE) and the cleanup does not export the pool (POOL_LOST),
+# until U serves the volume again and imports the pool; a W that ends
+# before its failure leaves both as U left them. afail is the last
+# recording of its job. The watcher is stopped at the course's end as
+# after any recording (watcher_stop, with no drain: no daemon is left):
+# its verdict goes to the check (pin_watcher_reads), its other errors
+# are the rig's. Its files, in DIR/cases/U and DIR/cases/W:
+#
+# - LABEL.{out,err,rc} (publish, again): the run; LABEL.out.tsv and
+#   LABEL.err.tsv the arrival of each line (its number, the rig's
+#   realtime), LABEL.started-at and LABEL.ended-at the rig's times of
+#   its start and of the end it saw;
+# - fail-at: the signal's time on the rig's realtime and on
+#   CLOCK_MONOTONIC in ns (the trace's clock); failed.rc: the daemon's
+#   status after it (`timeout` where it had not ended in 60 s);
+# - note.tsv: the note as the rig found it after each step (LABEL, its
+#   mtime on the realtime clock, its size; `none -` where there was
+#   none): `failed` after the daemon's end, `refused` after the start
+#   that was refused (U);
+# - refused.{out,err,rc}, refused-at (U): the start without
+#   --acknowledge-failure, and when it ended; served-at (U): the
+#   acknowledged start served and the pool imported on it;
+# - pool-state.txt, pool-state-again.txt (W): the pool's kstat state
+#   after each run; zpool-status.txt, zpool-events.txt (W, bounded);
+# - trace.tsv (W): the first run's points.
+#
+# DIR/zed.tsv says whether zed runs (CUT_AGENT_ZED: on or off, the
+# workflow's choice; the check holds the two against each other), and
+# DIR/zed.log is zed's journal over the course, where it runs.
+# agent_fail_check.py judges the course.
+AGENT_ZED=${CUT_AGENT_ZED:-off}
+[[ $AGENT_ZED =~ ^(on|off)$ ]] || { echo "CUT_AGENT_ZED is on or off, not $AGENT_ZED" >&2; exit 64; }
+FAIL_AFTER=12
+FAILED_PID=""
+# LABEL: the lines CDIR/LABEL.out and LABEL.err hold now, each stamped
+# once, on arrival, in LABEL.out.tsv and LABEL.err.tsv. A line is
+# counted once its newline is written.
+astamp_now() {
+    local f k have
+    for f in out err; do
+        k=$(wc -l 2>/dev/null < "$CDIR/$1.$f.tsv") || k=0
+        have=$(wc -l 2>/dev/null < "$CDIR/$1.$f") || have=0
+        while [ "$k" -lt "$have" ]; do
+            k=$((k + 1))
+            printf '%s\t%s\n' "$k" "$EPOCHREALTIME" >> "$CDIR/$1.$f.tsv"
+        done
+    done
+}
+# LABEL SECONDS [ERE]: the run in the background (AGENT_PID), its lines
+# stamped every 0.05 s, until a line of its output or errors matches
+# ERE (0), it ends (1; the time it was seen to end in LABEL.ended-at),
+# or SECONDS pass (2). A line that came between the stamps and the
+# match is stamped before the return, so that the line matched always
+# has its stamp from before whatever the caller does next.
+astamp() {
+    local t0=$SECONDS
+    while :; do
+        astamp_now "$1"
+        if [ -n "${3:-}" ] && grep -Eq -- "$3" "$CDIR/$1.out" "$CDIR/$1.err" 2>/dev/null; then
+            astamp_now "$1"
+            return 0
+        fi
+        if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+            echo "$EPOCHREALTIME" > "$CDIR/$1.ended-at"
+            astamp_now "$1"
+            return 1
+        fi
+        [ $((SECONDS - t0)) -lt "$2" ] || return 2
+        sleep 0.05
+    done
+}
+# LABEL SECONDS: the run's lines stamped until it ends, for up to
+# SECONDS; then its status (await_agent: one still running is killed,
+# and that is a verdict).
+afinish() {
+    astamp "$1" "$2" || true
+    await_agent "$1" 1
+}
+# LABEL: the run stopped after the rig's own error in the case: its
+# lines stamped, then SIGKILL, its status `killed`. No verdict: the
+# run does not end by itself, and the case is not judged (D1 of #180's
+# review).
+astop() {
+    astamp_now "$1"
+    if [ -n "$AGENT_PID" ]; then
+        kill -9 "$AGENT_PID" 2>/dev/null || true
+        wait "$AGENT_PID" 2>/dev/null || true
+        AGENT_PID=""
+    fi
+    echo killed > "$CDIR/$1.rc"
+}
+# The volume failed by the test build's SIGUSR1 to the daemon serving
+# it, the signal's time on both clocks in CDIR/fail-at. From then on the
+# daemon is FAILED_PID and not SERVE_PID, so that no step of the rig's
+# stops it or takes its end for a verdict, and the end and the cleanup
+# neither stop a daemon nor export the pool (D2 of #180's review).
+fail_now() {
+    python3 -I -c 'import os, signal, sys, time
+r, m = time.time(), time.monotonic_ns()
+os.kill(int(sys.argv[1]), signal.SIGUSR1)
+print(f"{r:.6f}\t{m}")' "$SERVE_PID" > "$CDIR/fail-at" 2>&1 \
+        || rig_error "SIGUSR1 to skyzfsd serve $SERVE_K failed: $(tail -n 1 "$CDIR/fail-at")"
+    FAILED_PID=$SERVE_PID SERVE_PID="" DAEMON_GONE=1 POOL_LOST=1
+    log "$NAME: case $(basename "$CDIR"): the volume failed (SIGUSR1 to skyzfsd serve $SERVE_K)"
+}
+# The failed daemon's end, for up to 60 s: its status in CDIR/failed.rc.
+# One that has not ended is a verdict (`timeout`).
+failed_end() {
+    local _i rc=0
+    for _i in $(seq 1 240); do kill -0 "$FAILED_PID" 2>/dev/null || break; sleep 0.25; done
+    if kill -0 "$FAILED_PID" 2>/dev/null; then
+        echo timeout > "$CDIR/failed.rc"
+        verdict daemon_failed "skyzfsd serve $SERVE_K had not ended 60 s after SIGUSR1: $(tail -n 2 "$(serve_log "$SERVE_K")")"
+        return 0
+    fi
+    wait "$FAILED_PID" 2>/dev/null || rc=$?
+    FAILED_PID=""
+    echo "$rc" > "$CDIR/failed.rc"
+}
+# LABEL: the failure note as it is now, a line of CDIR/note.tsv.
+note_stat() {
+    local f
+    f=$(vrun)/failed
+    if [ -e "$f" ]; then
+        printf '%s\t%s\t%s\n' "$1" "$(stat -c %.9Y "$f")" "$(stat -c %s "$f")" >> "$CDIR/note.tsv"
+    else
+        printf '%s\tnone\t-\n' "$1" >> "$CDIR/note.tsv"
+    fi
+}
+# ID SCENARIO: a case of the failure course (no recover and no settle
+# after it: the volume is not served as before).
+fcase() {
+    CDIR=$RDIR/cases/$1; ADIR=$CDIR/agent; SCEN=$2; KILL=""
+    rm -rf "${CDIR:?}"; mkdir -p "$ADIR"
+    "fail_$2" --trace-points "$CDIR/trace.tsv"
+    printf '%s\t%s\t-\t%s\t-\n' "$1" "$2" "$(cat "$CDIR/publish.rc" 2>/dev/null || echo -)" >> "$RDIR/cases.tsv"
+    log "$NAME: case $1 ($2): run ended $(cat "$CDIR/publish.rc" 2>/dev/null || echo -)"
+    CDIR=""
+}
+# The run in the background on the default schedule, its start stamped.
+frun() {
+    local label=$1
+    shift
+    abg "$label" run "$@"
+    echo "$EPOCHREALTIME" > "$CDIR/$label.started-at"
+}
+# U: lost while the pool is not imported, then held=no, then a new
+# attachment (12). The pool is exported only after a round 1 that left
+# 20 s or more to its tick, so that no round works while the rig
+# exports.
+fail_unknown() {
+    local left rc=0
+    frun publish "$@"
+    if ! astamp publish 180 '^round 1 '; then
+        verdict rounds "no round line 180 s after the run's start: $(tail -n 2 "$CDIR/publish.err")"
+        afinish publish 1
+        return 0
+    fi
+    left=$(awk '/^round 1 / { for (i = 3; i <= NF; i++) { split($i, f, "="); v[f[1]] = f[2] }
+        print 60000 - v["took_ms"] - v["late_ms"]; exit }' "$CDIR/publish.out")
+    if [ "${left:-0}" -lt 20000 ]; then
+        case_error "round 1 left ${left:-0} ms to its tick, not 20 s or more: no time to export the pool between two rounds"
+        astop publish
+        return 0
+    fi
+    writer_off
+    export_pool
+    udevadm settle -t 30 > /dev/null 2>&1 || true
+    fail_now
+    astamp publish 90 '^lost ' || true
+    failed_end
+    note_stat failed
+    # Without the acknowledgement and without the request log: a refused
+    # start is no instance of the recording.
+    timeout 60 "$SKYZFSD" serve --dir "$VOL" --run-dir "$RUN" "${AGENT_SERVE[@]}" > "$CDIR/refused.out" \
+        2> "$CDIR/refused.err" || rc=$?
+    echo "$rc" > "$CDIR/refused.rc"
+    echo "$EPOCHREALTIME" > "$CDIR/refused-at"
+    note_stat refused
+    astamp publish 150 '^round 3 ' || true
+    SERVE_K=$((SERVE_K + 1))
+    SERVE_ARGS=("${AGENT_SERVE[@]}")
+    serve_start "$SERVE_K" acknowledged
+    DAEMON_GONE=""
+    import_pool
+    POOL_LOST=""
+    echo "$EPOCHREALTIME" > "$CDIR/served-at"
+    note_stat served
+    writer_on
+    afinish publish 150
+}
+# W: lost while a publish waits for its cut, the pool imported and the
+# device held: 11, and 11 again.
+fail_wait() {
+    freeze
+    frun publish "$@"
+    if ! wait_point asked after 120; then
+        verdict asked "the run did not reach asked:after in 120 s: $(tail -n 2 "$CDIR/publish.err")"
+        afinish publish 1
+        return 0
+    fi
+    local st=0
+    astamp publish "$FAIL_AFTER" || st=$?
+    if [ "$st" != 2 ]; then
+        verdict publish_waiting "the run ended within $FAIL_AFTER s of asked:after, before the failure: $(tail -n 2 "$CDIR/publish.err")"
+        afinish publish 1
+        return 0
+    fi
+    fail_now
+    afinish publish 90
+    failed_end
+    note_stat failed
+    cat "/proc/spl/kstat/zfs/$POOL/state" > "$CDIR/pool-state.txt" 2>&1 || true
+    frun again
+    afinish again 90
+    cat "/proc/spl/kstat/zfs/$POOL/state" > "$CDIR/pool-state-again.txt" 2>&1 || true
+    # Bounded, and into files: a command on a suspended pool may never
+    # return (tests/lib/lim.sh).
+    lim 30 zpool status -v "$POOL" > "$CDIR/zpool-status.txt" 2>&1 || true
+    lim 30 bash -c 'zpool events -H 2>&1 | head -n 4000' > "$CDIR/zpool-events.txt" 2>&1 || true
+}
+# Whether zed runs, against the workflow's choice; zed's journal over
+# the course at its end.
+afail_zed() {
+    local pid
+    pid=$(pgrep -x zed | head -n 1) || pid=""
+    printf 'want\t%s\nruns\t%s\npid\t%s\n' "$AGENT_ZED" "$([ -n "$pid" ] && echo on || echo off)" "${pid:--}" > "$RDIR/zed.tsv"
+    echo "$EPOCHREALTIME" > "$RDIR/zed-since"
+}
+afail_zed_log() {
+    local since
+    since=$(cut -d. -f1 "$RDIR/zed-since")
+    # shellcheck disable=SC2016 # the inner shell expands $1
+    lim 30 bash -c 'journalctl -u zfs-zed --no-pager -o short-precise --since "@$1" 2>&1 | head -n 2000' _ "$since" \
+        > "$RDIR/zed.log" 2>&1 || true
+}
+# The course's end: the writer killed and not waited for (it may be
+# stuck in the suspended pool), the store thawed, zed's journal read,
+# the watcher stopped with its status kept (watcher_stop; B1 of #180's
+# review). DAEMON_GONE and POOL_LOST are as the cases left them.
+afail_end() {
+    if [ -n "$WRITER" ]; then
+        touch "$WORK/writer.stop"
+        kill -9 "$WRITER" 2>/dev/null || true
+        WRITER=""
+    fi
+    [ -z "$S3_IS_DOWN" ] || thaw
+    afail_zed_log
+    [ -z "$WATCH_PID" ] || watcher_stop
+}
+rec_afail() {
+    afail_zed
+    agent_begin
+    fcase U unknown
+    fcase W wait
+    afail_end
 }

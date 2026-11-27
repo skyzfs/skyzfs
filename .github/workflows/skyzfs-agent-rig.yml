@@ -28,7 +28,12 @@ name: skyzfs-agent-rig
 # SIGTERM between rounds exits 0, a second signal 1, `recover` and
 # `settle` beside it 8, a run killed and started again, a record corrupt
 # or another volume's at a restart 6, and M2.7d's syncs past a rewind
-# import's abandoned groups before the first publish). A Stalled point has no daemon
+# import's abandoned groups before the first publish), f and fz (afail,
+# M2.7c: `run` on its default schedule on a volume
+# that fails while it is served: lost with no pool imported, then failed
+# with no client, a new attachment (12), and lost while a publish waits
+# for its cut (11, and 11 again); f with no zed, fz with zed running;
+# tests/kernel/agent_fail_check.py judges it). A Stalled point has no daemon
 # hook to make it: the engine's fakes cover it (crates/skyzfs-agent),
 # and the power cut under the record is #144's model's.
 #
@@ -47,8 +52,8 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04"]'
       parts:
-        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare), r (arun)"
-        default: '["a1","a2","d","k","r"]'
+        description: "a JSON list of parts: a1 a2 (aplain's two shards), d (adaemon), k (arare), r (arun), f and fz (afail without and with zed)"
+        default: '["a1","a2","d","k","r","f","fz"]'
       points:
         description: "aplain only: the points to kill at (EFFECT:before|after:N, separated by spaces) in place of those the trace reaches; empty: the trace's"
         default: ""
@@ -116,6 +121,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_agent_check.py -v
+      - run: python3 tests/kernel/test_agent_fail_check.py -v
       - run: bash tests/kernel/test_agent_record.sh
       - run: bash tests/kernel/test_cut_record.sh
 
@@ -132,13 +138,13 @@ jobs:
           PARTS: ${{ inputs.parts || '' }}
         run: |
           i=${IMAGES:-'["ubuntu-26.04"]'}
-          p=${PARTS:-'["a1","a2","d","k","r"]'}
+          p=${PARTS:-'["a1","a2","d","k","r","f","fz"]'}
           python3 -c 'import json, sys
           v = json.loads(sys.argv[1])
           ok = {"ubuntu-26.04", "ubuntu-24.04", "ubuntu-26.04-arm", "ubuntu-24.04-arm"}
           assert isinstance(v, list) and v and all(x in ok for x in v), v
           w = json.loads(sys.argv[2])
-          assert isinstance(w, list) and w and len(set(w)) == len(w) and all(x in ("a1", "a2", "d", "k", "r") for x in w), w' "$i" "$p"
+          assert isinstance(w, list) and w and len(set(w)) == len(w) and all(x in ("a1", "a2", "d", "k", "r", "f", "fz") for x in w), w' "$i" "$p"
           echo "images=$i" >> "$GITHUB_OUTPUT"
           echo "parts=$p" >> "$GITHUB_OUTPUT"
 
@@ -174,6 +180,28 @@ jobs:
             exit 2
           fi
           uname -r; sudo zfs version
+      # afail: zed running (fz) or not (f); the course records which and
+      # the check holds it against CUT_AGENT_ZED.
+      - name: zed
+        if: matrix.part == 'f' || matrix.part == 'fz'
+        env:
+          PART: ${{ matrix.part }}
+        run: |
+          . tests/lib/net-try.sh
+          if [ "$PART" = fz ]; then
+            if ! net_try sudo apt-get install -y --no-install-recommends zfs-zed > agent-out/setup-zed.log 2>&1; then
+              tail -n 40 agent-out/setup-zed.log
+              { echo "## Agent rig: the rig's own error, not a verdict"; echo
+                echo "Installing zfs-zed failed in $NET_TRIES tries: $(net_why agent-out/setup-zed.log)"; } > agent-out/summary.md
+              exit 2
+            fi
+            sudo systemctl start zfs-zed || true
+          else
+            sudo systemctl stop zfs-zed 2>/dev/null || true
+            sudo pkill -x zed || true
+          fi
+          sleep 2
+          { echo "part $PART"; pgrep -a -x zed || echo "no zed"; systemctl is-active zfs-zed 2>&1 || true; } | tee agent-out/zed.txt
       # pgsty/minio, pinned as in the cut rig's upload stage.
       - name: Start MinIO
         run: |
@@ -221,10 +249,13 @@ jobs:
             d) rec=adaemon shard=1/1 ;;
             k) rec=arare shard=1/1 ;;
             r) rec=arun shard=1/1 ;;
+            f) rec=afail shard=1/1 zed=off ;;
+            fz) rec=afail shard=1/1 zed=on ;;
             *) echo "::error::not a part: $PART"; exit 64 ;;
           esac
           sudo env CUT_SERVER=daemon CUT_SKYZFSD="$SKYZFSD" CUT_HOLD=0 CUT_UPLOAD=1 \
             CUT_AGENT="$PWD/target/release/skyzfs-agent" CUT_AGENT_SHARD="$shard" CUT_AGENT_POINTS="$POINTS" \
+            CUT_AGENT_ZED="${zed:-off}" \
             CUT_NODEB="$PWD/target/debug/skyzfs-nodeb" SKZ_NODEB="$PWD/target/debug/skyzfs-nodeb" \
             SKZ_S3_ENDPOINT=http://127.0.0.1:9000 \
             SKZ_S3_BUCKET="skyzfs-agent-${{ github.run_id }}-${{ github.run_attempt }}" \
