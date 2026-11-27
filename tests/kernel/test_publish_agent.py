@@ -80,6 +80,8 @@ class Answers(unittest.TestCase):
                      f'cuts attachment={A} state={S} count=\u0663 group=41 opens=itself',
                      f'cuts attachment={A} state={S} count=7 group=\u00b2 opens=itself',
                      f'snap commit={H} state={S} number=\u00b9 group=51 manifest-len=911 manifest-hash={H}',
+                     f'snap commit={H} state={S} number=9 group=\u00b2 manifest-len=911 manifest-hash={H}',
+                     f'snap commit={H} state={S} number=9 group=51 manifest-len=\u0669 manifest-hash={H}',
                      # #140's review, N7: A3 and A5.
                      f'unreadable commit={H[:-1]} why=version', f'unreadable commit={H.upper()} why=no-row',
                      f'snap commit={H} state={S} number=9 group=51 manifest-len=x manifest-hash={H}',
