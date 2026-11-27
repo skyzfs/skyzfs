@@ -1648,7 +1648,9 @@ past_top() {
     local t0=$SECONDS out
     while :; do
         out=$(pagent ask cuts 2>> "$RDIR/agent.err") || rig_error "the agent's cuts ended $?: $out"
-        [[ $out == *" opens=itself" ]] && { log "$NAME: the newest cut opens as itself: $out"; return 0; }
+        # Protocol 2 ends the line with opens=; 3 adds rewound=R after it.
+        [[ $out == *" opens=itself" || $out == *" opens=itself rewound="* ]] \
+            && { log "$NAME: the newest cut opens as itself: $out"; return 0; }
         [ $((SECONDS - t0)) -lt "$1" ] || rig_error "no cut opened as itself $1 s on: $out"
         dd if=/dev/urandom of="$MNT/publish-nudge" bs=4K count=1 status=none
         z 60 zpool sync "$POOL"

@@ -1552,6 +1552,8 @@ class Run(unittest.TestCase):
 
 CUTS_TOP = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=40 group=120 opens=itself'
 CUTS_AFTER = 'cuts attachment=' + 'a' * 32 + ' state=' + 'b' * 32 + ' count=42 group=114 opens=rewind'
+# Protocol 3 (M2.7b-1) ends the answer with the rewind mark.
+CUTS_TOP3, CUTS_AFTER3 = CUTS_TOP + ' rewound=0', CUTS_AFTER + ' rewound=120'
 
 
 # The request log of R-rewind's run: cut 17 opens only as a rewind, cut
@@ -1571,6 +1573,20 @@ class Rewind(unittest.TestCase):
                     'accepted group=12 opens=rewind'):
             with self.assertRaises(RigError, msg=bad):
                 ac.read_cuts(bad)
+        self.assertEqual(ac.read_cuts(CUTS_TOP3 + '\n'), (120, 'itself'))
+        self.assertEqual(ac.read_cuts(CUTS_AFTER3), (114, 'rewind'))
+        for bad in (CUTS_AFTER + ' rewound=x', CUTS_AFTER + ' rewound=', CUTS_AFTER + ' rewound=12 more=1',
+                    CUTS_AFTER + ' other=1', CUTS_AFTER + 'x', CUTS_AFTER + ' rewound=1\u00b2'):
+            with self.assertRaises(RigError, msg=bad):
+                ac.read_cuts(bad)
+
+    def test_read_mark(self):
+        self.assertIsNone(ac.read_mark(CUTS_AFTER))
+        self.assertEqual(ac.read_mark(CUTS_AFTER3 + '\n'), 120)
+        self.assertEqual(ac.read_mark(CUTS_TOP3), 0)
+        for bad in ('', 'refused gone x', CUTS_AFTER + ' rewound=x', CUTS_AFTER + ' rewound=-1'):
+            with self.assertRaises(RigError, msg=bad):
+                ac.read_mark(bad)
 
     def test_rewind_premise(self):
         self.assertEqual(ac.rewind_premise('112\n', CUTS_TOP, CUTS_AFTER), [])
@@ -1580,6 +1596,8 @@ class Rewind(unittest.TestCase):
                                           CUTS_AFTER))
         with self.assertRaises(RigError):
             ac.rewind_premise('', CUTS_TOP, CUTS_AFTER)
+        self.assertEqual(ac.rewind_premise('112', CUTS_TOP3, CUTS_AFTER3), [])
+        self.assertTrue(ac.rewind_premise('112', CUTS_TOP3, CUTS_AFTER3.replace('opens=rewind', 'opens=itself')))
 
     def test_judge_synced(self):
         good, ask = rounds_of(rline(1, 'r1', synced=5), rline(2, 'r2', synced=0)), (18, 'itself')
@@ -1636,6 +1654,19 @@ class Rewind(unittest.TestCase):
                   'pin_R-rewind_ended_on_sigterm', 'pin_R-rewind_no_round_after_sigterm', 'pin_R-rewind_first_run', 'pin_R-rewind_outcome'):
             self.assertEqual(lines[k][0], 'ok', (k, lines))
         self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines['obs_R-rewind_mark'][0], 'INFO', lines)
+        self.assertIn('no rewound=', lines['obs_R-rewind_mark'][1])
+
+    def test_runrewind_protocol_3(self):
+        rc, lines = self.judged(self.case(**{'rewind-top.txt': CUTS_TOP3 + '\n',
+                                             'rewind-cuts.txt': CUTS_AFTER3 + '\n'}))
+        for k in ('premise_R-rewind_rewound', 'pin_R-rewind_synced_past', 'pin_R-rewind_rounds',
+                  'pin_R-rewind_outcome'):
+            self.assertEqual(lines[k][0], 'ok', (k, lines))
+        self.assertEqual(lines['obs_R-rewind_mark'][0], 'INFO', lines)
+        self.assertIn("the daemon's rewind mark is 120; its newest cut before it was of group 120",
+                      lines['obs_R-rewind_mark'][1])
+        self.assertEqual(rc, 0, lines)
 
     def test_runrewind_fails(self):
         for change, key in [
@@ -1666,6 +1697,7 @@ class Rewind(unittest.TestCase):
             rc, lines = self.judged(self.case(**change))
             self.assertEqual(lines['premise_R-rewind_rewound'][0], 'ERROR', (change, lines))
             self.assertNotIn('pin_R-rewind_synced_past', lines)
+            self.assertNotIn('obs_R-rewind_mark', lines)
             self.assertEqual(rc, 2, (change, lines))
         rc, lines = self.judged(self.case(**{'rewind-cuts.txt': 'refused gone x\n'}))
         self.assertEqual(rc, 2, lines)

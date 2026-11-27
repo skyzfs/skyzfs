@@ -443,7 +443,7 @@ past_top_trace() { ( # the opens of each cuts answer in turn, the limit
     RDIR=$(mktemp -d); MNT=$RDIR; NAME=course
     # shellcheck disable=SC2086  # one answer a word
     printf '%s\n' $1 > "$RDIR/opens"
-    pagent() { local o; o=$(head -n 1 "$RDIR/opens"); sed -i 1d "$RDIR/opens"; echo "cuts count=1 opens=$o"; }
+    pagent() { local o; o=$(head -n 1 "$RDIR/opens"); sed -i 1d "$RDIR/opens"; echo "cuts count=1 opens=${o/:/ }"; }
     z() { echo sync >> "$RDIR/syncs"; }
     dd() { :; }; sleep() { :; }
     log() { echo "log $*"; }
@@ -456,6 +456,15 @@ is "past_top: rewind, rewind, itself: two syncs, then done" \
 rc=0 syncs=2"
 is "past_top: a limit passed with no cut opening as itself is the rig's error" \
     "$(past_top_trace "rewind rewind" 0)" "rig_error no cut opened as itself 0 s on: cuts count=1 opens=rewind"
+# Protocol 3 (M2.7b-1): the answer ends with rewound=R.
+is "past_top: protocol 3's rewind, then itself with rewound=: one sync, then done" \
+    "$(past_top_trace "rewind:rewound=95 itself:rewound=95" 60)" \
+    "log course: the newest cut opens as itself: cuts count=1 opens=itself rewound=95
+rc=0 syncs=1"
+is "past_top: protocol 3's rewind alone is never itself" \
+    "$(past_top_trace "rewind:rewound=95" 0)" "rig_error no cut opened as itself 0 s on: cuts count=1 opens=rewind rewound=95"
+is "past_top: opens=itselfx is not itself" \
+    "$(past_top_trace "itselfx" 0)" "rig_error no cut opened as itself 0 s on: cuts count=1 opens=itselfx"
 
 # The order the premises need (#139's B2 and B3).
 order_of() { sed -n "/^$1() {\$/,/^}\$/p" "$SCRIPT" | grep -nE "$2" | cut -d: -f2- | sed 's/^ *//; s/ .*//' | tr '\n' ' '; }
