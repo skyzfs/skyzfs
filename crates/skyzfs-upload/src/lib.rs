@@ -58,6 +58,6 @@ pub use local::{CutsNow, Local, Released, Store, Uploadable};
 pub use look::{Seen, Unread};
 pub use publish::{Answer, Known, Progress, PublishFigures, Publishing, Refusal, Request};
 pub use queued::{Desk, Queued};
-pub use remote::{EngineRemote, Observed, Remote, RemoteError};
+pub use remote::{EngineRemote, Observed, Remote, RemoteError, Retired, RETIRE_TRIES};
 pub use row::{Named, Row, RowError, ROW_KEY, ROW_VERSION};
-pub use uploader::{Control, PublishesShown, Shown, State, Uploader};
+pub use uploader::{Control, PublishesShown, RetireRefused, Shown, State, Uploader};

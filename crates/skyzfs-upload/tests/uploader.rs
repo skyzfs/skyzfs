@@ -17,10 +17,11 @@ use skyzfs_local::inplace::{CommittedCut, InPlace};
 use skyzfs_local::sim::SimDisk;
 use skyzfs_upload::lease::Keeper;
 use skyzfs_upload::publish::{Found, Snapshot, EXPIRY_DEFAULT, EXPIRY_MAX};
-use skyzfs_upload::remote::{Observed, Remote, RemoteError};
+use skyzfs_upload::remote::{Observed, Remote, RemoteError, Retired};
 use skyzfs_upload::uploader::{Control, State, Uploader, AT_REST, IDLE};
 use skyzfs_upload::{
     row, Answer, Doing, EngineRemote, LeaseState, Mismatch, Progress, Publishing, Refusal, Request,
+    RetireRefused,
 };
 
 use common::*;
@@ -330,6 +331,10 @@ impl<R: Remote> Remote for Flaky<R> {
         self.inner.publish(commit, snapshot).await
     }
 
+    async fn retire(&mut self, name: &str, commit: CommitHash) -> Result<Retired, RemoteError> {
+        self.inner.retire(name, commit).await
+    }
+
     fn discard(&mut self) {
         self.inner.discard()
     }
@@ -459,6 +464,10 @@ impl<R: Remote> Remote for Refusing<R> {
         snapshot: &Snapshot<'_>,
     ) -> Result<(), RemoteError> {
         self.inner.publish(commit, snapshot).await
+    }
+
+    async fn retire(&mut self, name: &str, commit: CommitHash) -> Result<Retired, RemoteError> {
+        self.inner.retire(name, commit).await
     }
 
     fn discard(&mut self) {
@@ -1535,6 +1544,10 @@ impl<R: Remote> Remote for Refusals<R> {
         self.inner.publish(commit, snapshot).await
     }
 
+    async fn retire(&mut self, name: &str, commit: CommitHash) -> Result<Retired, RemoteError> {
+        self.inner.retire(name, commit).await
+    }
+
     fn discard(&mut self) {
         self.inner.discard()
     }
@@ -1879,6 +1892,10 @@ impl<R: Remote> Remote for Publishes<R> {
             tokio::time::sleep(self.made_slow).await;
         }
         self.inner.publish(commit, snapshot).await
+    }
+
+    async fn retire(&mut self, name: &str, commit: CommitHash) -> Result<Retired, RemoteError> {
+        self.inner.retire(name, commit).await
     }
 
     fn discard(&mut self) {
@@ -4012,4 +4029,217 @@ async fn a_publish_between_two_whole_cuts_lost_does_not_end_the_waits() {
     let figures = up.driver().expect("the driver").figures().clone();
     assert_eq!((figures.lost_whole, figures.uploaded), (2, uploaded));
     assert_eq!(wait, 2 * MINUTE, "a publish ended the whole waits");
+}
+
+/// What the uploader answers a retire of `name` on `commit`: asked by
+/// [`Uploader::control`], whose own answer comes first, then turned
+/// until it answers, for at most 20 turns.
+async fn retire_of<L, R, F, M>(
+    up: &mut Uploader<L, R, F, M>,
+    name: &str,
+    commit: CommitHash,
+) -> (bool, Result<Retired, RetireRefused>)
+where
+    L: skyzfs_upload::Local,
+    R: Remote,
+    F: RefStore,
+    M: FnMut(u64) -> R,
+{
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    let taken = up.control(Control::Retire {
+        name: name.into(),
+        commit,
+        reply,
+    });
+    for _ in 0..20 {
+        if let Ok(answer) = answer.try_recv() {
+            return (taken, answer);
+        }
+        let wait = up.turn().await;
+        tokio::time::advance(wait).await;
+    }
+    panic!("no answer to the retire of {name} after 20 turns");
+}
+
+/// M2.7b-1: a retire goes through the uploader's turn, under its lease,
+/// and answers what the transaction found. Mutants: the answer of one
+/// outcome given for another; a retire not taken at the next turn.
+#[tokio::test(start_paused = true)]
+async fn a_retire_is_made_by_the_uploader_and_answers_its_outcome() {
+    let mut fx = Fixture::new(91).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    assert_eq!(
+        up.publishing().ask(asked(state, "t", 0, 7)),
+        Answer::Accepted
+    );
+    until_idle(&mut up, 100).await;
+    let head = head_of(&fx).await;
+    assert_eq!(up.publishing().progress("t"), Progress::Done(head));
+
+    assert_eq!(
+        retire_of(&mut up, "t", [0x0b; 32]).await,
+        (true, Ok(Retired::Other(head)))
+    );
+    assert_eq!(snap(&fx, "t").await.0, Some(head), "left as it is");
+    assert_eq!(
+        retire_of(&mut up, "t", head).await,
+        (true, Ok(Retired::Retired))
+    );
+    assert_eq!(snap(&fx, "t").await, (None, None));
+    assert_eq!(
+        retire_of(&mut up, "t", head).await,
+        (true, Ok(Retired::Gone))
+    );
+    assert_eq!(head_of(&fx).await, head, "head is not moved");
+}
+
+/// A retire of a name whose publish pends here is refused at once: the
+/// agent gives a publish up before it retires its name. Mutant: the
+/// retire taken, which could delete what the publish then makes.
+#[tokio::test(start_paused = true)]
+async fn a_retire_of_a_name_that_pends_is_refused_asked() {
+    let mut fx = Fixture::new(92).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    assert_eq!(
+        up.publishing().ask(asked(state, "p", 0, 100)),
+        Answer::Accepted
+    );
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    assert!(!up.control(Control::Retire {
+        name: "p".into(),
+        commit: [1; 32],
+        reply,
+    }));
+    assert_eq!(answer.try_recv(), Ok(Err(RetireRefused::Asked)));
+}
+
+/// The retire's transaction is fenced by the lease's epoch: after
+/// another holder took the lease, it deletes nothing, answers `stopped`,
+/// and the uploader stops as it does for a fenced commit; a retire asked
+/// after that is refused at once. Mutant: a retire through a client that
+/// is not fenced, or a fence answered `store` (which the agent would ask
+/// again for ever).
+#[tokio::test(start_paused = true)]
+async fn a_retire_after_another_took_the_lease_is_fenced_and_stops() {
+    let mut fx = Fixture::new(93).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    assert_eq!(
+        up.publishing().ask(asked(state, "t", 0, 7)),
+        Answer::Accepted
+    );
+    until_idle(&mut up, 100).await;
+    let head = head_of(&fx).await;
+    let before = snap(&fx, "t").await;
+    assert_eq!(before.0, Some(head));
+    clock.pass(TTL + 1);
+    let other = clock
+        .refs(&fx)
+        .lease_acquire(fx.vol, "node-b", TTL)
+        .await
+        .expect("the other's take");
+    assert!(matches!(other, LeaseOutcome::Acquired(l) if l.epoch == 2));
+    assert_eq!(
+        retire_of(&mut up, "t", head).await,
+        (true, Err(RetireRefused::Stopped))
+    );
+    assert_eq!(snap(&fx, "t").await, before, "nothing deleted");
+    let lost = State::LeaseLost {
+        holder: "node-b".into(),
+        epoch: 2,
+    };
+    up.turn().await;
+    assert_eq!(up.shown().state, lost);
+    assert_eq!(
+        retire_of(&mut up, "t", head).await,
+        (false, Err(RetireRefused::Stopped))
+    );
+}
+
+/// Retires that wait when the uploader stops are answered `stopped` in
+/// that turn: none will be taken. Here the lease is another holder's at
+/// the first take. Mutant: the retires left waiting (their asker would
+/// see `no-answer` and ask again for ever).
+#[tokio::test(start_paused = true)]
+async fn retires_that_wait_when_the_uploader_stops_are_refused_stopped() {
+    let mut fx = Fixture::new(94).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let other = clock
+        .refs(&fx)
+        .lease_acquire(fx.vol, "node-b", TTL)
+        .await
+        .expect("the other's take");
+    assert!(matches!(other, LeaseOutcome::Acquired(_)));
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    let mut answers = Vec::new();
+    for name in ["a", "b"] {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        assert!(up.control(Control::Retire {
+            name: name.into(),
+            commit: [1; 32],
+            reply,
+        }));
+        answers.push(answer);
+    }
+    assert_eq!(up.turn().await, AT_REST);
+    assert!(matches!(up.shown().state, State::LeaseLost { .. }));
+    for mut answer in answers {
+        assert_eq!(answer.try_recv(), Ok(Err(RetireRefused::Stopped)));
+    }
+}
+
+/// A retire whose asker stopped waiting is not taken: neither at the
+/// ask, nor at the turn where it would have been. Asked again, it is
+/// taken then. Mutant: the transaction made with no one to answer.
+#[tokio::test(start_paused = true)]
+async fn a_retire_whose_asker_gave_up_is_not_taken() {
+    let mut fx = Fixture::new(95).await;
+    let store = one_cut(&mut fx);
+    let clock = Clock::new();
+    let state = store.cut_state_id().expect("the cut state");
+    let mut up = Uploader::with_slices(store, keeper(&fx, &clock), fenced(&fx, &clock), 16);
+    *up.publishing() = Publishing::new(Some(ATTACHMENT), Some(state));
+    assert_eq!(
+        up.publishing().ask(asked(state, "t", 0, 7)),
+        Answer::Accepted
+    );
+    until_idle(&mut up, 100).await;
+    let head = head_of(&fx).await;
+    let before = snap(&fx, "t").await;
+
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    drop(answer);
+    assert!(!up.control(Control::Retire {
+        name: "t".into(),
+        commit: head,
+        reply,
+    }));
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    assert!(up.control(Control::Retire {
+        name: "t".into(),
+        commit: head,
+        reply,
+    }));
+    drop(answer);
+    for _ in 0..3 {
+        let wait = up.turn().await;
+        tokio::time::advance(wait).await;
+    }
+    assert_eq!(snap(&fx, "t").await, before, "nothing deleted");
+    assert_eq!(
+        retire_of(&mut up, "t", head).await,
+        (true, Ok(Retired::Retired))
+    );
 }

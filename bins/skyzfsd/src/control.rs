@@ -75,7 +75,7 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 
 use skyzfs_upload::publish::SnapRowError;
-use skyzfs_upload::{Progress, Refusal, Seen};
+use skyzfs_upload::{Progress, Refusal, RetireRefused, Retired, Seen};
 
 pub use skyzfs_control::*;
 
@@ -104,6 +104,33 @@ pub fn reply_of(progress: &Progress) -> Reply {
         Progress::Expired => Reply::Expired,
         Progress::Withdrawn => Reply::Withdrawn,
         Progress::Unknown => Reply::Unknown,
+    }
+}
+
+/// The answer to `retire`: the uploader's, or why it retired nothing.
+pub fn retired_reply(answer: &Result<Retired, RetireRefused>) -> Reply {
+    match answer {
+        Ok(Retired::Retired) => Reply::Retired,
+        Ok(Retired::Gone) => Reply::Gone,
+        Ok(Retired::Other(commit)) => Reply::Refused(
+            Code::Other,
+            format!(
+                "snap/T names commit {}, not the request's; it is left as it is",
+                hex(commit)
+            ),
+        ),
+        Err(RetireRefused::Stopped) => Reply::Refused(
+            Code::Stopped,
+            "the uploader steps no more; nothing was retired".into(),
+        ),
+        Err(RetireRefused::Asked) => Reply::Refused(
+            Code::Asked,
+            "a publish of the name pends on this daemon".into(),
+        ),
+        Err(RetireRefused::Store(e)) => Reply::Refused(
+            Code::Store,
+            format!("object storage: {e}; the retire may have landed: ask again"),
+        ),
     }
 }
 
@@ -180,7 +207,7 @@ fn read_request(reader: &mut impl BufRead) -> io::Result<Result<(Request, Vec<u8
     if hello != HELLO {
         return Ok(Err(Reply::Refused(
             Code::Version,
-            format!("this daemon speaks `{HELLO}`"),
+            format!("this daemon speaks `{HELLO}`; deploy the agent and the daemon together"),
         )));
     }
     let line = match read_line(reader) {
@@ -201,6 +228,7 @@ fn read_request(reader: &mut impl BufRead) -> io::Result<Result<(Request, Vec<u8
         Request::Cuts => None,
         Request::Publish(p) => Some(&p.name),
         Request::Progress(name) | Request::Withdraw(name) | Request::Look(name) => Some(name),
+        Request::Retire(r) => Some(&r.name),
     };
     if name.is_some_and(|name| !valid_name(name)) {
         return Ok(Err(Reply::Refused(Code::Name, Refusal::Name.to_string())));

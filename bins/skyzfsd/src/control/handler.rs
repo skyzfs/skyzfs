@@ -29,7 +29,9 @@ use skyzfs_upload::queued::Desk;
 use skyzfs_upload::{Answer, Control};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{code_of, reply_of, seen_reply, Code, CutsReply, Handler, Reply, Request};
+use super::{
+    code_of, reply_of, retired_reply, seen_reply, Code, CutsReply, Handler, Reply, Request,
+};
 use crate::upload::Runtime;
 
 /// How many requests may wait in the uploader's inbox. The channel asks
@@ -144,6 +146,7 @@ fn answer<R: RefStore>(
                 state: now.state,
                 count: now.count,
                 newest: now.newest.map(|cut| (cut.group, cut.itself)),
+                rewound: now.rewound,
             })
         }
         Request::Publish(p) => {
@@ -172,7 +175,7 @@ fn answer<R: RefStore>(
                     reply: tx,
                 },
             )?;
-            match wait(waiter, rx)? {
+            match wait(waiter, rx, PUBLISH_AGAIN)? {
                 Answer::Accepted => Reply::Accepted,
                 Answer::Refused(why) => Reply::Refused(code_of(&why), why.to_string()),
             }
@@ -180,14 +183,28 @@ fn answer<R: RefStore>(
         Request::Progress(name) => {
             let (tx, rx) = oneshot::channel();
             send(inbox, Control::Progress(name.clone(), tx))?;
-            reply_of(&wait(waiter, rx)?)
+            reply_of(&wait(waiter, rx, PUBLISH_AGAIN)?)
         }
         Request::Withdraw(name) => {
             let (tx, rx) = oneshot::channel();
             send(inbox, Control::Withdraw(name.clone(), tx))?;
-            reply_of(&wait(waiter, rx)?)
+            reply_of(&wait(waiter, rx, PUBLISH_AGAIN)?)
         }
         Request::Look(name) => look(waiter, lookup, name)?,
+        Request::Retire(r) => {
+            // Through the uploader, under its lease and fence (the lead's
+            // ?6 of M2.7b): its answer waits for the step under way.
+            let (tx, rx) = oneshot::channel();
+            send(
+                inbox,
+                Control::Retire {
+                    name: r.name.clone(),
+                    commit: r.commit,
+                    reply: tx,
+                },
+            )?;
+            retired_reply(&wait(waiter, rx, RETIRE_AGAIN)?)
+        }
     })
 }
 
@@ -219,8 +236,16 @@ fn send(inbox: &mpsc::Sender<Control>, control: Control) -> Result<(), Reply> {
     })
 }
 
-/// The uploader's answer, waited for at most the waiter's limit.
-fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>) -> Result<T, Reply> {
+/// What a `no-answer` of a publish, its progress or its withdrawal adds.
+const PUBLISH_AGAIN: &str = "a publish may have been taken: ask again, or withdraw it";
+
+/// What a `no-answer` of a retire adds: the uploader takes it at its
+/// next turn, so it may still be made.
+const RETIRE_AGAIN: &str = "the retire may still be made: ask again, which answers gone once it is";
+
+/// The uploader's answer, waited for at most the waiter's limit. A
+/// `no-answer` ends with `again`.
+fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>, again: &str) -> Result<T, Reply> {
     match waiter.within(rx)? {
         Some(Ok(answer)) => Ok(answer),
         // The uploader dropped the request unanswered: it has ended.
@@ -229,8 +254,7 @@ fn wait<T>(waiter: &Waiter<'_>, rx: oneshot::Receiver<T>) -> Result<T, Reply> {
             Code::NoAnswer,
             format!(
                 "the uploader did not answer within what was left of the \
-                 request's {} s; a publish may have been taken: ask again, or \
-                 withdraw it",
+                 request's {} s; {again}",
                 waiter.limit.as_secs_f64()
             ),
         )),

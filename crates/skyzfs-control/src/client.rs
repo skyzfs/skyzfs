@@ -56,7 +56,10 @@ pub fn ask(path: &Path, request: &Request, manifest: &[u8], limit: Duration) -> 
     if hello != HELLO {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("the daemon greets with `{hello}`, not `{HELLO}`"),
+            format!(
+                "the daemon greets with `{hello}`, not `{HELLO}`: the agent and the \
+                 daemon speak different versions of the channel; deploy them together"
+            ),
         ));
     }
     let line = read_line(&mut reader)?;

@@ -514,6 +514,7 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
         ("swap:12", KillAt::Swap(12)),
         ("manifest:1", KillAt::Manifest(1)),
         ("publish:2", KillAt::Publish(2)),
+        ("retire:1", KillAt::Retire(1)),
         ("carry-put:1", KillAt::CarryPut(1)),
         ("carry-swap:3", KillAt::CarrySwap(3)),
     ] {
@@ -534,6 +535,8 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
         "manifest:0",
         "publish:",
         "publish:x",
+        "retire:0",
+        "retire:",
         "snap:1",
         "carry-put:0",
         "carry-swap:",
@@ -832,6 +835,19 @@ fn the_channels_commands_name_a_volume_and_a_request() {
         plain("look --dir /v/a --name pool.t-1_x"),
         ask(Request::Look("pool.t-1_x".into()), None)
     );
+    let h = "c0".repeat(31) + "C1";
+    let mut commit = [0xc0; 32];
+    commit[31] = 0xc1;
+    assert_eq!(
+        plain(&format!("retire --dir /v/a --name pool.t-1_x --commit {h}")),
+        ask(
+            Request::Retire(crate::control::Retire {
+                name: "pool.t-1_x".into(),
+                commit,
+            }),
+            None
+        )
+    );
     let (a, s) = ("a1".repeat(16), "5E".repeat(16));
     let publish = |expiry| Publish {
         name: "t".into(),
@@ -863,6 +879,10 @@ fn the_channels_commands_name_a_volume_and_a_request() {
         ("withdraw --dir /v/a --name t", "withdraw"),
         ("publish-progress --dir /v/a --name t", "publish-progress"),
         ("look --dir /v/a --name t", "look"),
+        (
+            &format!("retire --dir /v/a --name t --commit {h}"),
+            "retire",
+        ),
     ] {
         assert_eq!(plain(line).map(|c| c.name()), Ok(name));
     }
@@ -878,6 +898,16 @@ fn the_channels_commands_name_a_volume_and_a_request() {
         "look --dir /v/a".into(),
         "look --dir /v/a --name a:b".into(),
         "look --dir /v/a --name t --manifest /m".into(),
+        "retire --dir /v/a --name t".into(),
+        format!("retire --dir /v/a --commit {h}"),
+        format!("retire --dir /v/a --name a/b --commit {h}"),
+        format!("retire --dir /v/a --name t --commit {}", &h[2..]),
+        format!("retire --dir /v/a --name t --commit {h}0"),
+        format!(
+            "retire --dir /v/a --name t --commit {}",
+            h.replace('c', "g")
+        ),
+        format!("retire --dir /v/a --name t --commit {h} --manifest /m"),
         full.replace(" --group 41", ""),
         full.replace(" --attachment ", " --attachment 0"),
         full.replace(&format!("--state {s}"), &format!("--state {}", &s[2..])),

@@ -445,6 +445,22 @@ impl<L: Local, R: Remote> Driver<L, R> {
         self.counted(result)
     }
 
+    /// Retire `snap/<name>` where it names `commit` ([`Remote::retire`]):
+    /// a step of its own, asked by the agent's retention (M2.7b). Its
+    /// error is counted as a step's is.
+    pub async fn retire(
+        &mut self,
+        name: &str,
+        commit: CommitHash,
+    ) -> Result<crate::remote::Retired, RemoteError> {
+        let result = self.remote.retire(name, commit).await;
+        if let Err(e) = &result {
+            self.figures.errors += 1;
+            self.figures.last_error = Some(e.clone());
+        }
+        result
+    }
+
     /// The last [`Driver::step_publish`] failed, at `ended`: the publish it
     /// stepped waits ([`Publishing::wait_after`]). Its wait, where it still
     /// pends.

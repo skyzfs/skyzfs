@@ -1972,7 +1972,9 @@ fn may_pend(answer: &Reply) -> bool {
         | Reply::Absent
         | Reply::Cuts(_)
         | Reply::Snap(_)
-        | Reply::Unreadable(_) => true,
+        | Reply::Unreadable(_)
+        | Reply::Retired
+        | Reply::Gone => true,
     }
 }
 

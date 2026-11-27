@@ -6,7 +6,8 @@
 //! volume's head, with the refs object for the row: the writes of a cut,
 //! its sealed segments PUT as it goes (M2.4a), and one commit that swaps
 //! head and the cut's row together. A publish (M2.5) PUTs the manifests
-//! and makes one transaction of its own on the same refs.
+//! and makes one transaction of its own on the same refs, and a retire
+//! (M2.7b) deletes what a publish made there.
 
 use skynbd_engine::{Engine, EngineConfig, EngineError};
 use skynbd_format::{Codec, CommitKind, SnapKind, SnapshotManifest};
@@ -17,6 +18,22 @@ use skyzfs_local::inplace::CommittedCut;
 
 use crate::publish::{manifest_key, snap_ref, snap_row_key, Found, Snapshot};
 use crate::row::{self, ROW_KEY};
+
+/// How many times [`Remote::retire`] reads `snap/<name>` and tries its
+/// transaction, each try after a transaction refused because the ref
+/// moved between the read and the transaction.
+pub const RETIRE_TRIES: usize = 3;
+
+/// What [`Remote::retire`] found and did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retired {
+    /// `snap/<name>` named the commit, and it and its row are deleted.
+    Retired,
+    /// There is no `snap/<name>`: nothing was deleted.
+    Gone,
+    /// `snap/<name>` names this other commit: nothing was deleted.
+    Other(CommitHash),
+}
 
 /// Why a call to object storage failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -149,6 +166,16 @@ pub trait Remote {
         commit: CommitHash,
         snapshot: &Snapshot<'_>,
     ) -> Result<(), RemoteError>;
+
+    /// Retire `snap/<name>` where it names `commit` (M2.7b): in one
+    /// transaction, delete the ref, compared with the value read just
+    /// before, and its row. A ref that moved between the read and the
+    /// transaction is read again, at most [`RETIRE_TRIES`] times in all,
+    /// and then the error is [`RemoteError::Conflict`]. As for a publish,
+    /// no error says that the transaction did not land: asked again, a
+    /// retire that landed finds [`Retired::Gone`]. The commit's blocks and
+    /// the manifests stay, for garbage collection (M4).
+    async fn retire(&mut self, name: &str, commit: CommitHash) -> Result<Retired, RemoteError>;
 
     /// Drop the writes not committed.
     fn discard(&mut self);
@@ -321,6 +348,34 @@ where
             TxnOutcome::Committed => Ok(()),
             TxnOutcome::Conflict { .. } => Err(RemoteError::Conflict),
         }
+    }
+
+    async fn retire(&mut self, name: &str, commit: CommitHash) -> Result<Retired, RemoteError> {
+        let ref_name = snap_ref(name);
+        let mut current = self.refs.get(self.vol, &ref_name).await?;
+        for _ in 0..RETIRE_TRIES {
+            let Some(value) = current else {
+                return Ok(Retired::Gone);
+            };
+            if value.commit != commit {
+                return Ok(Retired::Other(value.commit));
+            }
+            let ops = vec![
+                RefOp::CasRef {
+                    name: ref_name.clone(),
+                    expected: Some(value),
+                    new_commit: None,
+                },
+                RefOp::MetaDelete {
+                    key: snap_row_key(name),
+                },
+            ];
+            match self.refs.transact(self.vol, ops).await? {
+                TxnOutcome::Committed => return Ok(Retired::Retired),
+                TxnOutcome::Conflict { actual, .. } => current = actual,
+            }
+        }
+        Err(RemoteError::Conflict)
     }
 
     fn discard(&mut self) {

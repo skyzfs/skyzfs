@@ -125,6 +125,7 @@ pub const USAGE: &str = "usage:
   skyzfsd publish-progress --dir DIR --name T [--run-dir DIR]
   skyzfsd withdraw --dir DIR --name T [--run-dir DIR]
   skyzfsd look   --dir DIR --name T [--run-dir DIR]
+  skyzfsd retire --dir DIR --name T --commit H [--run-dir DIR]
   skyzfsd help";
 
 /// The test hooks, which a build with the feature `test-hooks` takes and
@@ -138,7 +139,7 @@ pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
                  [--commit-delay-ms N] [--request-log PATH] [--request-log-content hash|whole]
                  [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]
                  [--refuse-one-fetch start|recovery]
-                 [--kill-at-upload put:N|swap:N|manifest:N|publish:N]
+                 [--kill-at-upload put:N|swap:N|manifest:N|publish:N|retire:N]
                  [--kill-at-upload carry-put:N|carry-swap:N]";
 
 /// What a usage error prints: [`USAGE`], and in a build with the test
@@ -342,6 +343,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
   skyzfsd publish-progress --dir DIR --name T [--run-dir DIR]
   skyzfsd withdraw --dir DIR --name T [--run-dir DIR]
   skyzfsd look --dir DIR --name T [--run-dir DIR]
+  skyzfsd retire --dir DIR --name T --commit H [--run-dir DIR]
       Ask the daemon serving the volume, through its channel (the socket
       control in the volume's run directory, made before the daemon
       prints ready; a daemon answers only its own user and root), and print
@@ -370,6 +372,15 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       commit=H why=W, a snap/T whose record cannot be read as its own
       (W: no-row, version, length or other-commit). Object storage that
       fails is refused store, never absent.
+      retire deletes the snapshot snap/T from object storage, its ref
+      and its record in one transaction, where the ref still names the
+      commit H (64 hexadecimal digits): `retired`. `gone` where there is
+      no snap/T; refused other COMMIT where snap/T names another commit,
+      which is left as it is. A retire goes through the uploader, under
+      its lease: refused stopped once the uploader has stopped, and no
+      answer while it is in a long step. A monitor treats `retired` as
+      repeatable: asked again after its answer was lost, the same retire
+      answers `gone`.
       A daemon with no place in object storage, or serving without
       upload, refuses each request no-upload.
 
@@ -474,7 +485,7 @@ pub enum UsageError {
     /// No command, or one that does not exist.
     #[error(
         "expected a command: create, serve, detach, status, cuts, publish, publish-progress, \
-         withdraw or look"
+         withdraw, look or retire"
     )]
     Command,
     /// An argument that is not an option of the command.
@@ -613,6 +624,9 @@ pub enum KillAt {
     /// `publish:N`: once the Nth publish's transaction has landed, before
     /// the uploader knows it.
     Publish(u64),
+    /// `retire:N`: once the Nth retire's transaction has landed, before
+    /// the uploader knows it.
+    Retire(u64),
     /// `carry-put:N`: once the first segment PUT of the cut chosen to
     /// carry the Nth publish accepted has landed (`crate::kill` says
     /// which cut is chosen).
@@ -693,13 +707,15 @@ pub enum Command {
     Detach(Detach),
     /// `status`.
     Status(Volume),
-    /// `cuts`, `publish`, `publish-progress`, `withdraw` or `look`.
+    /// `cuts`, `publish`, `publish-progress`, `withdraw`, `look` or
+    /// `retire`.
     Ask(Ask),
     /// `help`, `--help` or `-h`: print [`HELP`].
     Help,
 }
 
-/// `cuts`, `publish`, `publish-progress`, `withdraw` and `look`: a
+/// `cuts`, `publish`, `publish-progress`, `withdraw`, `look` and
+/// `retire`: a
 /// request to the channel of the daemon that serves a volume ([`crate::control`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
@@ -727,6 +743,7 @@ impl Command {
                 crate::control::Request::Progress(_) => "publish-progress",
                 crate::control::Request::Withdraw(_) => "withdraw",
                 crate::control::Request::Look(_) => "look",
+                crate::control::Request::Retire(_) => "retire",
             },
             Command::Help => "help",
         }
@@ -795,6 +812,13 @@ const NAMED: &[Opt] = &[
     opt("--dir", true, false),
     opt("--run-dir", true, false),
     opt("--name", true, false),
+];
+
+const RETIRE: &[Opt] = &[
+    opt("--dir", true, false),
+    opt("--run-dir", true, false),
+    opt("--name", true, false),
+    opt("--commit", true, false),
 ];
 
 const PUBLISH: &[Opt] = &[
@@ -957,13 +981,14 @@ fn refuse_fetch(text: &str) -> Result<FetchRefusal, UsageError> {
 }
 
 /// `--kill-at-upload`: `put:N`, `swap:N`, `manifest:N`, `publish:N`,
-/// `carry-put:N` or `carry-swap:N`, N from 1.
+/// `retire:N`, `carry-put:N` or `carry-swap:N`, N from 1.
 fn kill_at(text: &str) -> Result<KillAt, UsageError> {
     let name = "--kill-at-upload";
     let bad = || {
         UsageError::Value(
             name.into(),
-            "expected put:N, swap:N, manifest:N, publish:N, carry-put:N or carry-swap:N, N from 1",
+            "expected put:N, swap:N, manifest:N, publish:N, retire:N, carry-put:N or carry-swap:N, \
+             N from 1",
         )
     };
     let (kind, n) = text.split_once(':').ok_or_else(bad)?;
@@ -973,6 +998,7 @@ fn kill_at(text: &str) -> Result<KillAt, UsageError> {
         "swap" => Ok(KillAt::Swap(n)),
         "manifest" => Ok(KillAt::Manifest(n)),
         "publish" => Ok(KillAt::Publish(n)),
+        "retire" => Ok(KillAt::Retire(n)),
         "carry-put" => Ok(KillAt::CarryPut(n)),
         "carry-swap" => Ok(KillAt::CarrySwap(n)),
         _ => Err(bad()),
@@ -1174,6 +1200,24 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     "look" => crate::control::Request::Look(name),
                     _ => crate::control::Request::Progress(name),
                 },
+                manifest: None,
+            }))
+        }
+        "retire" => {
+            let given = Given::collect(RETIRE, args, hooks)?;
+            let commit = given
+                .get("--commit")
+                .ok_or(UsageError::Missing("--commit"))?;
+            let commit = crate::control::unhex::<32>(commit).ok_or(UsageError::Value(
+                "--commit".into(),
+                "not 64 hexadecimal digits",
+            ))?;
+            Ok(Command::Ask(Ask {
+                volume: volume(&given)?,
+                request: crate::control::Request::Retire(crate::control::Retire {
+                    name: snapshot_name(&given)?,
+                    commit,
+                }),
                 manifest: None,
             }))
         }

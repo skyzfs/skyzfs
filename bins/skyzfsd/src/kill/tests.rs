@@ -433,6 +433,66 @@ fn the_uploaders_remote_falls_at_a_publishs_manifest_and_after_its_transaction()
     assert!(made.is_some(), "the ref is in the refs");
 }
 
+/// Through the remote the uploader makes: `retire:N` falls once the Nth
+/// retire's transaction has landed, before the uploader knows it; not at
+/// a retire that found the ref gone or naming another commit, which lands
+/// none (M2.7b-1).
+#[test]
+fn the_uploaders_remote_falls_after_the_nth_retires_transaction() {
+    let (store, said) = log();
+    let (remote, refs, epoch) = placed(&store);
+    let mut make = maker(
+        store.clone(),
+        Arc::clone(&refs),
+        "node-a".into(),
+        remote.id,
+        Some(KillAt::Retire(2)),
+        noted(&said),
+        None,
+    );
+    let mut up = make(epoch);
+    let made = commit(&mut up, 7, None).expect("the commit");
+    for (name, number) in [("first", 1), ("second", 2)] {
+        publish(&mut up, made, name, number).expect("the publish");
+    }
+    taken(&said);
+    fn retire<R: skyzfs_upload::Remote>(
+        up: &mut R,
+        name: &str,
+        commit: CommitHash,
+    ) -> std::result::Result<Retired, RemoteError> {
+        block_on(up.retire(name, commit))
+    }
+    assert_eq!(retire(&mut up, "first", [9; 32]), Ok(Retired::Other(made)));
+    assert_eq!(retire(&mut up, "none", made), Ok(Retired::Gone));
+    assert_eq!(retire(&mut up, "first", made), Ok(Retired::Retired));
+    let first = taken(&said);
+    assert!(
+        first.iter().all(|s| !s.starts_with("kill")),
+        "no kill before the second retire that landed: {first:?}"
+    );
+    assert_eq!(retire(&mut up, "first", made), Ok(Retired::Gone));
+    assert_eq!(retire(&mut up, "second", made), Ok(Retired::Retired));
+    let second = taken(&said);
+    let n = second.len();
+    assert!(n >= 2, "{second:?}");
+    assert_eq!(
+        second[n - 1],
+        "kill after the transaction of retire 2 (second) landed, before the uploader knew it"
+    );
+    assert!(
+        second[n - 2].starts_with("put_if") && second[n - 2].contains("refs"),
+        "the transaction landed first: {second:?}"
+    );
+    assert_eq!(
+        second.iter().filter(|s| s.starts_with("kill")).count(),
+        1,
+        "{second:?}"
+    );
+    let gone = block_on(refs.get(remote.id, "snap/second")).expect("read");
+    assert_eq!(gone, None, "the ref is retired");
+}
+
 /// The state of the cuts in the carry tests.
 const STATE: [u8; 16] = [1; 16];
 

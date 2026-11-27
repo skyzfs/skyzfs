@@ -771,7 +771,8 @@ fn ends(code: Code) -> bool {
         | Code::Version
         | Code::Malformed
         | Code::Peer
-        | Code::Store => true,
+        | Code::Store
+        | Code::Other => true,
         Code::Asked | Code::Busy | Code::Ended | Code::NoAnswer | Code::NoUpload => false,
     }
 }
@@ -942,7 +943,10 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
             | Code::Version
             | Code::Malformed
             | Code::Peer
-            | Code::Store => Action::Stop(Stop::Refused(*code)),
+            | Code::Store
+            // `retire`'s refusal: no answer about a publish, so the
+            // daemon is not one this agent understands.
+            | Code::Other => Action::Stop(Stop::Refused(*code)),
         },
         // Not an answer about a publish: the daemon is not one this agent
         // understands. Seen again later.
@@ -950,7 +954,9 @@ fn onward(publish: &Publish, taken: &Taken, asked: Option<(u64, u64)>, seen: &Se
         | Reply::Accepted
         | Reply::Absent
         | Reply::Snap(_)
-        | Reply::Unreadable(_) => Action::Wait,
+        | Reply::Unreadable(_)
+        | Reply::Retired
+        | Reply::Gone => Action::Wait,
     }
 }
 

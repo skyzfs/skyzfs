@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use skyzfs_upload::publish::{EXPIRY_DEFAULT, EXPIRY_MAX, MANIFEST_MAX};
-use skyzfs_upload::{Progress, Refusal};
+use skyzfs_upload::{Progress, Refusal, RetireRefused, Retired};
 
 use super::*;
 
@@ -253,11 +253,14 @@ fn a_request_that_cannot_be_taken_is_refused_without_asking() {
     let expiry = |e| publish(Some(e)).line().replace("manifest=5", "manifest=0");
     for (sent, code) in [
         (format!("{HELLO}x\ncuts\n"), Code::Version),
-        // A client of version 1 (each line of which reads the same in
-        // version 2) is refused at its greeting, before a word it would
-        // not read; and so is one of a version after this one.
+        // A client of an earlier version (each line of which reads the
+        // same in this one) is refused at its greeting, before a word it
+        // would not read; and so is one of a version after this one. The
+        // deploy order of version 3 rests on it: the daemon and the agent
+        // together (M2.7b-1).
         ("skyzfs-control 1\ncuts\n".to_string(), Code::Version),
-        ("skyzfs-control 3\ncuts\n".to_string(), Code::Version),
+        ("skyzfs-control 2\ncuts\n".to_string(), Code::Version),
+        ("skyzfs-control 4\ncuts\n".to_string(), Code::Version),
         (format!("cuts\n{HELLO}\n"), Code::Version),
         (format!("{}\ncuts\n", "h".repeat(LINE_MAX)), Code::Version),
         (format!("{HELLO}\n{long}\n"), Code::Malformed),
@@ -269,6 +272,14 @@ fn a_request_that_cannot_be_taken_is_refused_without_asking() {
         (format!("{HELLO}\nlook name=a b\n"), Code::Malformed),
         (format!("{HELLO}\nlook name=a:b\n"), Code::Name),
         (format!("{HELLO}\nlook name=\n"), Code::Name),
+        (
+            format!("{HELLO}\nretire name=a/b commit={}\n", "c0".repeat(32)),
+            Code::Name,
+        ),
+        (
+            format!("{HELLO}\nretire name=t commit={}\n", "c0".repeat(31)),
+            Code::Malformed,
+        ),
         (
             format!(
                 "{HELLO}\n{}\n",
@@ -432,6 +443,7 @@ mod socket {
                 Request::Progress(name) | Request::Withdraw(name) | Request::Look(name) => {
                     name.clone()
                 }
+                Request::Retire(r) => format!("retire {}", r.name),
             };
             if let Ok(mut names) = asked.lock() {
                 names.push(name.clone());
@@ -1068,9 +1080,10 @@ mod uploader {
     }
 
     /// Mutant: a field of a request or an answer lost on the way (the
-    /// attachment answered is the daemon's, not the request's), the
-    /// count of cuts asked of the uploader, or the store's rewind mark
-    /// not given with a publish (B3 of the review of #140).
+    /// attachment answered is the daemon's, not the request's; a
+    /// retire's commit; one retire answer given as another), the count
+    /// of cuts asked of the uploader, or the store's rewind mark not given
+    /// with a publish (B3 of the review of #140).
     #[test]
     fn each_request_goes_to_the_uploader_and_its_answer_back() {
         let (mut handler, thread) = uploader_with(|control, seen| match control {
@@ -1093,6 +1106,21 @@ mod uploader {
                 seen.push(format!("withdraw {name}"));
                 let _ = reply.send(Progress::Withdrawn);
             }
+            Control::Retire {
+                name,
+                commit,
+                reply,
+            } => {
+                seen.push(format!("retire {name} {}", hex(&commit)));
+                let _ = reply.send(match name.as_str() {
+                    "r" => Ok(Retired::Retired),
+                    "g" => Ok(Retired::Gone),
+                    "o" => Ok(Retired::Other([5; 32])),
+                    "s" => Err(RetireRefused::Stopped),
+                    "a" => Err(RetireRefused::Asked),
+                    _ => Err(RetireRefused::Store("down".into())),
+                });
+            }
         });
         assert_eq!(
             handler(&Request::Cuts, Vec::new()),
@@ -1101,6 +1129,7 @@ mod uploader {
                 state: Some(S),
                 count: 4,
                 newest: Some((9, false)),
+                rewound: 2,
             })
         );
         assert_eq!(handler(&publish(None), b"12345".to_vec()), Reply::Accepted);
@@ -1123,6 +1152,31 @@ mod uploader {
         assert_eq!(
             handler(&Request::Withdraw("u".into()), Vec::new()),
             Reply::Withdrawn
+        );
+        let retire = |name: &str| {
+            Request::Retire(Retire {
+                name: name.into(),
+                commit: [0xc0; 32],
+            })
+        };
+        let words: Vec<_> = ["r", "g", "o", "s", "a", "e"]
+            .into_iter()
+            .map(|name| handler(&retire(name), Vec::new()).line())
+            .collect();
+        let other = format!(
+            "refused other snap/T names commit {}, not the request's; it is left as it is",
+            hex(&[5; 32])
+        );
+        assert_eq!(
+            words,
+            [
+                "retired",
+                "gone",
+                other.as_str(),
+                "refused stopped the uploader steps no more; nothing was retired",
+                "refused asked a publish of the name pends on this daemon",
+                "refused store object storage: down; the retire may have landed: ask again",
+            ]
         );
         drop(handler);
         let seen = thread.join().expect("the uploader");
@@ -1148,6 +1202,12 @@ mod uploader {
                 "progress t".into(),
                 "withdraw u".into(),
             ]
+            .into_iter()
+            .chain(
+                ["r", "g", "o", "s", "a", "e"]
+                    .map(|name| format!("retire {name} {}", hex(&[0xc0; 32])))
+            )
+            .collect::<Vec<_>>()
         );
     }
 
@@ -1363,6 +1423,7 @@ mod uploader {
                 state: Some(S),
                 count: 4,
                 newest: Some((9, false)),
+                rewound: 2,
             })
         );
         drop(rx);
