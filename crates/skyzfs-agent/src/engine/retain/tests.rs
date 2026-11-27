@@ -1586,3 +1586,79 @@ fn the_oldest_given_up_leave_early_for_room_looked_up_first() {
     assert!(a.record().abandoned.iter().any(|g| g.name == newer));
     assert_eq!(a.record().abandoned_over(), 0);
 }
+
+/// The fake daemon, whose `retire` is refused with `code`; `retires`
+/// counts them.
+struct RetireRefused {
+    daemon: FakeDaemon,
+    code: skyzfs_control::Code,
+    retires: Rc<std::cell::Cell<usize>>,
+}
+
+impl super::super::Daemon for RetireRefused {
+    fn ask(
+        &mut self,
+        request: &skyzfs_control::Request,
+        manifest: &[u8],
+    ) -> std::io::Result<skyzfs_control::Reply> {
+        if let skyzfs_control::Request::Retire(_) = request {
+            self.retires.set(self.retires.get() + 1);
+            return Ok(skyzfs_control::Reply::Refused(
+                self.code,
+                "the uploader steps no more; nothing was retired".into(),
+            ));
+        }
+        self.daemon.ask(request, manifest)
+    }
+    fn device(&mut self) -> std::io::Result<u64> {
+        self.daemon.device()
+    }
+    fn failure(&mut self) -> std::io::Result<Option<crate::engine::Noted>> {
+        self.daemon.failure()
+    }
+}
+
+/// A retire refused `stopped` ends the round's retires: of three names
+/// past `--keep`, one is asked a round, and the next round asks again; a
+/// retire refused for another reason does not (N1 of the review of
+/// #179; the lead's ruling). Nothing is destroyed and the names stay
+/// marked. Mutants: `stopped` that leaves the round's retires on; the
+/// flag not cleared at the next round; any refusal taken as `stopped`.
+#[test]
+fn a_retire_refused_stopped_ends_the_round_s_retires() {
+    for (code, a_round) in [
+        (skyzfs_control::Code::Stopped, 1),
+        (skyzfs_control::Code::Store, 3),
+        (skyzfs_control::Code::Asked, 3),
+    ] {
+        let (world, keep, names) = published(4);
+        let kept = snaps_of(&world, &names[0]);
+        let counted = Rc::default();
+        let mut a = Agent::new(
+            FakeZfs(world.clone()),
+            RetireRefused {
+                daemon: FakeDaemon(world.clone()),
+                code,
+                retires: Rc::clone(&counted),
+            },
+            keep.clone(),
+            FakeClock(world.clone()),
+            VOLUME,
+            POOL,
+        )
+        .expect("the agent");
+        a.set_keep(1);
+        a.retain().expect("retained");
+        assert_eq!(counted.get(), a_round, "{code:?}");
+        a.retain().expect("retained again");
+        assert_eq!(counted.get(), 2 * a_round, "{code:?}: the next round");
+        assert_eq!(snaps_of(&world, &names[0]), kept, "{code:?}");
+        let marked = a
+            .record()
+            .published
+            .iter()
+            .filter(|p| p.retire == Some(Retire::Ref))
+            .count();
+        assert_eq!(marked, 3, "{code:?}");
+    }
+}

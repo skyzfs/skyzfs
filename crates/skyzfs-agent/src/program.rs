@@ -127,7 +127,9 @@
 //! **Retention** (M2.7b-2): after its begin and before it settles, a
 //! round retires the names published past the newest `--keep`
 //! ([`crate::engine::KEEP_DEFAULT`], at most
-//! [`crate::record::KEEP_MAX`]) and lets the names given up go after
+//! [`crate::record::KEEP_MAX`]); a name counts from the round after it
+//! is published, so with `--keep N` there are N+1 between rounds (the
+//! lead's ruling on #179). It lets the names given up go after
 //! `--abandoned-keep-s` ([`crate::engine::ABANDONED_KEEP_DEFAULT`]), at
 //! most [`crate::engine::STEPS_MAX`] steps in a round
 //! ([`Agent::retain`]). Each name that leaves says so on standard
@@ -280,11 +282,13 @@
 //! small file and makes no I/O on the pool. A note that makes the volume
 //! lost, and is not the one the round read at its start, stops the engine
 //! where it asks whether to go on (before a sync after a rewind import,
-//! before a begin after syncs, before each pass of the settle) and ends
-//! the wait: the round's line follows, and the next round begins at once,
-//! early for its tick (`early_ms`), and takes the step. Rounds stay
-//! `--every-s` apart otherwise, but for the quick retries above. A step of the engine under way is not cut, so the note is
-//! seen after at most about a second plus that step.
+//! before a begin after syncs, before each pass of the settle, and in
+//! retention before each ask of the daemon and each read or destroy of a
+//! name's members) and ends the wait: the round's line follows, and the
+//! next round begins at once, early for its tick (`early_ms`), and takes
+//! the step. Rounds stay `--every-s` apart otherwise, but for the quick
+//! retries above. A step of the engine under way is not cut, so the note
+//! is seen after at most about a second plus that step.
 //!
 //! `publish` and `settle` read the note too, before anything else, and
 //! touch no pool: a lost volume is refused with 11, one that failed with
@@ -536,7 +540,8 @@ pub struct Run {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kept {
     /// `--keep`: the names published kept, from 1 to
-    /// [`crate::record::KEEP_MAX`].
+    /// [`crate::record::KEEP_MAX`]; N+1 between rounds, since a round
+    /// settles its own publish after it retires.
     pub keep: usize,
     /// `--abandoned-keep-s`: how long a name given up is kept.
     pub abandoned_keep: Duration,
@@ -603,6 +608,9 @@ where:
        those of VOL in hex
   DEV  the volume's block device, as skyzfsd serve prints it
   DIR  the agent's own directory of the volume
+  N    the names published that run keeps, from 1 to 1000 (60 by
+       default); a round retires before it settles its own publish,
+       so N+1 are kept between rounds
 test hooks (a build with the feature test-hooks):
   --kill-at EFFECT:before|after[:N]  --trace-points FILE
   --assist-after-s S  --age-max-s S
@@ -975,7 +983,8 @@ pub fn report_line(name: &str, report: &Report) -> String {
             one_line(why)
         ),
         Report::NoGuids => "no-guids: given up with no member GUIDs recorded; its @t is not \
-             destroyed, and the name is forgotten after --abandoned-keep-s"
+             destroyed, and the name is forgotten after --abandoned-keep-s, or sooner when \
+             the names given up alone fill the room"
             .to_string(),
     };
     format!("skyzfs-agent: report {name} {what}\n")

@@ -4,8 +4,11 @@
 //! on the pool.
 //!
 //! The rulings cited as ?1 to ?4 are the lead's answers to the
-//! questions so numbered in this work package's plan; the description
-//! of skyzfs/skyzfs#179 lists them.
+//! questions so numbered in this work package's plan, listed in the
+//! description of skyzfs/skyzfs#179: ?1 a member's `@t` destroyed by
+//! itself, by GUID; ?2 `snap/<t>` naming another commit left for a
+//! person; ?3 a name a person gave up looked up first; ?4 a name with
+//! no member GUIDs forgotten and nothing destroyed.
 //!
 //! **A name published** is kept while it is among the newest
 //! [`Retention::keep`] ([`KEEP_DEFAULT`], at most
@@ -93,7 +96,10 @@
 //! `snap/<t>` that is there keeps the local snapshot and leaves the name
 //! with a `forgotten` line, for a person; one that is absent has its
 //! members destroyed by GUID. So the uploader stopped for hours, every
-//! publish given up, does not stop the publishes after it is back.
+//! publish given up, does not stop the publishes after it is back, even
+//! with names marked to be retired: the first `retire` refused `stopped`
+//! ends the round's retires, so they cost the round one step and the
+//! early leave keeps the rest (N1 of #179's review; the lead's ruling).
 //! [`Left::Nothing`] leaves with no line and [`Left::Unknown`] with its
 //! `forgotten` line, as past their keep.
 //!
@@ -103,7 +109,8 @@
 //! or a `look` that the daemon does not answer (`no-answer`, or no
 //! answer at all) ends the round's asks of the daemon: the next round
 //! asks again, so that one round waits for at most one answer limit
-//! (L2 of #179's review). Before each step, each name stuck tried and
+//! (L2 of #179's review). A `retire` refused `stopped` ends the round's
+//! retires the same way, but not its looks (N1). Before each step, each name stuck tried and
 //! each call to ZFS, the round asks whether an end was asked and
 //! whether the failure note has news, and ends quietly if so: a volume
 //! lost during retention is stepped on after the call under way, not
@@ -181,6 +188,11 @@ pub(super) struct Retention {
     /// In this round, a `retire` or a `look` the daemon did not answer:
     /// the round asks the daemon nothing more (L2 of #179's review).
     pub silent: bool,
+    /// In this round, a `retire` refused `stopped`: the uploader steps
+    /// no more, so the round asks no more retires, and the names marked
+    /// cost it one step and not [`STEPS_MAX`] (N1 of #179's review; the
+    /// lead's ruling). Its looks are still asked.
+    pub stopped: bool,
     /// In this round, an end was asked or the failure note had news:
     /// the round takes no further step (M2 of #179's review).
     pub halted: bool,
@@ -194,6 +206,7 @@ impl Default for Retention {
             told: BTreeMap::new(),
             stuck_last: None,
             silent: false,
+            stopped: false,
             halted: false,
         }
     }
@@ -267,6 +280,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
     pub fn retain_while(&mut self, go: &mut dyn FnMut() -> bool) -> Result<(), Error> {
         self.at.clear();
         self.retention.silent = false;
+        self.retention.stopped = false;
         self.retention.halted = false;
         let result = self.retain_steps(go);
         self.at.clear();
@@ -299,7 +313,7 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
             match retire {
                 Retire::Other => self.say_other(&name, None),
                 _ if steps >= STEPS_MAX => {}
-                Retire::Ref if self.retention.silent => {}
+                Retire::Ref if self.retention.silent || self.retention.stopped => {}
                 _ if self.halt(go) => return Ok(()),
                 Retire::Ref => {
                     steps += 1;
@@ -371,8 +385,10 @@ impl<Z: Zfs, D: Daemon, K: Keep, C: Clock> Agent<Z, D, K, C> {
                 Ok(())
             }
             Ok(Reply::Refused(code, text)) => {
-                if code == Code::NoAnswer {
-                    self.retention.silent = true;
+                match code {
+                    Code::NoAnswer => self.retention.silent = true,
+                    Code::Stopped => self.retention.stopped = true,
+                    _ => {}
                 }
                 self.say(
                     name,

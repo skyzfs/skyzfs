@@ -1542,7 +1542,12 @@ impl<H: Host> Zfs for ZfsCli<H> {
                 }
                 e => e,
             })?;
-        if output.code == Some(0) {
+        // The member's `@t` already gone (a destroy killed at its limit
+        // that finished since, or one by hand): ZFS answers as it does
+        // for `destroy -r`, and it is read the same way, as destroyed
+        // (N2 of the review of #179).
+        if output.code == Some(0) || says(&output.stderr, "could not find any snapshots to destroy")
+        {
             return Ok(());
         }
         match self.failed("zfs", &args, &output, true, pool) {
