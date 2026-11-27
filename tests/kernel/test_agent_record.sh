@@ -1000,6 +1000,7 @@ is "agent_quiet: its bounds" "$(tr '\n' ';' < "$T/qh.seq")" "1 20;1 120;"
 # ends it, in these three), bad (after them, waits for FAKE_SOCK
 # to go, keeps the record it then finds, prints a failed round, exit 6).
 # FAKE_TERM_LINE=1: a round line printed on the signal that ends it.
+# FAKE_DIR/ready: the start's number, once its handlers are in.
 cat > "$T/fake-agent" <<'EOF'
 #!/usr/bin/env python3
 import os, signal, sys, time
@@ -1023,6 +1024,7 @@ def on(sig, _):
         sys.exit(1 if mode == 'twice' else 0)
 signal.signal(signal.SIGTERM, on)
 signal.signal(signal.SIGINT, on)
+open(os.path.join(d, 'ready'), 'w').write(str(n + 1))
 if mode == 'killfirst' and n == 0:
     os.kill(os.getpid(), signal.SIGKILL)
 for k, t in enumerate(took, 1):
@@ -1057,7 +1059,19 @@ runt() {
         printf 'skyzfs-remote 1\nendpoint e\nbucket b\nvolume v\nid 01ARZ3NDEKTSV4RRFFQ69G5FA0\n' > "$VOL/remote"
         echo 'the record' > "$ADIR/record"; : > "$RUN/v/control"
         export FAKE_DIR=$CDIR FAKE_MODE=$2 FAKE_TOOK=$3 FAKE_GAP=${5:-0.15} FAKE_SOCK=$RUN/v/control FAKE_REC=$ADIR/record
-        log() { :; }; vrun() { echo "$RUN/v"; }; wait_point() { sleep 0.3; }; case_name() { echo r1; }
+        log() { :; }; vrun() { echo "$RUN/v"; }; case_name() { echo r1; }
+        # The point is reached when this start of the stand-in has its
+        # handlers in (Codex on #171: a fixed 0.3 s did not hold under
+        # load, and a SIGTERM then killed it with the default action).
+        wait_point() {
+            local k r
+            for k in $(seq 1 200); do
+                r=$(cat "$CDIR/ready" 2>/dev/null)
+                [ -n "$r" ] && [ "$r" = "$(cat "$CDIR/count" 2>/dev/null)" ] && return 0
+                sleep 0.05
+            done
+            return 1
+        }
         for f in verdict case_error acmd abg await_agent await_rounds round_left run_rounds_then_term other_remote \
             rewind_groups "scen_$1"; do
             eval "$(fn "$f")"
@@ -1100,16 +1114,33 @@ is "run: a run that ends before its rounds is a verdict, no signal" "$(seen publ
 runt run rounds "3000 3000 10500 3000"
 is "run: no signal after a round that overran its tick; the next one's" "$(seen publish)" \
     "rc=0 rounds=1,2,3,4, ordered sig=SIGTERM, ended=after verdicts="
-runt run end "3000 3000 10500 9000 8000 10500"
-is "run: no round with 3 s left in three more is a verdict, no signal" \
-    "$(seen publish) $(cut -f2 "$T/rc/verdicts.tsv" | cut -c1-56)" \
-    "rc=3 rounds=1,2,3,4,5,6, ordered sig= ended= verdicts=rounds, no round line with 3 s left to its next tick in 6 rounds"
+# Round 3 overran its tick, and the run ended 0.6 s after it, while the
+# rig waited for round 4.
+runt run end "3000 3000 10500" "" 0.6
+is "run: a run that ended before a round with 3 s left is a verdict, no signal" \
+    "$(seen publish) $(cut -f2 "$T/rc/verdicts.tsv" | sed 's/: .*//')" \
+    "rc=3 rounds=1,2,3, ordered sig= ended= verdicts=rounds, the run ended after 3 round lines, before one with 3 s left to its next tick"
 # A seventh round would leave 7 s, but the rig waits for three more
-# rounds and no longer: it judges after round 6.
+# rounds and no longer: after round 6, with the run alive, it is the
+# rig's error (a run may overrun its tick), and the run is ended with a
+# SIGTERM that no pin reads.
 runt run end "3000 3000 10500 9000 8000 10500 3000" "" 0.6
-is "run: the rig waits for three more rounds, not four" \
-    "$(sort "$T/rc/signals" 2>/dev/null | tr '\n' ,) $(cut -f2 "$T/rc/verdicts.tsv" | sed 's/: .*//')" \
-    " no round line with 3 s left to its next tick in 6 rounds"
+is "run: the rig waits for three more rounds, not four; then its own error" \
+    "$(seen publish) $([ -e "$T/rc/publish.term-at" ] && echo term-at) $(cat "$T/rc/rig-error.txt" 2>/dev/null)" \
+    "rc=0 rounds=1,2,3,4,5,6, ordered sig=SIGTERM, ended= verdicts=  no round line with 3 s left to its next tick in 6 rounds at --every-s 10: no time between two rounds to signal the run in"
+# A round line printed on the signal and the end at once: stamped
+# after the end, so after the signal.
+FAKE_TERM_LINE=1 runt run rounds "3000 3000 3000"
+is "run: a round line just before the end is stamped, after the signal" \
+    "$(seen publish) $(awk 'NR == FNR { t = $1; next } FNR == 4 { print ($2 >= t ? "after" : "before") }' "$T/rc/publish.term-at" "$T/rc/publish.rounds.tsv")" \
+    "rc=0 rounds=1,2,3,4, ordered sig=SIGTERM, ended=after verdicts= after"
+# The same where the line lands as the run's end is seen (the window
+# between await_rounds' read and its look at the process): the stamp
+# after the end has it.
+RUNT_STUBS='await_agent() { wait "$AGENT_PID" 2>/dev/null; echo "round 4 ok took_ms=1 late_ms=0 skipped=0 begun=r4 under_way=0" >> "$CDIR/$1.out"; echo 0 > "$CDIR/$1.rc"; AGENT_PID=""; }' \
+    runt run rounds "3000 3000 3000"
+is "run: a round line seen only at the end is stamped" "$(seen publish)" \
+    "rc=0 rounds=1,2,3,4, ordered sig=SIGTERM, ended=after verdicts="
 FAKE_TERM_LINE=1 FAKE_LINGER=0.3 runt run rounds "3000 3000 3000"
 is "run: a round line after the signal is stamped, after it" \
     "$(seen publish) $(awk 'NR == FNR { t = $1; next } FNR == 4 { print ($2 >= t ? "after" : "before") }' "$T/rc/publish.term-at" "$T/rc/publish.rounds.tsv")" \

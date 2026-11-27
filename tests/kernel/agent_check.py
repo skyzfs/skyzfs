@@ -343,7 +343,12 @@ ROUND_LINE = re.compile(r'round ([1-9][0-9]*) (ok|failed) took_ms=([0-9]+) late_
 
 def round_fields(more, line):
     """ROUND_LINE's group 8 -> {name: value}; a name twice, or a
-    `synced` that is not a count, is the rig's error."""
+    `synced` that is not a count, is the rig's error. ROUND_LINE itself
+    takes only fields of a lower-case name ([a-z_], after a letter) and
+    a value, one space before each: any other line is not read as a
+    round line, and a line of no kind is the rig's error. That is
+    stricter than the agent's form needs, so that a change of it is
+    seen."""
     out = {}
     for f in more.split():
         k, _, v = f.partition('=')
@@ -680,12 +685,40 @@ def rewind_premise(txg, top, cuts):
     return bad
 
 
-def judge_synced(rounds, published, err):
+def first_ask_cut(instances, name):
+    """The request log's first ask of NAME, whatever the daemon answered
+    -> (C, what the last cut line numbered C before it in the same
+    instance says: 'itself', 'rewind', or None where there is none), or
+    None where NAME was never asked. skyzfsd writes C, the count the ask
+    was made from, in the ask's sectors column, and a cut's number in
+    its sectors column and `itself` or `rewind` in its sector column."""
+    for inst in instances:
+        for ln in inst['lines']:
+            if (ln['event'] == 'publish' and ln['op'] == 'asked' and ln['result'].split(' ', 1)[0] == name
+                    and ln['sectors'].isdigit()):
+                c, opens = int(ln['sectors']), None
+                for x in inst['lines']:
+                    if x['line'] < ln['line'] and x['event'] == 'cut' and x['sectors'] == str(c):
+                        opens = x['sector']
+                return c, opens
+    return None
+
+
+def refused_rewound(instances, names):
+    """The request log's asks of NAMES that the daemon refused `rewound`."""
+    return sum(1 for inst in instances for ln in inst['lines']
+               if ln['event'] == 'publish' and ln['op'] == 'asked'
+               and ln['result'].split(' ', 1)[0] in names and ln['result'].split(' ')[1:3] == ['refused', 'rewound'])
+
+
+def judge_synced(rounds, published, err, ask):
     """`run`'s rounds after a rewind import, the names it printed
-    published and its standard error -> [what is not so]: the first
-    round synced (`synced=` above 0) and began a publish that it or a
-    later round printed published; no later round synced; no round said
-    it began none."""
+    published, its standard error and first_ask_cut of round 1's publish
+    -> [what is not so]: the first round synced (`synced=` above 0) and
+    began a publish that it or a later round printed published, asked
+    first from a cut that opens as itself (M2.7d: a run begins nothing
+    while the newest cut opens only as a rewind; #171's review, M1); no
+    later round synced; no round said it began none."""
     if not rounds:
         return ['no round line']
     first, bad = rounds[0], []
@@ -697,6 +730,13 @@ def judge_synced(rounds, published, err):
         bad.append('round 1 began no publish')
     elif first['begun'] not in published:
         bad.append(f'round 1\'s publish {first["begun"]} was not printed published')
+    if first['begun'] is not None:
+        if ask is None:
+            bad.append(f'no ask of {first["begun"]} in the request log')
+        elif ask[1] != 'itself':
+            bad.append(f'round 1 asked {first["begun"]} first from cut {ask[0]}, which '
+                       + (f'opens {ask[1]}' if ask[1] else 'has no cut line before the ask')
+                       + ', not as itself: it began while the pool was behind')
     later = [r['n'] for r in rounds[1:] if r['synced']]
     if later:
         bad.append(f'round(s) {later} synced again, past the abandoned groups already')
@@ -706,7 +746,7 @@ def judge_synced(rounds, published, err):
     return bad
 
 
-def judge_run(cid, cd, scen, outs, holds, premise, text):
+def judge_run(cid, cd, scen, outs, holds, premise, text, instances=()):
     """The pins of a case of `skyzfs-agent run` (agent-record.sh's run
     scenarios); TEXT reads a file of the run's directory, '' where there
     is none. The first run's status is FIRST_RC's pin (runkill's is the
@@ -761,9 +801,13 @@ def judge_run(cid, cd, scen, outs, holds, premise, text):
                    f'imported at group {txg}, below the daemon\'s newest cut; the newest cut then opened only as a '
                    'rewind'):
             first = rounds[0] if rounds else {}
+            ask = first_ask_cut(instances, first['begun']) if first.get('begun') else None
+            nref = refused_rewound(instances, {r['begun'] for r in rounds if r['begun']})
             holds(f'pin_{cid}_synced_past', judge_synced(rounds, outs.get('publish', {}).get('published', {}),
-                                                         text(at('publish.err'))), 'server',
-                  f'round 1 synced {first.get("synced")} times, then began {first.get("begun")}, published')
+                                                         text(at('publish.err')), ask), 'server',
+                  f'round 1 synced {first.get("synced")} times, then began {first.get("begun")}, asked first from '
+                  f'cut {ask[0] if ask else "-"}, which opens as itself, published; {nref} asks of the run\'s '
+                  'publishes refused rewound (rule R)')
         holds(f'pin_{cid}_rounds', judge_rounds(rounds, read_arrivals(text(at('publish.rounds.tsv'))), 2), 'server',
               f'{len(rounds)} rounds after the rewind import, each ok and beginning its own publish')
         ended('publish', 'sigterm')
@@ -1015,7 +1059,8 @@ def main():
                           [f'the daemon ended {krc or "with no status"}, not by the rig\'s SIGKILL (137): it had '
                            'ended by itself'], 'server', 'the daemon was serving until the rig killed it (137)')
                 if scen in RUN_SCENARIOS:
-                    judge_run(cid, cd, scen, outs, holds, premise, lambda path: text_of(path, need=False))
+                    judge_run(cid, cd, scen, outs, holds, premise, lambda path: text_of(path, need=False),
+                              instances)
                 if scen == 'sweep' and not kill:
                     stray = text_of(os.path.join(cd, 'stray-holds.txt'))
                     holds(f'pin_{cid}_swept', [f'the stray hold is still there: {flat(stray)}'] if HOLD_TAG in stray else [],
