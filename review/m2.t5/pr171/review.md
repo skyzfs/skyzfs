@@ -1,350 +1,359 @@
 # Review of skyzfs/skyzfs#171 (M2.T5: the agent rig's run course, R-rewind, recorder follow-ups)
 
-Heads: started at 7ab6c65, judged at **4ccc4b4** (one commit on 7ab6c65:
-the round line's fields after `under_way` read by name). Base
-`zfs-topology` at 6868430. Diff: `git diff origin/zfs-topology...pr171`
-and `git diff 7ab6c65 4ccc4b4`. The agent (`run`, `Agent::sync_past`)
-and design §5.2, §5.4 and §9 were read before the description.
+## The heads looked at
 
-## Verdict
+The review started at 7ab6c65. It then judged 4ccc4b4 (the round
+line's fields after `under_way` read by name), and last **3b9dc1c**
+(Codex's fix: the signal rule in `run_rounds_then_term` and
+`pin_ID_no_round_after_sigterm`). The base is `zfs-topology` at 6868430.
 
-Not ready to merge at 4ccc4b4. One finding blocks (B1): the run course
-can give exit 1 against a correct agent, and the R-rewind run on this
-head was about four seconds away from doing so. Codex's P2 on 7ab6c65
-(agent-record.sh:678) is the same finding and has no answer on the pull
-request. M1 is a test gap that I would fix in this pull request, since
-the fix is small and the data it needs is already in the artifact. The
-other findings do not block.
+The diffs read were:
 
-What the work package adds is sound: the by-name parsing in 4ccc4b4 is
-right, 4043629 answers my #169 next-look lows, every local gate passes,
-and the agent rig is green on all six jobs at 4ccc4b4. The rewind
-premise cannot pass vacuously.
+- `git diff origin/zfs-topology...pr171`;
+- `git diff 7ab6c65 4ccc4b4`;
+- `git diff 4ccc4b4 3b9dc1c`.
 
-## Findings, most severe first
+The agent (`run`/`schedule` in program.rs, `Agent::sync_past` in
+engine.rs) and design §5.2, §5.4 and §9 were read before the
+description.
 
-### B1 (blocking; a wrong verdict in the rig). SIGTERM can land in a round, and a correct run is then given exit 1
+## Verdict at 3b9dc1c
 
-`run_rounds_then_term` (agent-record.sh:675-684) sends SIGTERM as soon as
-the N-th round line arrives. Its comment says this happens "between two
-rounds, while it waits for the next tick", but nothing makes sure of
-that. `schedule` (program.rs, `tick += passed.max(1)`) starts the next
-round at once after a round that overran its tick, and `go()` is only
-asked at the top of the loop. A SIGTERM that comes after that check lets
-the round go on: `sync_past` (which sets `clear` without asking `go()`
-when it synced nothing), the begin, then a settle that ends at once. The
-round's line is then printed. `await_rounds` stopped stamping arrivals at
-N, so `judge_rounds` (agent_check.py:610-612) reports "the rig saw N of
-N+1 round lines come" and the case FAILS (exit 1).
+No finding blocks the merge, once the agent rig's run on 3b9dc1c
+(45923974050) is green on part r.
 
-The same race affects R-rewind's own pin. If round 1's publish is still
-under way when round 2 reaches its tick, round 2 overruns and its
-`snap/` line is never printed. `judge_synced` (agent_check.py:686-687)
-then says "round 1's publish ... was not printed published".
+- **B1 is fixed.** At 4ccc4b4 the rig could give exit 1 against a
+  correct agent: it sent SIGTERM right after a round that had overrun
+  its tick, and Codex's P2 is the same finding. At 3b9dc1c the rig
+  signals only after a round that left 3 s or more, and it stamps round
+  lines until the run ends. The plants for the rule are in
+  `plants_c-*.out`.
+- **M1 should be fixed in this pull request.** `pin_R-rewind_synced_past`
+  does not check the behaviour it is named for. The fix is small and the
+  data is in the artifact. If it is not done here, the lead should
+  record it as a follow-up.
 
-In run 45918311854 (job r, ubuntu-26.04, 4ccc4b4; timeline in
-`rewind_timeline-45918311854.out`):
+Every other finding is low, a nit, or a question for the lead.
 
-- Round 1 took 10488 ms against a 10 s tick, so round 2 began at once
-  (`late_ms=488`).
-- Round 1's publish was refused `rewound` three times (rule (R); see O1)
-  and was published by cut 83 (group 96) at 200.04 s. That cut came
-  5.1 s after cut 82 (group 95), at the pool's own pace of one group
-  every txg timeout.
-- Round 2 ended 0.7 s after that publish completed, 3.2 s before its next
-  tick at about 204.2 s.
+## B1 (was blocking at 4ccc4b4; fixed at 3b9dc1c). The SIGTERM could land inside a round
 
-One more group needed above the ring's wrap point (O1) would have pushed
-round 2 past its tick and made this case FAIL. The case passed with less
-than one group's time to spare.
+### At 4ccc4b4
 
-The fix is in the rig:
+`run_rounds_then_term` sent SIGTERM as soon as the N-th round line came.
+`schedule` begins the next round at once after a round that overran its
+tick, and asks `go()` only at the top of the loop. So the round went on,
+printed its line, and `judge_rounds` reported "the rig saw N of N+1
+round lines". `b1_probe.out` shows this: the judge at 4ccc4b4, given
+R-rewind's lines with round 2 run to its tick, returns that failure and
+also "round 1's publish ... was not printed published".
 
-- Wait for a round line with at least about 3 s left before its next
-  tick, as `scen_runbad` already does (agent-record.sh:768-770), or keep
-  stamping arrivals until the run has ended.
-- In R-rewind, wait (with a bound) for round 1's `snap/` line before
-  counting the two rounds.
+Run 45918311854 shows how close it came:
 
-Certainty: high on the mechanism, which I traced through the code; the
-run's timings show the margin. It was not reproduced, because it needs a
-kernel run.
+- Round 1 took 10488 ms against a 10 s tick.
+- Round 2 began 488 ms late.
+- Round 1's publish was refused `rewound` three times (see O1). It was
+  published 0.7 s before round 2's line, which left 3.2 s to its next
+  tick.
 
-### M1 (medium; a test gap). `pin_R-rewind_synced_past` does not show that the begin came after the pool had passed the abandoned groups
+### At 3b9dc1c
 
-`judge_synced` (agent_check.py:671-694) asks for four things:
+- `round_left` is the run's interval less the last line's `took_ms` and
+  `late_ms`. That is right: the next tick is due plus the interval when
+  nothing was skipped, and the value is negative when the round overran.
+- The rig waits up to three more rounds for one with 3 s or more left,
+  signals only then, and gives a verdict and no signal otherwise.
+- After the signal it keeps stamping lines until the run ends.
+- `pin_ID_no_round_after_sigterm` (agent_check.py:628 and 725) fails any
+  line whose arrival is after `term-at`.
 
-- round 1 printed `synced=` above 0;
-- round 1's publish was printed published;
+### Questions about the rule
+
+**Can a line after SIGTERM go undetected?** No, but it can be reported
+under the wrong pin.
+
+- `await_rounds` greps first, then checks the agent with `kill -0`.
+- An agent that printed its line and ended between those two steps, a
+  window of a few ms, leaves that line unstamped.
+- `pin_no_round_after_sigterm` then passes. `judge_rounds`
+  (agent_check.py:610) still fails "N of N+1", so the case is FAILED
+  either way.
+- Nit: grep once more after the agent has ended, so that the right pin
+  names it.
+
+**Can the cap hide a fault?** No.
+
+- `judge_rounds` (every round ok, each beginning a publish, the ticks)
+  and `judge_synced` (no later round syncs) judge the extra rounds too.
+- A run that ends during them, or never leaves 3 s, gets the verdict
+  "no round line with 3 s left".
+- Low: when the agent died, that message names the wrong cause.
+- Low: the agent's documentation lets a round overrun its tick, so a
+  correct run on a slow runner could get exit 1 here. "No moment to
+  test the signal" reads better as a case error (exit 2). This is
+  testing's call; it is not blocking.
+
+**Can the pin pass vacuously, or fail on a legitimate last round?**
+
+- It can pass vacuously only with no arrivals, and then `judge_rounds`
+  fails on the count.
+- A legitimate round cannot fail it: every line present when the
+  signal is sent was stamped before it. The exception is a race of a
+  few ms. When the round before had overrun, the next round's line
+  could arrive between `await_rounds`' grep and `round_left`'s read. It
+  would then be read as the last line but not stamped before the kill,
+  and the pin would fail it falsely. This is a nit: stamp what is
+  present just before the kill.
+
+**Is there a race with a round already in flight?** No. After a round
+with 3 s or more left, the agent is in its tick wait, where `go()` is
+asked every WAKE. The rig signals within about 0.1 s of reading the
+line, so the margin covers the poll.
+
+The rule's plants are in `plants_c-py.out` and `plants_c-ar.out`.
+
+| Plant | Description | Result |
+|---|---|---|
+| C08 | the pin not judged | killed |
+| C09 | `rounds_after`'s comparison loosened | killed |
+| C10 | a bad `term-at` taken as 0 | killed |
+| C11 | the pin also judged on runtwice's second signal | survives |
+
+C11 survives because runtwice prints no round line, so the plant
+changes nothing observable. Testing's own T01 to T08 are in the PR
+body.
+
+PLANTS_C_AR
+
+## M1 (medium; test gap; still open at 3b9dc1c). `pin_R-rewind_synced_past` does not show that the begin came after the pool had passed the abandoned groups
+
+`judge_synced` (agent_check.py:683) asks for:
+
+- `synced=` above 0 in round 1;
+- round 1's publish printed published;
 - no later round synced;
 - no `no publish begun` line.
 
-It does not ask that the newest cut opened as itself before round 1
-began its publish, which is the lead's M2.7d decision ("`run` begins no
-publish while the newest cut is behind").
+It does not ask what the lead's M2.7d decision says: that `run` begins
+no publish while the newest cut is behind.
 
-Two regressions would still pass this pin as long as the publish lands
-within two rounds:
+Two regressions pass the pin, as long as the publish lands in time:
 
-- a `sync_past` that returns `Clear` after its first sync;
-- a `run` that begins on `Behind` without printing the line.
+- a `sync_past` that returns `Clear` after one sync;
+- a `run` that begins on `Behind`.
 
-Either way the publish waits as pending while the planner and the writer
-carry the pool past the abandoned groups.
+In both, the publish waits as pending, and the planner and the writer
+carry the pool past.
 
-The artifact already has what a real check needs, with no clock:
+A check with no clock is available in the artifact:
 
 - The first `publish asked` line of round 1's name carries the count
-  that the begin read before the take (here 77).
-- The `cut` line with that number says whether it opened as itself
-  (here cut 77, group 88, `itself`).
+  that the begin read before the take: 77 in run 45918311854.
+- The `cut` line with that number must open `itself`: cut 77 is group
+  88, `itself`.
 
-So the pin could require that the cut at the count of the first ask
-opens as itself. `last_ask` (agent_check.py:516) already reads these
-lines; it keeps the last accepted ask, and this check needs the first
-ask, accepted or refused. A cross-check on
-time:
+`last_ask` (agent_check.py:516) already reads these lines, but it keeps
+the last accepted ask, and this check needs the first. Do not compare
+createtxg with the top before the export: in this run createtxg was 91
+and the top 95, and the agent was right.
 
-- The case's `trace.tsv` puts the intent at 184.368 s.
-- That falls between cut 77 (184.331 s) and cut 78 (group 91, the
-  snapshot's createtxg, 184.437 s).
+The run itself behaved correctly; I checked by hand
+(`rewind_timeline-45918311854.out`). Six syncs took cuts 66 to 77, cut
+76 at group 87 was the first to open as itself, and the intent came at
+184.368 s, after cut 77.
 
-Do not use "createtxg above the top before the export" as the check. In
-this run createtxg was 91, the top 95, and the agent was right.
+## L1 (low; documentation). "The daemon holds every cut from then on" (agent-record.sh:812 at 3b9dc1c, and the description) is not so
 
-Certainty: high. The gap can be read from the code; it was not planted,
-because the regressions are in product code and show only through a
-kernel.
+By D7 the daemon holds at most two cuts: the one being uploaded and the
+newest.
 
-### L1 (low; documentation). "The daemon holds every cut from then on" is not so, and R-rewind does not show the criterion's "with cuts of the abandoned history still held"
+- The cut being uploaded is from the shared history. The freeze came at
+  181.977 s, before cut 52 (group 58) and the rewind group 61.
+- The cut that waits was cut 62 (group 95), the top of the abandoned
+  history. Cut 63 (group 62) replaced it at the import, before `run`.
 
-The comment at agent-record.sh:789-790 and the description's "After a
-rewind import" paragraph say the freeze makes the daemon hold every cut.
-That is not so. By D7 the daemon holds at most two cuts: the one being
-uploaded and the newest.
+So no cut of the abandoned history was held at the publish. R-rewind
+does not show §9's "with cuts of the abandoned history still held",
+which the notes give to M2.T3's last stage. It does show §5.2's other
+half, without pinning it: the publish was asked at groups 91 to 95,
+refused `rewound` three times, and published by the first cut above 95,
+which node B verified. An INFO line with the count of `refused rewound`
+would record that.
 
-- **The cut being uploaded** at the freeze is from the shared history
-  before the rewind. The freeze came at 181.977 s, before cut 52
-  (group 58) and the rewind group 61.
-- **The cut that waits** at the export was cut 62 (group 95), the top of
-  the abandoned history. Cut 63 (group 62, the new history) replaced it
-  at the import, before `run` started.
+## L2 (low). The premise is read before the run's own first `cuts`
 
-So at the publish no cut of the abandoned history was held. That is not
-a defect of the work package, which claims only M2.7d. But the lead
-should not read R-rewind as evidence for §9's "published after a rewind
-import, with cuts of the abandoned history still held". The notes give
-that clause to M2.T3's last stage. Doing it here would take a freeze
-while an abandoned cut is the one being uploaded.
+With the writer off nothing should advance the pool between the two
+reads. If something did, round 1 would print `synced=0` and get FAILED
+rather than ERROR. It was not seen.
 
-What R-rewind does show, without pinning it, is the clause's other half
-from §5.2: "with the pool's groups still below the abandoned ones". The
-publish was asked at groups 91 to 95, refused `rewound` three times, and
-published by the first cut above 95, and node B verified it. This
-deserves an INFO line, such as the count of `refused rewound` for the
-case's names.
+## Nits
 
-### L2 (low). The premise is read before the run's own first `cuts`
+- The header of skyzfs-agent-rig.yml (part r) lists M2.7a's cases, not
+  R-rewind (M2.7d).
+- `round_fields` (4ccc4b4): a field name with a digit or a capital, an
+  empty value, a double space or a trailing space make the whole line
+  "not one of its five", a rig error. That is stricter than "unknown
+  fields are left"; say so in the docstring.
+- 4043629: `ZCR_SETTLE_S=0000000030` is budgeted at 999999 s while the
+  settle takes 30 s. This is harmless.
+- `test_agent_record.sh` does not pin the values `await_rounds` stamps
+  (plant S12, a constant stamp, survives). On a kernel run
+  `judge_rounds` would fail such stamps, so this cannot turn into a
+  pass.
 
-`rewind-cuts.txt` is read after the thaw. With the writer off nothing
-should advance the pool before `run` reads `cuts` itself. If something
-did, round 1 would print `synced=0` and get FAILED, not ERROR. That is
-unlikely, and it was not seen.
-
-### Nits
-
-- The workflow header (skyzfs-agent-rig.yml, part r) lists M2.7a's
-  cases but not R-rewind (M2.7d).
-- 4ccc4b4: a field name after `under_way` with a digit or a capital
-  (`bound2=`, `Bound=`), an empty value, a double space or a trailing
-  space makes the whole line "not one of its five", a rig error (exit 2).
-  That is stricter than "unknown fields are left". It is fine as long as
-  the agent's fields stay `[a-z_]` names; say so in `round_fields`'
-  docstring.
-- 4043629 (carried from the #169 look): `ZCR_SETTLE_S=0000000030` is
-  budgeted at 999999 s while the settle takes 30 s. This is harmless.
-
-## Observation for the lead (O1): where `sync_past` stops and where rule (R) lets a publish through are two different groups
+## O1 for the lead: `sync_past` stops at a lower group than rule (R) lets a publish through
 
 In run 45918311854:
 
 - The pool was rewound from 95 to 61.
-- The first cut that opened as itself came at group **87** (cut 76),
-  after six syncs in 80 ms.
+- The first cut that opened as itself was cut 76, at group **87**, after
+  six syncs in 80 ms.
 - The daemon refused `rewound` until the first cut above **95**, which
   came 15.7 s later.
 
 The first cut came early because of the ring. The ring has 32 slots;
-the run fits 4 KiB slots exactly. The abandoned top 95 sat in slot 31,
-which the new history's group 63 overwrote. Groups 87 to 94 of the
-abandoned history wrote nothing, so they left no uberblock. From then on
-the highest abandoned uberblock in view was 86. The daemon followed the
-ring correctly, and 87 opened as itself.
+the cut lines fit 4 KiB slots exactly. The abandoned top 95 sat in slot
+31, which the new history's group 63 overwrote. The abandoned groups
+from 87 to 94 wrote nothing, so they left no uberblock. The highest
+abandoned uberblock in view was then 86, and the daemon followed the
+ring correctly.
 
-Rule (R)'s mark is the highest group seen (95), and it does not come
-down when that group's slot is overwritten. So:
+Rule (R)'s mark is the highest group seen. It does not come down when
+that group's slot is overwritten, so the rest of the gap closes at
+about one group per txg timeout.
 
-- `sync_past` stops at "opens as itself", which is the design's
-  condition and is met at 87;
-- the rest of the gap is closed at about one group per txg timeout (or
-  by the next round's take);
-- the first publish after the rewind waited 15.7 s, with three refusals.
-
-This is not a defect: the design says the mark errs high and only
-delays. But two places in the text are not exact for 4 KiB slots:
+This is not a defect: the design says the mark only delays. But two
+places in the text are inexact for 4 KiB slots:
 
 - §5.2's "no cut opens as itself until the pool's groups have passed the
-  abandoned ones". It holds for the abandoned uberblocks still in the
-  rings, and here these were fewer than the abandoned groups.
-- The note "closes the window in seconds".
-
-This is also what makes B1's margin thin.
+  abandoned ones" holds for the uberblocks still in the rings;
+- the note "closes the window in seconds".
 
 Decisions for the lead:
 
-- whether `sync_past` should go on until it passes the mark (the `cuts`
-  reply would have to carry it) or the delay is accepted;
-- whether the design's sentence should name the ring.
+- whether `sync_past` should also pass the mark (the `cuts` reply would
+  have to carry it), or the delay is accepted;
+- whether the sentence should name the ring.
 
-## The two asked-about commits
+## The commits asked about
 
-**4ccc4b4 (round line by name).** The fields after `under_way` are
-parsed by name, a regular expression of `name=value` pairs, then
-`round_fields`. `fields_probe.py` (`fields_probe.out`) checked these
-lines:
+**4ccc4b4: the round line read by name.** `fields_probe.py` and
+`fields_probe.out` checked these lines:
 
 | Line | Result |
 |---|---|
-| No `bound=` (a line from before #172) | read, `synced` read |
-| #172's trailing `bound=0` or `bound=1` | read |
-| `bound=` before `synced=` | read |
+| No `bound=` (a line from before #172) | read |
+| #172's trailing `bound=0|1`, in either order | read |
 | An unknown field | read and left |
-| A name that has `synced` as its prefix (`syncedx=`, `synced_total=`, either order) | not taken for `synced` |
-| A field twice | RigError |
-| `synced=-1` | RigError |
+| Names with `synced` as a prefix (`syncedx=`, `synced_total=`) | not taken for `synced` |
+| A field twice, or `synced=-1` | RigError |
 | #172's real line | parses, and `judge_synced` is satisfied |
 
-Five plants were checked against this code, and the tests kill each
-one:
+The tests kill each of these plants:
 
 | Plant | Description |
 |---|---|
-| A12 | the parsing reverted to positional |
+| A12 | positional parsing restored |
 | A13 | a duplicate field accepted |
 | A14 | only the first field read |
 | A15 | `synced` never read |
 | A16 | `synced` not checked to be a count |
 
-The rigs restarted on 4ccc4b4: agent rig run 45918311854 (pull_request),
-the push run cancelled as superseded. My judgement of the rigs is
-against that run.
-
-**4043629 (my #169 lows).**
+**4043629: my lows from the #169 look.**
 
 | Low | How it is answered |
 |---|---|
-| D4 | Rates per round over each side's own window, with medians. The read's window now includes its record's own time, and its busy share is reported. |
+| D4 | Groups a second per round over each side's own window, with medians. The read's window holds its record's time, and its busy share is reported. |
 | P15 | The writer's default margin is pinned (Z09 and Z10 killed). |
-| P18 | The K04 fake lists `@c` and `release_quietly` is anchored (Z11 and Z12 killed). |
-| Q04 | `end_daemon`'s pid is cleared before `rig_error` (plant Q04 killed). |
+| P18 | The K04 fake lists `@c`, and `release_quietly` is anchored (Z11 and Z12). |
+| Q04 | The pid is cleared before `rig_error` (plant Q04). |
 
-Rounds cut at their time limit are reported as `cut` on every side (Z03,
-Z04 and Z13 killed). No recorder run has been dispatched on these
-commits, so there are no D4 figures from a kernel yet. The last
-dispatch, 45895208967, was at af0c183.
+Cut rounds are reported as `cut` on every side (Z03, Z04 and Z13). No
+recorder run has been dispatched on these commits, so there are no D4
+figures from a kernel yet. The last dispatch was 45895208967, at
+af0c183.
 
-## Asked by the author
+## The author's questions
 
 1. **Is the premise real, and can the pin pass vacuously?** The premise
    is real; its second half (`opens=rewind` after the import) carries
-   it. The first half (top above the import's group) is close to always
-   true after an export.
-   - No cut before or after, or a numbering that did not continue below
-     the top (opens itself), both give ERROR (A01-A03, A10 killed).
+   it.
+   - No cut, or a numbering that did not continue below the top, gives
+     ERROR (A01 to A03 and A10 killed).
    - The pin is gated on the premise (A09 killed), so it cannot pass
      vacuously.
-   - Without a sync, a publish or `synced=` it fails (A04-A08, A11
-     killed).
-   - The gap is M1: the pin does not show the begin came after the pool
-     had passed the abandoned groups.
-2. **Does the freeze, export and import hold the abandoned cuts?** No:
-   see L1.
-   - The situation "the pool's newest uberblock is older than the
-     daemon's newest held cut" does occur: top 95, then cuts at 62 to 84
-     open as `rewind`.
+   - With no sync, no publish or no `synced=` it fails (A04 to A08 and
+     A11 killed).
+   - The gap is M1.
+2. **Does the freeze hold the abandoned cuts?** No: see L1.
+   - The pool's newest uberblock is older than the daemon's newest cut:
+     the top was 95, then cuts at 62 to 84 opened as `rewind`.
    - Node B judged the publish right: the row is cut 83, group 96,
      createtxg 91, opens itself; refs, content, read-only import,
-     snapshot listed, 16 files as the source held them.
-   - If the import changed the numbering, or the daemon had no cut, the
-     result would be ERROR, not FAILED.
+     snapshot, 16 files.
 3. **Can a verdict be wrong?**
-   - Yes: B1. A correct agent can be given exit 1 when a round overruns
-     its tick at the SIGTERM.
-   - The exit mapping is consistent: premise means ERROR (2), holds
-     means FAILED (1), any FAILED means 1.
-   - No NA hides a failure in this course.
-   - The controls catch what they claim: `ctl_early`, `ctl_files` and
-     `ctl_manifest` are CAUGHT in job r.
+   - At 4ccc4b4, yes: B1. At 3b9dc1c the rule closes it; see the
+     remaining nits under B1.
+   - The exit mapping is consistent: premise means ERROR, holds means
+     FAILED, any FAILED means 1.
+   - No NA hides a failure.
+   - The three controls are CAUGHT in job r.
 
-## Gates at 4ccc4b4 (local; `gates.out`)
+## Gates
 
-- **Python suites:** every one passes with `python3 -I`: agent_check 106
-  tests, publish_check 48, publish_check_main 55, nodeb_check 29,
-  txg_probe 20, dsync_writer 15, zfs_cli_json 7, cut_check 42 and
-  cut_daemon_check 104.
-- **Shell suites:** `test_zfs_cli_record.sh` 732 ok with 0 FAIL;
-  `test_cut_record.sh` and `test_lim.sh` all passed.
-- **`test_agent_record.sh`:** run 1 hit the known local temp-dir flake
-  (recover and reserve checks); runs 2 and 3 passed.
-- **shellcheck against the base:** no new finding in the rig scripts.
-  The tests have only new SC2317 notes (stubs called indirectly), the
-  same kind the base has.
+At 4ccc4b4 (`gates.out`):
+
+- **Python suites:** all pass with `python3 -I`.
+- **`test_zfs_cli_record.sh`:** 732 ok, 0 FAIL.
+- **`test_cut_record.sh` and `test_lim.sh`:** all passed.
+- **`test_agent_record.sh`:** one run hit the known local temp-dir
+  flake (recover and reserve checks), and two runs were clean.
+- **shellcheck against the base:** only new SC2317 notes in the tests
+  (stubs called indirectly).
 - **YAML:** both workflows parse.
 
-## Plants (`plants.py`, `plants.out`)
+At 3b9dc1c:
 
-Each plant was applied alone to a worktree at 4ccc4b4, with its suite
-run under 600 s and the file restored. The results are in `plants.out`;
-the summary is below.
+- **`test_agent_check.py`:** 107 tests OK.
+- **`test_agent_record.sh`:** AR_CONTROL_C.
+
+## Plants at 4ccc4b4 (`plants.py`, `plants.out`)
 
 PLANTS_SUMMARY
 
-## What the rigs show at 4ccc4b4
+## What the rigs show
 
-Agent rig run 45918311854: all six jobs succeeded, each with worst exit
-0 and no FAILED or ERROR line.
+### Agent rig run 45918311854, at 4ccc4b4
 
-| Job | Duration |
-|---|---|
-| r | 3 m 20 s |
-| a1 | 2 m 37 s |
-| a2 | 2 m 56 s |
-| d | 2 m 28 s |
-| k | 21 m 35 s |
+All six jobs succeeded, each with worst exit 0 and no FAILED or ERROR.
 
-**What job r shows**, on one runner (ubuntu-26.04) in one run:
+**Part r**, on one runner (ubuntu-26.04) in one run:
 
 - the seven run cases ok;
 - R-rewind's premise holds: imported at 61, top cut 95; after the
   import the newest cut is 65 and opens as a rewind;
-- round 1 synced 6 times and began a publish that node B verified;
+- round 1 synced 6 times;
 - two rounds;
-- the run ended 0.26 s after SIGTERM;
-- every published name verified on node B (row, manifest, node B);
-- the three controls are CAUGHT.
+- ended 0.26 s after the SIGTERM;
+- every published name verified on node B;
+- the controls caught.
 
-**What it does not show:**
+The PR body's figures match the artifact. They leave out the three
+refusals and the 3.2 s margin.
 
-- that the begin came after the pass (M1);
+**It does not show:**
+
+- that the begin came after the pass (M1, though I checked it by hand
+  for this run);
 - a held abandoned cut (L1);
-- any margin against B1's race.
+- the 3 s rule, which came in 3b9dc1c.
 
-Other runs at the head:
+### Other runs at 4ccc4b4
 
-- Green: cut-daemon, nodeb, publish, ci, e2e and coverage, skyzfs-ci on
-  the push, and the cut rig (run 45918311923, four images, each job
-  success; this is the rig that runs the changed `end_daemon`).
-- Cancelled at about one minute: the daemon rig, the replay rig and the
-  kernel probe. None of them reads a changed file: no workflow but the
-  agent, cut, cut-daemon, nodeb, publish, zfs-cli-record and the CI
-  ones uses the changed scripts.
+- Green: the cut rig (45918311923, four images), cut-daemon, nodeb,
+  publish, ci, e2e, coverage and skyzfs-ci.
+- The daemon rig, replay rig and probe were cancelled; they read no
+  changed file.
+
+### At 3b9dc1c
+
+AT_C_RUNS
