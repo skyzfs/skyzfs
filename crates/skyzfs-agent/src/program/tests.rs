@@ -179,6 +179,14 @@ fn run_is_parsed_with_its_options() {
         Ok(Command::Run { .. })
     ));
     assert!(USAGE.contains("skyzfs-agent run "));
+    // The usage's N names the bounds that `--keep` takes and its
+    // default, and says N+1 are kept between rounds.
+    assert!(USAGE.contains(&format!(
+        "from 1 to {} ({} by",
+        crate::record::KEEP_MAX,
+        crate::engine::KEEP_DEFAULT
+    )));
+    assert!(USAGE.contains("so N+1 are kept between rounds"));
 }
 
 #[test]

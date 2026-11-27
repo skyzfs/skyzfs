@@ -127,7 +127,9 @@
 //! **Retention** (M2.7b-2): after its begin and before it settles, a
 //! round retires the names published past the newest `--keep`
 //! ([`crate::engine::KEEP_DEFAULT`], at most
-//! [`crate::record::KEEP_MAX`]) and lets the names given up go after
+//! [`crate::record::KEEP_MAX`]); a name counts from the round after it
+//! is published, so with `--keep N` there are N+1 between rounds (the
+//! lead's ruling on #179). It lets the names given up go after
 //! `--abandoned-keep-s` ([`crate::engine::ABANDONED_KEEP_DEFAULT`]), at
 //! most [`crate::engine::STEPS_MAX`] steps in a round
 //! ([`Agent::retain`]). Each name that leaves says so on standard
@@ -536,7 +538,8 @@ pub struct Run {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kept {
     /// `--keep`: the names published kept, from 1 to
-    /// [`crate::record::KEEP_MAX`].
+    /// [`crate::record::KEEP_MAX`]; N+1 between rounds, since a round
+    /// settles its own publish after it retires.
     pub keep: usize,
     /// `--abandoned-keep-s`: how long a name given up is kept.
     pub abandoned_keep: Duration,
@@ -603,6 +606,9 @@ where:
        those of VOL in hex
   DEV  the volume's block device, as skyzfsd serve prints it
   DIR  the agent's own directory of the volume
+  N    the names published that run keeps, from 1 to 1000 (60 by
+       default); a round retires before it settles its own publish,
+       so N+1 are kept between rounds
 test hooks (a build with the feature test-hooks):
   --kill-at EFFECT:before|after[:N]  --trace-points FILE
   --assist-after-s S  --age-max-s S
