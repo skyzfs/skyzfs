@@ -1,0 +1,578 @@
+[
+ {
+  "id": "C1-other",
+  "what": "destroy_one: a destroy not run rewrapped as Other (the review's B-cli-one-other)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "        // As `destroy -r`: killed at its limit, the ioctl may finish in\n        // its own time.\n        let output = self\n            .exec(\"zfs\", &args, &[], self.change_limit())\n            .map_err(|e| match e {\n                ZfsError::NotRun(why) => {\n                    ZfsError::NotRun(",
+    "        // As `destroy -r`: killed at its limit, the ioctl may finish in\n        // its own time.\n        let output = self\n            .exec(\"zfs\", &args, &[], self.change_limit())\n            .map_err(|e| match e {\n                ZfsError::NotRun(why) => {\n                    ZfsError::Other("
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C2-gone",
+  "what": "destroy_one: `dataset does not exist` (NoSnapshot) taken as an error (B-cli-one-gone)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0) || says(&output.stderr, \"could not find any snapshots to destroy\")\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Ok(()),\n            e => Err(e),\n",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0) || says(&output.stderr, \"could not find any snapshots to destroy\")\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Err(ZfsError::NoSnapshot),\n            e => Err(e),\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C3-guard",
+  "what": "destroy_one: the guard's || made && (B-cli-one-guard)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "if !skyzfs_control::valid_name(t) || !under || dataset.contains('@') {",
+    "if !skyzfs_control::valid_name(t) && !under && dataset.contains('@') {"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C4-notfound",
+  "what": "destroy_one: `could not find any snapshots` read as an error (N2 undone)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0) || says(&output.stderr, \"could not find any snapshots to destroy\")\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Ok(()),\n            e => Err(e),\n",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0)\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Ok(()),\n            e => Err(e),\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C5-anyok",
+  "what": "destroy_one: any failure read as destroyed",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0) || says(&output.stderr, \"could not find any snapshots to destroy\")\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Ok(()),\n            e => Err(e),\n",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0) || says(&output.stderr, \"could not find any snapshots to destroy\")\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Ok(()),\n            _ => Ok(()),\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C6-nounder",
+  "what": "destroy_one: no check that the dataset is under the pool",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "if !skyzfs_control::valid_name(t) || !under || dataset.contains('@') {",
+    "if !skyzfs_control::valid_name(t) || dataset.contains('@') {"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C7-noat",
+  "what": "destroy_one: no check of an `@` in the dataset",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "if !skyzfs_control::valid_name(t) || !under || dataset.contains('@') {",
+    "if !skyzfs_control::valid_name(t) || !under {"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C8-novalid",
+  "what": "destroy_one: no check that t is a snapshot's name",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "if !skyzfs_control::valid_name(t) || !under || dataset.contains('@') {",
+    "if !under || dataset.contains('@') {"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "C9-notfound-any",
+  "what": "destroy_one: the not-found line read as destroyed only on exit 0 path dropped, any exit 1 with no stderr read as destroyed",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/zfs/cli.rs",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0) || says(&output.stderr, \"could not find any snapshots to destroy\")\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Ok(()),\n            e => Err(e),\n",
+    "        // (N2 of the review of #179).\n        if output.code == Some(0) || output.code == Some(1)\n        {\n            return Ok(());\n        }\n        match self.failed(\"zfs\", &args, &output, true, pool) {\n            ZfsError::NoSnapshot => Ok(()),\n            e => Err(e),\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-a-unset",
+  "what": "a retire refused stopped does not set the flag",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                match code {\n                    Code::NoAnswer => self.retention.silent = true,\n                    Code::Stopped => self.retention.stopped = true,\n                    _ => {}\n                }\n",
+    "                match code {\n                    Code::NoAnswer => self.retention.silent = true,\n                    Code::Stopped => {}\n                    _ => {}\n                }\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-b-noreset",
+  "what": "the flag not cleared at the next round",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "        self.retention.stopped = false;\n",
+    ""
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-c-anyrefusal",
+  "what": "any refusal of a retire taken as stopped",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                match code {\n                    Code::NoAnswer => self.retention.silent = true,\n                    Code::Stopped => self.retention.stopped = true,\n                    _ => {}\n                }\n",
+    "                match code {\n                    Code::NoAnswer => self.retention.silent = true,\n                    Code::Stopped => self.retention.stopped = true,\n                    _ => self.retention.stopped = true,\n                }\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-d-assilent",
+  "what": "stopped taken as silent (ends the looks too)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                match code {\n                    Code::NoAnswer => self.retention.silent = true,\n                    Code::Stopped => self.retention.stopped = true,\n                    _ => {}\n                }\n",
+    "                match code {\n                    Code::NoAnswer => self.retention.silent = true,\n                    Code::Stopped => self.retention.silent = true,\n                    _ => {}\n                }\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-e-skipignores",
+  "what": "the skip of the marked names ignores the flag",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Retire::Ref if self.retention.silent || self.retention.stopped => {}\n",
+    "                Retire::Ref if self.retention.silent => {}\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-f-members",
+  "what": "stopped also skips the members' destroys of names whose ref is retired",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Retire::Ref if self.retention.silent || self.retention.stopped => {}\n",
+    "                Retire::Ref if self.retention.silent => {}\n                _ if self.retention.stopped => {}\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-g-looks",
+  "what": "stopped also skips the give-ups' looks",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Some(Due::Destroy { look: true, .. }) if self.retention.silent => {}\n",
+    "                Some(Due::Destroy { look: true, .. }) if self.retention.silent || self.retention.stopped => {}\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-h-giveups",
+  "what": "stopped also skips every step of the names given up",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Some(_) if *steps >= STEPS_MAX => {}\n",
+    "                Some(_) if *steps >= STEPS_MAX => {}\n                Some(_) if self.retention.stopped => {}\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-i-stepcost",
+  "what": "a retire skipped for stopped still costs a step",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Retire::Ref if self.retention.silent || self.retention.stopped => {}\n",
+    "                Retire::Ref if self.retention.silent || self.retention.stopped => {\n                    steps += 1;\n                }\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "N1-j-stoponly",
+  "what": "silent no longer skips the marked names, only stopped",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Retire::Ref if self.retention.silent || self.retention.stopped => {}\n",
+    "                Retire::Ref if self.retention.stopped => {}\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "T2-silent-all",
+  "what": "after a retire not answered or refused stopped the members' steps stop too (B-silent-all)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Retire::Ref if self.retention.silent || self.retention.stopped => {}\n",
+    "                _ if self.retention.silent || self.retention.stopped => {}\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "T3-nr-turn",
+  "what": "a stuck name whose destroy was not run does not move the turn (B-nr-turn)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "                Destroyed::Failed | Destroyed::NotRun => {\n                    self.retention.stuck_last = Some(name.clone())\n                }\n",
+    "                Destroyed::Failed => {\n                    self.retention.stuck_last = Some(name.clone())\n                }\n                Destroyed::NotRun => {}\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "T4-early-nofilter",
+  "what": "names already past their keep also counted as early (B-early-nofilter)",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/engine/retain.rs",
+    "            .filter(|&i| {\n                self.record\n                    .abandoned\n                    .get(i)\n                    .is_some_and(|a| now.saturating_sub(a.at_ms) < bound)\n            })\n",
+    ""
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G1",
+  "what": "cap: every Retry counted, not only a reopen's",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if verdict == Verdict::Retry && matches!(step, Some(Step::Reopened { .. })) {",
+    "if verdict == Verdict::Retry {"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G1b",
+  "what": "cap: every reopen counted whatever its verdict",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "if verdict == Verdict::Retry && matches!(step, Some(Step::Reopened { .. })) {",
+    "if matches!(step, Some(Step::Reopened { .. })) {"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G3",
+  "what": "cap: only one more reopen after it",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "since_cap.is_multiple_of(REOPEN_CAP)",
+    "since_cap == REOPEN_CAP"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G3b",
+  "what": "cap: every round past the 10th after it reopens",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "since_cap.is_multiple_of(REOPEN_CAP)",
+    "since_cap >= REOPEN_CAP"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G6",
+  "what": "quick retries never renewed by another verdict",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "        } else {\n            quick = 0;\n        }\n",
+    "        }\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G12",
+  "what": "a new note does not start the counts again",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "                    noted = Some(*note);\n                    reopens = 0;\n                    since_cap = 0;\n                    quick = 0;\n",
+    "                    noted = Some(*note);\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G12a",
+  "what": "a new note keeps the reopens only",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "                    noted = Some(*note);\n                    reopens = 0;\n                    since_cap = 0;\n                    quick = 0;\n",
+    "                    noted = Some(*note);\n                    since_cap = 0;\n                    quick = 0;\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G12b",
+  "what": "a new note keeps the rounds since the cap only",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "                    noted = Some(*note);\n                    reopens = 0;\n                    since_cap = 0;\n                    quick = 0;\n",
+    "                    noted = Some(*note);\n                    reopens = 0;\n                    quick = 0;\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "G12c",
+  "what": "a new note keeps the quick retries only",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "                    noted = Some(*note);\n                    reopens = 0;\n                    since_cap = 0;\n                    quick = 0;\n",
+    "                    noted = Some(*note);\n                    reopens = 0;\n                    since_cap = 0;\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ },
+ {
+  "id": "K1",
+  "what": "the usage's N says N kept between rounds",
+  "edits": [
+   [
+    "crates/skyzfs-agent/src/program.rs",
+    "       so N+1 are kept between rounds\n",
+    "       so N are kept between rounds\n"
+   ]
+  ],
+  "cmd": [
+   "cargo",
+   "test",
+   "-p",
+   "skyzfs-agent",
+   "--lib"
+  ]
+ }
+]
