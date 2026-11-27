@@ -1322,6 +1322,7 @@ impl World {
             Request::Progress(_) => "progress",
             Request::Withdraw(_) => "withdraw",
             Request::Look(_) => "look",
+            Request::Retire(_) => "retire",
         });
         if *request == Request::Cuts {
             let k = self.cuts_read;
@@ -1346,6 +1347,7 @@ impl World {
                 state: Some(daemon.state),
                 count: daemon.count(),
                 newest: daemon.cuts.last().map(|c| (c.group, c.itself)),
+                rewound: daemon.rewound,
             }),
             Request::Publish(request) => return self.publish(request, manifest),
             Request::Progress(_) | Request::Withdraw(_) if self.now_ms < self.silent_until => {
@@ -1374,6 +1376,16 @@ impl World {
                     manifest_len: u32::try_from(r.manifest.len()).unwrap_or(u32::MAX),
                     manifest_hash: manifest::hash(&r.manifest),
                 }),
+            },
+            // As the daemon retires (M2.7b-1): only where `snap/T` names
+            // the request's commit.
+            Request::Retire(r) => match self.refs.get(&r.name) {
+                None => Reply::Gone,
+                Some(s) if s.commit == r.commit => {
+                    self.refs.remove(&r.name);
+                    Reply::Retired
+                }
+                Some(_) => Reply::Refused(Code::Other, "snap/T names another commit".into()),
             },
         })
     }

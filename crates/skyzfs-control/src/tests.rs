@@ -40,6 +40,13 @@ fn unreadable(why: Unread) -> Reply {
     })
 }
 
+fn retire() -> Request {
+    Request::Retire(Retire {
+        name: "pool-7.b_c".into(),
+        commit: [0xc0; 32],
+    })
+}
+
 const EVERY_UNREAD: [Unread; 4] = [
     Unread::NoRow,
     Unread::Version,
@@ -48,12 +55,16 @@ const EVERY_UNREAD: [Unread; 4] = [
 ];
 
 /// Mutant: any word of the protocol changed, the greeting's included
-/// (it is version 2's: a change is a new version).
+/// (it is version 3's: a change is a new version).
 #[test]
-fn the_lines_are_version_2s_words() {
+fn the_lines_are_version_3s_words() {
     let hex_a = "a1".repeat(16);
     let hex_s = "5e".repeat(16);
-    assert_eq!(HELLO, "skyzfs-control 2");
+    assert_eq!(HELLO, "skyzfs-control 3");
+    assert_eq!(
+        retire().line(),
+        format!("retire name=pool-7.b_c commit={}", "c0".repeat(32))
+    );
     assert_eq!(Request::Cuts.line(), "cuts");
     assert_eq!(
         publish(None).line(),
@@ -77,20 +88,21 @@ fn the_lines_are_version_2s_words() {
             state,
             count: 7,
             newest,
+            rewound: 5,
         })
         .line()
     };
     assert_eq!(
         cuts(None, None),
-        format!("cuts attachment={hex_a} state=none count=7 group=none opens=none")
+        format!("cuts attachment={hex_a} state=none count=7 group=none opens=none rewound=5")
     );
     assert_eq!(
         cuts(Some(S), Some((12, true))),
-        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=itself")
+        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=itself rewound=5")
     );
     assert_eq!(
         cuts(Some(S), Some((12, false))),
-        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=rewind")
+        format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=rewind rewound=5")
     );
     assert_eq!(
         Reply::Done([0x0f; 32]).line(),
@@ -125,6 +137,8 @@ fn the_lines_are_version_2s_words() {
         (Reply::Withdrawn, "withdrawn"),
         (Reply::Unknown, "unknown"),
         (Reply::Absent, "absent"),
+        (Reply::Retired, "retired"),
+        (Reply::Gone, "gone"),
         (
             Reply::Refused(Code::NoAnswer, "late".into()),
             "refused no-answer late",
@@ -152,7 +166,8 @@ fn the_lines_are_version_2s_words() {
             "no-upload",
             "ended",
             "no-answer",
-            "store"
+            "store",
+            "other"
         ]
     );
 }
@@ -167,6 +182,7 @@ fn every_line_reads_back_as_written() {
         Request::Progress("x".into()),
         Request::Withdraw("y".into()),
         Request::Look("z".into()),
+        retire(),
     ];
     for request in requests {
         assert_eq!(Request::parse(&request.line()), Ok(request));
@@ -179,6 +195,8 @@ fn every_line_reads_back_as_written() {
         Reply::Withdrawn,
         Reply::Unknown,
         Reply::Absent,
+        Reply::Retired,
+        Reply::Gone,
         snap(0, 0, 0),
         snap(u64::MAX, u64::MAX, u32::MAX),
         // A number and a group that differ, read each from its own word
@@ -194,6 +212,7 @@ fn every_line_reads_back_as_written() {
                 state,
                 count: u64::MAX,
                 newest,
+                rewound: u64::MAX,
             }));
         }
     }
@@ -242,19 +261,24 @@ fn each_line_of_version_1_reads_the_same_in_version_2() {
             state,
             count: 7,
             newest,
+            rewound: 5,
         })
     };
     let mut replies = vec![
         (
-            format!("cuts attachment={hex_a} state=none count=7 group=none opens=none"),
+            format!("cuts attachment={hex_a} state=none count=7 group=none opens=none rewound=5"),
             cuts(None, None),
         ),
         (
-            format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=itself"),
+            format!(
+                "cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=itself rewound=5"
+            ),
             cuts(Some(S), Some((12, true))),
         ),
         (
-            format!("cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=rewind"),
+            format!(
+                "cuts attachment={hex_a} state={hex_s} count=7 group=12 opens=rewind rewound=5"
+            ),
             cuts(Some(S), Some((12, false))),
         ),
         ("accepted".into(), Reply::Accepted),
@@ -295,6 +319,43 @@ fn each_line_of_version_1_reads_the_same_in_version_2() {
     }
 }
 
+/// Each line that version 2 added reads the same in version 3 (those
+/// of version 1 are the test above's): the greeting changed for
+/// `retire` and its words, and no line of version 2 did. Mutant: a word
+/// of version 2 changed.
+#[test]
+fn each_line_of_version_2_reads_the_same_in_version_3() {
+    let hex_s = "5e".repeat(16);
+    let commit = "0f".repeat(32);
+    assert_eq!(Request::parse("look name=t"), Ok(Request::Look("t".into())));
+    let replies = [
+        ("absent".to_string(), Reply::Absent),
+        (
+            format!(
+                "snap commit={commit} state={hex_s} number=3 group=41 manifest-len=19 \
+                 manifest-hash={}",
+                "40".repeat(32)
+            ),
+            snap(3, 41, 19),
+        ),
+        (
+            format!("unreadable commit={} why=other-commit", "0e".repeat(32)),
+            unreadable(Unread::OtherCommit),
+        ),
+        (
+            "refused rewound it says why".into(),
+            Reply::Refused(Code::Rewound, "it says why".into()),
+        ),
+        (
+            "refused store it says why".into(),
+            Reply::Refused(Code::Store, "it says why".into()),
+        ),
+    ];
+    for (line, reply) in replies {
+        assert_eq!(Reply::parse(&line), Ok(reply), "{line}");
+    }
+}
+
 /// Mutant: a key taken twice, a key of another verb, or a value parsed
 /// loosely.
 #[test]
@@ -316,6 +377,13 @@ fn a_line_that_is_not_exactly_a_request_does_not_parse() {
         "withdraw name=t after=1".into(),
         "look".into(),
         "look name=t group=1".into(),
+        "retire".into(),
+        "retire name=t".into(),
+        format!("retire commit={}", "c0".repeat(32)),
+        format!("retire name=t commit={}", "c0".repeat(31)),
+        format!("retire name=t commit={}g", "c0".repeat(31)),
+        format!("retire name=t commit={} after=1", "c0".repeat(32)),
+        format!("retire name=t name=u commit={}", "c0".repeat(32)),
         good.replace(" group=2", ""),
         good.replace("after=1", "after=+1"),
         good.replace("after=1", "after=-1"),
@@ -338,8 +406,11 @@ fn a_line_that_is_not_exactly_a_request_does_not_parse() {
         "done",
         "done commit=00",
         "refused nope why",
-        &format!("cuts attachment={a} state=none count=1 group=3 opens=none"),
-        &format!("cuts attachment={a} state=none count=1 group=none opens=itself"),
+        &format!("cuts attachment={a} state=none count=1 group=3 opens=none rewound=0"),
+        // The `cuts` answer of version 2, which has no rewind mark.
+        &format!("cuts attachment={a} state=none count=1 group=none opens=none"),
+        &format!("cuts attachment={a} state=none count=1 group=none opens=none rewound=x"),
+        &format!("cuts attachment={a} state=none count=1 group=none opens=itself rewound=0"),
         "absent now",
         &snap_line.replace(" number=3", ""),
         &snap_line.replace("state=", "attachment="),
@@ -379,40 +450,44 @@ mod socket {
         tempfile::tempdir().expect("a directory")
     }
 
-    /// A daemon of version 1 greets with its own greeting, and its answer
-    /// is not read, even one that would parse: the client of version 2
-    /// gives an error that names both greetings. Mutant: the greeting not
-    /// compared.
+    /// A daemon of an earlier version greets with its own greeting, and
+    /// its answer is not read, even one that would parse: the client
+    /// gives an error that names both greetings and the deploy order
+    /// (version 3, M2.7b-1). Mutant: the greeting not compared.
     #[test]
-    fn a_daemon_of_version_1_is_not_read() {
+    fn a_daemon_of_an_earlier_version_is_not_read() {
         use std::io::{BufRead, Write};
-        let dir = dir();
-        let path = dir.path().join("v1.sock");
-        let listener = UnixListener::bind(&path).expect("bound");
-        let daemon = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accepted");
-            let mut reader = io::BufReader::new(stream.try_clone().expect("cloned"));
-            let mut greeting = String::new();
-            reader.read_line(&mut greeting).expect("read");
-            let mut stream = stream;
-            stream
-                .write_all(
-                    b"skyzfs-control 1\nrefused version this daemon speaks `skyzfs-control 1`\n",
-                )
-                .expect("written");
-            greeting
-        });
-        let asked = client::ask(&path, &Request::Cuts, &[], Duration::from_secs(10));
-        assert_eq!(daemon.join().ok(), Some(format!("{HELLO}\n")));
-        let Err(e) = asked else {
-            panic!("an answer of version 1 was read: {asked:?}");
-        };
-        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-        let why = e.to_string();
-        assert!(
-            why.contains("`skyzfs-control 1`") && why.contains(HELLO),
-            "{why}"
-        );
+        for version in [1, 2] {
+            let dir = dir();
+            let path = dir.path().join("old.sock");
+            let listener = UnixListener::bind(&path).expect("bound");
+            let daemon = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accepted");
+                let mut reader = io::BufReader::new(stream.try_clone().expect("cloned"));
+                let mut greeting = String::new();
+                reader.read_line(&mut greeting).expect("read");
+                let mut stream = stream;
+                let answer = format!(
+                    "skyzfs-control {version}\nrefused version this daemon speaks \
+                     `skyzfs-control {version}`\n"
+                );
+                stream.write_all(answer.as_bytes()).expect("written");
+                greeting
+            });
+            let asked = client::ask(&path, &Request::Cuts, &[], Duration::from_secs(10));
+            assert_eq!(daemon.join().ok(), Some(format!("{HELLO}\n")));
+            let Err(e) = asked else {
+                panic!("an answer of version {version} was read: {asked:?}");
+            };
+            assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+            let why = e.to_string();
+            assert!(
+                why.contains(&format!("`skyzfs-control {version}`"))
+                    && why.contains(HELLO)
+                    && why.contains("deploy them together"),
+                "{why}"
+            );
+        }
     }
 
     /// A daemon whose socket's backlog is full, and that takes no more

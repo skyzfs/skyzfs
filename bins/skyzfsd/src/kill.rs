@@ -15,6 +15,10 @@
 //!   (under `skyzfs/manifest/`) comes before it and is not counted.
 //! - `publish:N`: once the Nth publish's transaction has landed (its ref
 //!   `snap/<name>` and its row), before the uploader knows it (M2.5-2).
+//! - `retire:N`: once the Nth retire's transaction has landed (its ref
+//!   `snap/<name>` deleted with its row), before the uploader knows it
+//!   (M2.7b-1). A retire answered `gone` or `other` lands no
+//!   transaction and is not counted.
 //! - `carry-put:N`: once the first PUT of a segment of the cut chosen to
 //!   carry publish N has landed (M2.6c-4).
 //! - `carry-swap:N`: once the commit of the cut chosen to carry publish N
@@ -121,7 +125,7 @@ use skyzfs_blk::Buf;
 use skyzfs_local::inplace::{CommittedCut, CutSlice};
 use skyzfs_upload::publish::{Found, Progress, Request, Snapshot};
 use skyzfs_upload::{
-    Answer, Control, EngineRemote, Local, Observed, Queued, Released, Remote, RemoteError,
+    Answer, Control, EngineRemote, Local, Observed, Queued, Released, Remote, RemoteError, Retired,
     Uploadable,
 };
 use tokio::sync::{mpsc, oneshot};
@@ -756,25 +760,28 @@ impl<S: ObjectStore> ObjectStore for KillStore<S> {
     }
 }
 
-/// The uploader's remote, with `swap:N` and `publish:N`.
+/// The uploader's remote, with `swap:N`, `publish:N` and `retire:N`.
 pub struct KillRemote<R> {
     inner: R,
     at: Option<u64>,
     swaps: u64,
     publish_at: Option<u64>,
     publishes: u64,
+    retire_at: Option<u64>,
+    retires: u64,
     die: Die,
     carry: Option<Arc<Carry>>,
 }
 
 impl<R> KillRemote<R> {
-    /// `inner`, killed at by `die` where `kill` is `swap:N` or
-    /// `publish:N`.
+    /// `inner`, killed at by `die` where `kill` is `swap:N`,
+    /// `publish:N` or `retire:N`.
     pub fn new(inner: R, kill: Option<KillAt>, die: Die) -> Self {
-        let (at, publish_at) = match kill {
-            Some(KillAt::Swap(n)) => (Some(n), None),
-            Some(KillAt::Publish(n)) => (None, Some(n)),
-            _ => (None, None),
+        let (at, publish_at, retire_at) = match kill {
+            Some(KillAt::Swap(n)) => (Some(n), None, None),
+            Some(KillAt::Publish(n)) => (None, Some(n), None),
+            Some(KillAt::Retire(n)) => (None, None, Some(n)),
+            _ => (None, None, None),
         };
         Self {
             inner,
@@ -782,6 +789,8 @@ impl<R> KillRemote<R> {
             swaps: 0,
             publish_at,
             publishes: 0,
+            retire_at,
+            retires: 0,
             die,
             carry: None,
         }
@@ -858,6 +867,24 @@ impl<R: Remote> Remote for KillRemote<R> {
             carry.published(snapshot.name, snapshot.row.cut);
         }
         Ok(())
+    }
+
+    async fn retire(
+        &mut self,
+        name: &str,
+        commit: CommitHash,
+    ) -> std::result::Result<Retired, RemoteError> {
+        let retired = self.inner.retire(name, commit).await?;
+        if retired == Retired::Retired {
+            self.retires += 1;
+            if self.retire_at == Some(self.retires) {
+                (self.die)(&format!(
+                    "after the transaction of retire {} ({name}) landed, before the uploader knew it",
+                    self.retires
+                ));
+            }
+        }
+        Ok(retired)
     }
 
     fn discard(&mut self) {

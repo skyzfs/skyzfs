@@ -697,8 +697,8 @@ fn a_write_away_from_the_labels_has_its_hashes_and_its_bytes() {
     assert_eq!(std::fs::read(&data_path).expect("the data"), &buf[..]);
 }
 
-/// The channel's requests to publish and to withdraw have their `publish`
-/// lines, with the answer the channel gave (a refusal's code, not its
+/// The channel's requests to publish, to withdraw and to retire have
+/// their `publish` lines, with the answer the channel gave (a refusal's code, not its
 /// text); a count of cuts and a look at a publish's progress have none.
 /// A publish that ends has its line too, as the uploader's thread writes
 /// it (M2.5-2).
@@ -768,5 +768,30 @@ fn a_publish_has_its_lines_as_asked_and_as_it_ended() {
     assert_eq!(
         lines(&path).last().map(String::as_str),
         Some(format!("{p}\tpublish\t-\tasked\t79\t7\tsnap-e accepted").as_str())
+    );
+
+    // A retire has its line too, with its answer (M2.7b-1).
+    let mut retires = VecDeque::from([
+        Reply::Retired,
+        Reply::Gone,
+        Reply::Refused(Code::Other, "snap/T names commit ...".into()),
+    ]);
+    let asked = Box::new(move |_: &Request, _: Vec<u8>| retires.pop_front().expect("an answer"));
+    let mut channel = super::channel(asked, Lines::another(&file));
+    for name in ["snap-f", "snap-g", "snap-h"] {
+        let retire = Request::Retire(crate::control::Retire {
+            name: name.into(),
+            commit: [0xcd; 32],
+        });
+        channel(&retire, Vec::new());
+    }
+    let all = lines(&path);
+    assert_eq!(
+        all[all.len() - 3..],
+        [
+            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-f retired"),
+            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-g gone"),
+            format!("{p}\tpublish\t-\tretire\t-\t-\tsnap-h refused other"),
+        ]
     );
 }

@@ -107,12 +107,26 @@
 //! answer: the channel asks it of the store at the desk
 //! (`queued::Desk::cuts_now`), beside the uploader's calls.
 //!
+//! **A retire** (M2.7b, the agent's retention) is the one request that
+//! calls object storage: it is not answered between two turns but
+//! queued ([`Control::Retire`]), and taken at the next turn as a step of
+//! its own, before the publishes' and the cut's, under the lease and
+//! the fence as they are ([`Driver::retire`]). It is answered after
+//! that step. It is refused at once where the asker has stopped
+//! waiting, where the uploader steps no more, or where a publish of
+//! the name pends; one asked before the lease is first held waits for
+//! it, and a stop answers each retire that waits `stopped`. A retire
+//! that lands, or finds no `snap/T`, ends what the uploader kept of the
+//! name's publish ([`Publishing::retired`]).
+//!
 //! [`Uploader::run`] turns it until it is told to stop, and takes it by
 //! value: a turn dropped at the stop can leave the driver half way
 //! through a step (`Driver::step` is not made to be dropped at an
 //! await), so nothing may turn it again (F2 of #117's review). It gives
 //! back the lease's keeper, for the caller to let go.
 
+use std::collections::VecDeque;
+use std::future::Future;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -126,7 +140,8 @@ use crate::driver::{Doing, Driver, Figures, Step};
 use crate::lease::{Keeper, LeaseState};
 use crate::local::Local;
 use crate::publish::{Answer, Progress, PublishFigures, Publishing, Request};
-use crate::remote::{Remote, RemoteError};
+use crate::remote::{Remote, RemoteError, Retired};
+use skynbd_types::CommitHash;
 
 /// How long an idle uploader waits before it asks the store again for a
 /// cut: a round trip to the queue's thread four times a second.
@@ -286,6 +301,58 @@ pub enum Control {
     Progress(String, oneshot::Sender<Progress>),
     /// Withdraw the publish of a name ([`Publishing::withdraw`]).
     Withdraw(String, oneshot::Sender<Progress>),
+    /// Retire `snap/<name>` where it names `commit` ([`Remote::retire`];
+    /// the agent's retention, M2.7b): a step of its own, taken at the
+    /// next turn before the publishes' and the cut's, under the lease
+    /// and the fence as theirs are, and answered after it. Refused at
+    /// once where the uploader steps no more, or where a publish of the
+    /// name pends on it; one asked before the lease is first held waits
+    /// for it.
+    Retire {
+        /// The snapshot's name.
+        name: String,
+        /// The commit its ref must name.
+        commit: CommitHash,
+        /// Where the answer goes.
+        reply: oneshot::Sender<Result<Retired, RetireRefused>>,
+    },
+}
+
+/// Why the uploader retired nothing ([`Control::Retire`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetireRefused {
+    /// The uploader steps no more ([`Publishing::stopped`]): its lease
+    /// lost, a transaction refused by the fence, or the store keeping a
+    /// cut. Asked before it stopped, the retire was not made.
+    Stopped,
+    /// A publish of the name pends on this uploader.
+    Asked,
+    /// Object storage answered with an error, or `snap/T` moved at each
+    /// of [`crate::remote::RETIRE_TRIES`] tries: the transaction may have
+    /// landed, and asking again tells. The text says which, whole: it
+    /// names object storage itself, so a caller adds no prefix.
+    Store(String),
+}
+
+/// The text of a retire that failed for [`RetireRefused::Store`]. A
+/// conflict of a retire is `snap/T` moving under it, not the head or a
+/// cut's row as for a publish ([`RemoteError::Conflict`]'s own text).
+fn retire_failed(e: &RemoteError) -> String {
+    match e {
+        RemoteError::Conflict => format!(
+            "object storage: snap/T moved under each of {} tries",
+            crate::remote::RETIRE_TRIES
+        ),
+        other => other.to_string(),
+    }
+}
+
+/// A retire asked, waiting for its turn.
+#[derive(Debug)]
+struct RetireAsk {
+    name: String,
+    commit: CommitHash,
+    reply: oneshot::Sender<Result<Retired, RetireRefused>>,
 }
 
 /// The driver, the lease and the backoff. `M` makes the remote, fenced by
@@ -317,6 +384,8 @@ pub struct Uploader<L, R, F, M> {
     /// The publishes asked before the driver is made, which it then takes
     /// ([`Uploader::publishing`]).
     publishing: Option<Publishing>,
+    /// The retires asked and not yet taken ([`Control::Retire`]).
+    retires: VecDeque<RetireAsk>,
 }
 
 impl<L, R, F, M> Uploader<L, R, F, M>
@@ -351,6 +420,7 @@ where
             step_at: now,
             turns: Turns::default(),
             publishing: Some(Publishing::default()),
+            retires: VecDeque::new(),
         }
     }
 
@@ -425,6 +495,37 @@ where
                 let _ = reply.send(self.publishing().withdraw(&name));
                 false
             }
+            Control::Retire {
+                name,
+                commit,
+                reply,
+            } => {
+                if reply.is_closed() {
+                    return false;
+                }
+                if self.publishing().stopped() {
+                    let _ = reply.send(Err(RetireRefused::Stopped));
+                    return false;
+                }
+                if self.publishing().progress(&name) == Progress::Pending {
+                    let _ = reply.send(Err(RetireRefused::Asked));
+                    return false;
+                }
+                self.retires.push_back(RetireAsk {
+                    name,
+                    commit,
+                    reply,
+                });
+                true
+            }
+        }
+    }
+
+    /// Answer every retire that waits [`RetireRefused::Stopped`]: the
+    /// uploader steps no more.
+    fn refuse_retires(&mut self) {
+        for ask in self.retires.drain(..) {
+            let _ = ask.reply.send(Err(RetireRefused::Stopped));
         }
     }
 
@@ -454,6 +555,17 @@ where
     /// is counted from when that call came back, so a backoff starts at
     /// the failure and a slow take's wait at the take's end.
     pub async fn turn(&mut self) -> Duration {
+        let wait = self.turn_once().await;
+        // A stop during the turn, or before it, answers the retires that
+        // wait: none will be taken.
+        if self.publishing().stopped() {
+            self.refuse_retires();
+        }
+        wait
+    }
+
+    /// [`Uploader::turn`], with the retires that wait left as they are.
+    async fn turn_once(&mut self) -> Duration {
         let mut now = Instant::now();
         // Publishes whose time is up end now, whatever the uploader does
         // next, so that `publish?` says so as soon as it is so.
@@ -494,6 +606,35 @@ where
             self.state = State::Stopped;
             driver.publishing().stop();
             return AT_REST;
+        }
+        // A retire asked is taken first, and alone in its turn: the agent
+        // asks one at a time and waits for its answer.
+        while let Some(ask) = self.retires.pop_front() {
+            if ask.reply.is_closed() {
+                // The agent stopped waiting: asked again, it is taken then.
+                continue;
+            }
+            let (retired, _) = Self::keeping(
+                driver.retire(&ask.name, ask.commit),
+                &mut self.lease,
+                &mut self.lease_backoff,
+                &mut self.lease_at,
+            )
+            .await;
+            return match retired {
+                Ok(retired) => {
+                    let _ = ask.reply.send(Ok(retired));
+                    Duration::ZERO
+                }
+                Err(RemoteError::Fenced { holder, epoch }) => {
+                    let _ = ask.reply.send(Err(RetireRefused::Stopped));
+                    self.fenced(holder, epoch)
+                }
+                Err(e) => {
+                    let _ = ask.reply.send(Err(RetireRefused::Store(retire_failed(&e))));
+                    Duration::ZERO
+                }
+            };
         }
         // A publish and the cut share the time while both are due:
         // several publishes whose steps fail slowly, each with its own
@@ -633,13 +774,25 @@ where
         lease_backoff: &mut Backoff,
         lease_at: &mut Instant,
     ) -> (Result<Step, RemoteError>, Instant) {
-        let mut step = std::pin::pin!(async {
+        let step = async {
             if publish {
                 driver.step_publish().await
             } else {
                 driver.step_cut().await
             }
-        });
+        };
+        Self::keeping(step, lease, lease_backoff, lease_at).await
+    }
+
+    /// Run `step` with the lease kept beside it, as
+    /// [`Uploader::step_keeping`] says; its output, and when it came back.
+    async fn keeping<T>(
+        step: impl Future<Output = T>,
+        lease: &mut Keeper<F>,
+        lease_backoff: &mut Backoff,
+        lease_at: &mut Instant,
+    ) -> (T, Instant) {
+        let mut step = std::pin::pin!(step);
         loop {
             tokio::select! {
                 biased;

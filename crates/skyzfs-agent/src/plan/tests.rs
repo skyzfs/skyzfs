@@ -102,6 +102,7 @@ fn cuts() -> CutsReply {
         state: Some(STATE),
         count: C,
         newest: Some((G - 1, true)),
+        rewound: 0,
     }
 }
 

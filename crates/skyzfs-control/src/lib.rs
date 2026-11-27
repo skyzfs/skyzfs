@@ -20,9 +20,18 @@
 //! the protocol's: the uploader's rule of a publish
 //! (`skyzfs_upload::publish`) applies these same ones, from here.
 //!
-//! # The protocol, version 2
+//! # The protocol, version 3
 //!
-//! Version 2 is version 1 with the verb `look`, its answers `snap`,
+//! Version 3 (work package M2.7b) is version 2 with the verb `retire`,
+//! its answers `retired` and `gone`, the refusal code `other`, and the
+//! store's rewind mark in the answer to `cuts` (`rewound=R`, which it
+//! must carry). Every other line of version 2 reads the same in version
+//! 3, and the greeting changed, as it did for version 2 (below). **A daemon and an agent
+//! are deployed together**: each refuses a peer of version 2 at the
+//! greeting (`version`), the agent saying which versions met, and a
+//! node runs no publish and no retention until both speak version 3.
+//!
+//! Version 2 was version 1 with the verb `look`, its answers `snap`,
 //! `absent` and `unreadable`, and the refusal codes `rewound` and
 //! `store`. Each line of version 1 reads the same in version 2. The
 //! greeting changed all the same (CONTRIBUTING, "Formats are
@@ -42,11 +51,12 @@
 //!
 //! | Request | Answers |
 //! |---|---|
-//! | `cuts` | `cuts attachment=A state=S count=C group=G opens=O` |
+//! | `cuts` | `cuts attachment=A state=S count=C group=G opens=O rewound=R` |
 //! | `publish name=T attachment=A state=S after=C group=G manifest=N [expiry-s=E]`, then N bytes | `accepted` |
 //! | `progress name=T` | `pending`, `done commit=H`, `expired`, `withdrawn`, `unknown` |
 //! | `withdraw name=T` | as `progress`, as the publish stands after the withdrawal |
 //! | `look name=T` | `absent`, `snap commit=H state=S number=N group=G manifest-len=L manifest-hash=X`, `unreadable commit=H why=W` |
+//! | `retire name=T commit=H` | `retired`, `gone` |
 //!
 //! Any request can be answered `refused CODE TEXT`: CODE is one word
 //! ([`Code`]) and TEXT says why in words, for a person.
@@ -57,9 +67,17 @@
 //!   where the store holds no cuts), the cuts counted in that state (C:
 //!   the newest cut's number, 0 before the first), and the newest cut's
 //!   transaction group and whether it opens as itself (G a number and O
-//!   `itself` or `rewind`, or both `none` before the first cut). The
-//!   count is the store's when the request is answered: a cut counted
-//!   before the request was sent is in it.
+//!   `itself` or `rewind`, or both `none` before the first cut), and
+//!   the store's rewind mark (R, version 3: the number of the newest cut
+//!   that may follow a rewind, or the count the daemon started with,
+//!   whichever is higher; 0 where neither is). A `publish` asked after a
+//!   count below R is refused `rewound`, and each later cut at or under
+//!   the highest group the daemon has seen moves R. So a newest cut
+//!   that opens as itself with C above R is above every group seen
+//!   before it, and a snapshot taken then can be published (design
+//!   §5.2: the agent syncs a pool after a rewind import until it is).
+//!   The count is the store's when the request is answered: a cut
+//!   counted before the request was sent is in it.
 //! - `publish`: publish as `snap/T` the first cut of state S counted
 //!   after C whose group is G or later and that opens as itself, with
 //!   the ZFS manifest of N bytes (at most 1 MiB, opaque to the daemon),
@@ -114,11 +132,27 @@
 //!   an error, and `no-answer` that it did not answer within
 //!   [`ANSWER_LIMIT`]. Neither is `absent`. A daemon with no uploader
 //!   refuses `look` `no-upload` as it does the other requests.
+//! - `retire` (work package M2.7b, the agent's retention): delete
+//!   `snap/T` in object storage where it names commit H (64 hex
+//!   digits), with its row, in one transaction that compares the ref
+//!   with H. `retired`: it named H, and the ref and its row are gone.
+//!   `gone`: there is no `snap/T`, so asking again after a `retired`
+//!   that went unheard reads `gone`; the agent counts both as done.
+//!   `refused other`: `snap/T` names another commit, given in the text,
+//!   and nothing is deleted. The commit's blocks and the snapshot's
+//!   manifest stay in object storage until garbage collection (M4)
+//!   finds that no ref reaches them. The request goes through the
+//!   uploader and not `look`'s client, so that its lease and its fence
+//!   hold for deleting a ref as for making one: it is answered after a
+//!   step of its own, `no-answer` while the uploader is in a long step
+//!   (the transaction may still land: ask again), and `refused stopped`
+//!   once the uploader steps no more. A retire of a name whose publish
+//!   pends on this uploader is refused `asked`.
 //!
 //! A name T that no publish can have
 //! ([`valid_name`]) is refused `name` by each of
-//! `publish`, `progress`, `withdraw` and `look`, before the request goes
-//! further.
+//! `publish`, `progress`, `withdraw`, `look` and `retire`, before the
+//! request goes further.
 //!
 //! `refused stopped`, to a `publish` or as a publish's `progress`: this
 //! daemon's uploader steps no more (its lease lost, a commit or a publish
@@ -142,7 +176,8 @@
 //! of those before the uploader sees it, and its two waits share the
 //! one [`ANSWER_LIMIT`]. For `look`,
 //! `no-answer` and `store` are object storage's (above). The other codes
-//! are a publish's refusals (`skyzfs_upload::Refusal`).
+//! are a publish's refusals (`skyzfs_upload::Refusal`) and a retire's
+//! (`skyzfs_upload::RetireRefused`, and `other` above).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -208,8 +243,8 @@ pub fn socket_path(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> {
     Ok(volume_run_dir(run_dir, volume_dir)?.join(SOCKET))
 }
 
-/// The greeting of version 2, the first line each way.
-pub const HELLO: &str = "skyzfs-control 2";
+/// The greeting of version 3, the first line each way.
+pub const HELLO: &str = "skyzfs-control 3";
 
 /// The longest line, its `\n` included.
 pub const LINE_MAX: usize = 4096;
@@ -248,6 +283,18 @@ pub enum Request {
     Withdraw(String),
     /// `look name=T`.
     Look(String),
+    /// `retire name=T commit=H`.
+    Retire(Retire),
+}
+
+/// What `retire` names: the published snapshot to delete in object
+/// storage, and the commit its ref must name for it to be deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retire {
+    /// The snapshot's name, T.
+    pub name: String,
+    /// The commit `snap/T` names, H, as the publish's `done` said it.
+    pub commit: [u8; 32],
 }
 
 /// What `publish` names. Its manifest travels after the line.
@@ -292,6 +339,11 @@ pub enum Reply {
     Snap(SnapReply),
     /// `look`: `snap/T` with no row read as its own.
     Unreadable(UnreadableReply),
+    /// `retire`: `snap/T` named the commit, and it and its row are
+    /// deleted.
+    Retired,
+    /// `retire`: there is no `snap/T`.
+    Gone,
     /// Refused, and why.
     Refused(Code, String),
 }
@@ -371,6 +423,11 @@ pub struct CutsReply {
     pub count: u64,
     /// The newest cut's group, and whether it opens as itself.
     pub newest: Option<(u64, bool)>,
+    /// The store's rewind mark (version 3): the number of the newest cut
+    /// that may follow a rewind, or the count the daemon started with if
+    /// that is higher. A publish asked after a lower count is refused
+    /// `rewound`.
+    pub rewound: u64,
 }
 
 /// Why a request is refused: one word on the wire.
@@ -386,14 +443,15 @@ pub enum Code {
     Manifest,
     /// An expiry of zero or over an hour.
     Expiry,
-    /// The name pends with other parameters.
+    /// The name pends with other parameters; to `retire`, a publish of
+    /// the name pends on this daemon.
     Asked,
     /// Too many publishes pend.
     Busy,
     /// `snap/T` exists and does not record this request: it names
     /// another commit, or its row records another cut or manifest.
     Taken,
-    /// The uploader publishes nothing more.
+    /// The uploader publishes nothing more, and retires nothing more.
     Stopped,
     /// A rewind may have been counted after the request's count.
     Rewound,
@@ -406,19 +464,25 @@ pub enum Code {
     /// The daemon has no uploader.
     NoUpload,
     /// What answers the request has ended: the uploader, for a publish,
-    /// its progress or its withdrawal; for `cuts`, the store's queue,
-    /// whose desk is closed once the store is no longer served.
+    /// its progress, its withdrawal or a retire (whose transaction may
+    /// have landed: ask again); for `cuts`, the store's queue, whose desk
+    /// is closed once the store is no longer served.
     Ended,
     /// What answers the request did not answer within the limit: the
-    /// uploader, for a publish, its progress or its withdrawal; for
+    /// uploader, for a publish, its progress, its withdrawal or a retire
+    /// (taken at its next turn, so it may still be made: ask again); for
     /// `cuts`, the store's queue, which gives the count between two of
     /// its turns; for `look`, object storage.
     NoAnswer,
-    /// Object storage answered `look` with an error.
+    /// Object storage answered `look` or `retire` with an error (a
+    /// retire's transaction may have landed: ask again), or a retire's
+    /// ref moved at each of its tries.
     Store,
+    /// `retire`: `snap/T` names another commit than the request's.
+    Other,
 }
 
-const CODES: [(Code, &str); 17] = [
+const CODES: [(Code, &str); 18] = [
     (Code::Name, "name"),
     (Code::Attachment, "attachment"),
     (Code::State, "state"),
@@ -436,6 +500,7 @@ const CODES: [(Code, &str); 17] = [
     (Code::Ended, "ended"),
     (Code::NoAnswer, "no-answer"),
     (Code::Store, "store"),
+    (Code::Other, "other"),
 ];
 
 impl Code {
@@ -585,6 +650,13 @@ impl Request {
             "look" => Ok(Request::Look(
                 take(&pairs(rest, &["name"])?, "name")?.to_string(),
             )),
+            "retire" => {
+                let p = pairs(rest, &["name", "commit"])?;
+                Ok(Request::Retire(Retire {
+                    name: take(&p, "name")?.to_string(),
+                    commit: hash(&p, "commit")?,
+                }))
+            }
             other => Err(format!("`{other}` is not a request")),
         }
     }
@@ -611,6 +683,7 @@ impl Request {
             Request::Progress(name) => format!("progress name={name}"),
             Request::Withdraw(name) => format!("withdraw name={name}"),
             Request::Look(name) => format!("look name={name}"),
+            Request::Retire(r) => format!("retire name={} commit={}", r.name, hex(&r.commit)),
         }
     }
 }
@@ -628,7 +701,10 @@ impl Reply {
         let bare = |reply: Reply| pairs(rest, &[]).map(|_| reply);
         match *verb {
             "cuts" => {
-                let p = pairs(rest, &["attachment", "state", "count", "group", "opens"])?;
+                let p = pairs(
+                    rest,
+                    &["attachment", "state", "count", "group", "opens", "rewound"],
+                )?;
                 let state = match take(&p, "state")? {
                     "none" => None,
                     _ => Some(id(&p, "state")?),
@@ -646,6 +722,7 @@ impl Reply {
                     state,
                     count: number(&p, "count")?,
                     newest,
+                    rewound: number(&p, "rewound")?,
                 }))
             }
             "accepted" => bare(Reply::Accepted),
@@ -654,6 +731,8 @@ impl Reply {
             "withdrawn" => bare(Reply::Withdrawn),
             "unknown" => bare(Reply::Unknown),
             "absent" => bare(Reply::Absent),
+            "retired" => bare(Reply::Retired),
+            "gone" => bare(Reply::Gone),
             "done" => {
                 let p = pairs(rest, &["commit"])?;
                 Ok(Reply::Done(hash(&p, "commit")?))
@@ -708,9 +787,11 @@ impl Reply {
                     }
                 };
                 format!(
-                    "cuts attachment={} state={state} count={} group={group} opens={opens}",
+                    "cuts attachment={} state={state} count={} group={group} opens={opens} \
+                     rewound={}",
                     hex(&c.attachment),
-                    c.count
+                    c.count,
+                    c.rewound
                 )
             }
             Reply::Accepted => "accepted".into(),
@@ -720,6 +801,8 @@ impl Reply {
             Reply::Withdrawn => "withdrawn".into(),
             Reply::Unknown => "unknown".into(),
             Reply::Absent => "absent".into(),
+            Reply::Retired => "retired".into(),
+            Reply::Gone => "gone".into(),
             Reply::Snap(r) => format!(
                 "snap commit={} state={} number={} group={} manifest-len={} manifest-hash={}",
                 hex(&r.commit),

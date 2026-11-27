@@ -130,10 +130,14 @@
 //!   and a publish that ended, as the uploader's thread saw it. The tag
 //!   column is `-`; the op column says which: `asked` (a `publish`
 //!   request, with its `group` G in the sector column and its `after`
-//!   C in the sectors column), `withdraw`, or `ended`. The result column
-//!   holds the snapshot's name as asked, a space, and the answer as the
-//!   channel words it without a refusal's text: `accepted`,
-//!   `refused CODE`, `withdrawn`, `done commit=H`, `expired`.
+//!   C in the sectors column), `withdraw`, `retire` (M2.7b-1: a request
+//!   to retire `snap/T`, with nothing in the sector columns), or
+//!   `ended`. The result column holds the snapshot's name as asked, a
+//!   space, and the answer as the channel words it without a refusal's
+//!   text: `accepted`, `refused CODE`, `withdrawn`, `done commit=H`,
+//!   `expired`, `retired`, `gone`. `retire` is written on the channel's
+//!   thread once the uploader has answered, so after its transaction
+//!   landed: a kill between them leaves `snap/T` retired with no line.
 //!   `asked` and `withdraw` are written on the channel's thread once the
 //!   uploader has answered, so the uploader may have begun the publish
 //!   before its line. `ended` is written on the uploader's thread after
@@ -284,6 +288,7 @@ impl Lines {
         let (op, sector, sectors) = match what {
             PublishLine::Asked { group, after } => ("asked", group.to_string(), after.to_string()),
             PublishLine::Withdraw => ("withdraw", "-".into(), "-".into()),
+            PublishLine::Retire => ("retire", "-".into(), "-".into()),
             PublishLine::Ended => ("ended", "-".into(), "-".into()),
         };
         let answer = match reply {
@@ -322,12 +327,14 @@ pub enum PublishLine {
     },
     /// A `withdraw` request answered.
     Withdraw,
+    /// A `retire` request answered.
+    Retire,
     /// A publish that ended.
     Ended,
 }
 
 /// The channel's `handler`, with a `publish` line to `lines` for each
-/// request to publish or to withdraw it answers.
+/// request to publish, to withdraw or to retire it answers.
 pub fn channel(mut handler: Handler, mut lines: Lines) -> Handler {
     Box::new(move |request: &Request, manifest: Vec<u8>| {
         let reply = handler(request, manifest);
@@ -341,6 +348,7 @@ pub fn channel(mut handler: Handler, mut lines: Lines) -> Handler {
                 &reply,
             ),
             Request::Withdraw(name) => lines.publish(PublishLine::Withdraw, name, &reply),
+            Request::Retire(r) => lines.publish(PublishLine::Retire, &r.name, &reply),
             Request::Cuts | Request::Progress(_) | Request::Look(_) => {}
         }
         reply
